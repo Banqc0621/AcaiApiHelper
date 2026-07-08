@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Plugin Configuration File - Acai API 调试与测试插件 -->
+<!-- 参考文档: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- 插件唯一标识（FQN格式），版本间不可更改 -->
+    <id>com.ban.acai</id>
+
+    <!-- 插件显示名称 -->
+    <name>Acai API Helper</name>
+
+    <version>3.0.0</version>
+
+    <!-- 供应商信息 -->
+    <vendor email="1332039050@qq.com" url="https://blog.banqc.com.cn/">Banqc</vendor>
+
+    <!-- 插件描述 - 在插件市场和IDE插件管理器中展示 -->
+    <description><![CDATA[
+        <h2>Acai API Helper - 企业级API调试与自动化测试插件</h2>
+        <p>功能全面的IDEA内置API调试工具，类似Apipost-Helper-2.0，专为内部企业环境定制：</p>
+        <ul>
+            <li><b>API自动扫描</b>：自动识别Spring MVC / REST控制器中的接口定义</li>
+            <li><b>接口树形管理</b>：按控制器分组展示所有API，支持搜索和代码跳转</li>
+            <li><b>HTTP接口调试</b>：支持GET/POST/PUT/DELETE/PATCH等全部HTTP方法</li>
+            <li><b>AI参数生成</b>：对接内部模型算力，智能生成测试入参数据</li>
+            <li><b>测试用例管理</b>：支持本地测试用例的导入/导出/编辑</li>
+            <li><b>自动化测试</b>：批量执行接口测试，生成测试报告</li>
+            <li><b>Git预提交检查</b>：接口测试未通过（非200状态码）时阻断提交</li>
+            <li><b>编辑器Gutter导航</b>：在代码行号旁显示API图标，快速调试</li>
+        </ul>
+    ]]></description>
+
+    <!-- 变更日志 -->
+    <change-notes><![CDATA[
+        <h3>v3.0.0 功能完善版</h3>
+        <ul>
+            <li><b>P0修复</b>：自定义状态码断言、环境变量全链路生效、测试用例持久化、Cookie管理、报告导出</li>
+            <li><b>P1增强</b>：请求历史持久化、接口收藏、form-data支持、可视化断言编辑器、环境管理面板、cURL导入导出</li>
+            <li><b>P2创意</b>：AI智能断言生成、API文档导出、变更检测、Diff对比、使用频率统计</li>
+        </ul>
+        <h3>v2.0.0</h3>
+        <ul>
+            <li>全新架构：完整实现Apipost-Helper-2.0核心功能</li>
+            <li>新增AI测试参数生成（对接内部模型算力）</li>
+            <li>新增Git预提交检查（阻断失败接口提交）</li>
+            <li>新增自动化测试与测试报告</li>
+            <li>新增编辑器Gutter图标导航</li>
+        </ul>
+    ]]></change-notes>
+
+    <!-- 平台兼容性要求 -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>Git4Idea</depends>
+
+    <!-- 国际化资源包 -->
+    <resource-bundle>messages.MyMessageBundle</resource-bundle>
+
+    <!-- ================================================================ -->
+    <!-- 扩展点声明 - 注册插件的核心功能组件                               -->
+    <!-- ================================================================ -->
+    <extensions defaultExtensionNs="com.intellij">
+
+        <!-- 1. ToolWindow: 在IDE右侧显示API调试面板 -->
+        <toolWindow id="AcaiApiHelper"
+                    factoryClass="com.ban.acai.ui.AcaiToolWindowFactory"
+                    anchor="right"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    secondary="false"/>
+
+        <!-- 2. Application级全局配置: IDE级别共享配置 -->
+        <applicationService serviceImplementation="com.ban.acai.settings.AcaiGlobalSettings"/>
+
+        <!-- 2b. Project级持久化服务: 存储项目级配置（AI服务器地址、Token等） -->
+        <projectService serviceImplementation="com.ban.acai.settings.AcaiSettingsState"/>
+
+        <!-- 3. 设置页面: 在IDE Settings中注册插件配置页 -->
+        <projectConfigurable
+                parentId="tools"
+                instance="com.ban.acai.settings.AcaiSettingsConfigurable"
+                id="com.ban.acai.settings"
+                displayName="Acai API Helper"/>
+
+        <!-- 5. Git预提交检查处理器: 接口测试未通过时阻断提交 -->
+        <checkinHandlerFactory implementation="com.ban.acai.git.AcaiCheckinHandlerFactory"/>
+
+        <!-- 6. 编辑器Gutter图标提供器: 在Controller方法旁显示API调试图标 -->
+        <codeInsight.lineMarkerProvider
+                language="JAVA"
+                implementationClass="com.ban.acai.gutter.ApiLineMarkerProvider"/>
+
+        <!-- 7. API扫描服务 -->
+        <projectService serviceImplementation="com.ban.acai.scanner.ApiScannerService"/>
+
+        <!-- 8. HTTP执行服务 -->
+        <projectService serviceImplementation="com.ban.acai.http.HttpExecutorService"/>
+
+        <!-- 9. AI参数生成服务 -->
+        <projectService serviceImplementation="com.ban.acai.ai.AiParameterService"/>
+
+        <!-- 10. 通知组: 用于在IDE底部展示操作结果通知 -->
+        <notificationGroup id="AcaiApiHelper.Notification"
+                           displayType="BALLOON"
+                           bundle="messages.MyMessageBundle"
+                           key="notification.group.name"/>
+    </extensions>
+
+    <!-- ================================================================ -->
+    <!-- 动作声明 - 注册右键菜单、快捷键等交互入口                         -->
+    <!-- ================================================================ -->
+    <actions>
+        <!-- 动作组: 注册到编辑器右键菜单 -->
+        <group id="AcaiApiHelper.ActionGroup"
+               text="Acai API Helper"
+               popup="true"
+               icon="AllIcons.Toolwindows.ToolWindowPalette">
+            <!-- 将动作组添加到编辑器右键菜单 -->
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <!-- 将动作组添加到项目视图右键菜单 -->
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </group>
+
+        <!-- 动作: 扫描项目API -->
+        <action id="AcaiApiHelper.ScanApis"
+                class="com.ban.acai.actions.ScanApisAction"
+                text="扫描项目API"
+                description="扫描当前项目中的所有REST/Spring MVC接口"
+                icon="AllIcons.Actions.Refresh">
+            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="first"/>
+        </action>
+
+        <!-- 动作: 调试当前接口 -->
+        <action id="AcaiApiHelper.DebugApi"
+                class="com.ban.acai.actions.DebugApiAction"
+                text="调试当前接口"
+                description="在Acai面板中打开当前接口的调试界面"
+                icon="AllIcons.Actions.Execute">
+            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="after" relative-to-action="AcaiApiHelper.ScanApis"/>
+        </action>
+
+        <!-- 动作: 运行全部API测试 -->
+        <action id="AcaiApiHelper.RunAllTests"
+                class="com.ban.acai.actions.RunAllTestsAction"
+                text="运行全部接口测试"
+                description="执行所有已配置的接口自动化测试"
+                icon="AllIcons.RunConfigurations.Junit">
+            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="after" relative-to-action="AcaiApiHelper.DebugApi"/>
+        </action>
+    </actions>
+</idea-plugin>

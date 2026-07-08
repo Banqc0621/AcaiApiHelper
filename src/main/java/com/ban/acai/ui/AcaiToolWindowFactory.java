@@ -1,0 +1,60 @@
+package com.ban.acai.ui;
+
+import com.ban.acai.AcaiConstants;
+import com.ban.acai.model.ApiDefinition;
+import com.ban.acai.scanner.ApiScannerService;
+import com.ban.acai.settings.AcaiSettingsState;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.wm.ToolWindow;
+import com.intellij.openapi.wm.ToolWindowFactory;
+import com.intellij.ui.JBSplitter;
+import com.intellij.ui.content.Content;
+import com.intellij.ui.content.ContentFactory;
+import org.jetbrains.annotations.NotNull;
+
+import javax.swing.*;
+import java.awt.*;
+import java.util.List;
+
+public class AcaiToolWindowFactory implements ToolWindowFactory {
+
+    @Override
+    public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
+        ApiTreePanel treePanel = new ApiTreePanel(project);
+        ApiDebuggerPanel debuggerPanel = new ApiDebuggerPanel(project);
+
+        JBSplitter splitter = new JBSplitter(false, AcaiConstants.SPLITTER_PROPORTION);
+        splitter.setFirstComponent(treePanel);
+        splitter.setSecondComponent(debuggerPanel);
+        // 解除子组件最小尺寸限制，使分割条可自由左右拖动（默认 honorComponentsMinimumSize=true 会因面板内大组件而拖不动）
+        splitter.setHonorComponentsMinimumSize(false);
+        // 持久化拖动比例，下次打开工具窗口自动恢复
+        splitter.setSplitterProportionKey("AcaiToolWindow.splitter.proportion");
+
+        JPanel mainPanel = new JPanel(new BorderLayout());
+        mainPanel.add(splitter, BorderLayout.CENTER);
+
+        Content content = ContentFactory.getInstance().createContent(mainPanel, null, false);
+        content.setCloseable(false);
+        toolWindow.getContentManager().addContent(content);
+
+        treePanel.setOnApiSelected(debuggerPanel::loadApi);
+
+        ApiScannerService scanner = ApiScannerService.getInstance(project);
+        scanner.addListener(new ApiScannerService.ScanListener() {
+            @Override
+            public void onScanComplete(List<ApiDefinition> apis) { treePanel.updateTree(apis); }
+            @Override
+            public void onScanStarted() {}
+        });
+
+        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        if (settings.getState() != null && settings.getState().autoScanOnStartup) {
+            ApplicationManager.getApplication().invokeLater(scanner::scanProjectApisAsync);
+        }
+    }
+
+    @Override
+    public boolean shouldBeAvailable(@NotNull Project project) { return true; }
+}
