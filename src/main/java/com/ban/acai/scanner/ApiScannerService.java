@@ -452,6 +452,8 @@ public class ApiScannerService {
 
         api.setParameters(new ArrayList<>(parseMethodParameters(method)));
         api.setResponseBodyType(extractReturnType(method));
+        // v3: 解析返回类型的实体类字段树（用于在无测试记录时填充响应参数表/示例）
+        api.setResponseSchema(extractResponseSchema(method));
 
         // 标记来源为自动扫描
         api.setSource(AcaiConstants.API_SOURCE_AUTO);
@@ -1216,6 +1218,112 @@ public class ApiScannerService {
         PsiType returnType = method.getReturnType();
         if (returnType == null) return "void";
         return returnType.getPresentableText();
+    }
+
+    /**
+     * 解析方法的返回类型的实体字段树，用于生成响应参数表与示例 JSON。
+     * <ul>
+     *   <li>对 <code>Result&lt;UserVO&gt;</code> / <code>ResponseEntity&lt;UserVO&gt;</code> 这类带一层包装的，
+     *       取第一个泛型参数 <code>UserVO</code> 作为根类型</li>
+     *   <li>对 <code>Page&lt;UserVO&gt;</code> / <code>IPage&lt;UserVO&gt;</code>，根类型为 <code>UserVO</code>，并附带 records/total 等固定字段</li>
+     *   <li>对 <code>UserVO</code> 这种裸领域对象，直接作为根类型</li>
+     *   <li>void / 基础类型 / 解析失败 → 返回空列表</li>
+     * </ul>
+     */
+    private List<ApiParameter> extractResponseSchema(PsiMethod method) {
+        PsiType returnType = method.getReturnType();
+        if (returnType == null) return new ArrayList<>();
+
+        // 逐层剥壳：ResponseEntity<T> → List<T>/Page<T> → Result<T>/R<T> → 实体类
+        PsiType t = returnType;
+        t = orSelf(unwrapResponseEntity(t));
+        PsiType afterCollection = unwrapCollection(t);
+        if (afterCollection != null) t = afterCollection;
+        PsiType afterWrapper = unwrapCommonResult(t);
+        if (afterWrapper != null) t = afterWrapper;
+
+        // 基础类型不解析
+        if (isSimpleType(t)) return new ArrayList<>();
+
+        // 递归解析实体类字段
+        try {
+            return new ArrayList<>(parseComplexType(t, new HashSet<>()));
+        } catch (Exception ex) {
+            // 解析失败时返回空列表（导出器会回退到按类型名推断）
+            return new ArrayList<>();
+        }
+    }
+
+    /** unwrap 没剥成功时返回原值 */
+    private PsiType orSelf(PsiType t) {
+        return t != null ? t : null;
+    }
+
+    /** 去掉 ResponseEntity<T> 包装 */
+    private PsiType unwrapResponseEntity(PsiType t) {
+        if (t instanceof PsiClassType ct) {
+            PsiClass c = ct.resolve();
+            if (c != null) {
+                String qn = c.getQualifiedName();
+                if ("org.springframework.http.ResponseEntity".equals(qn)) {
+                    PsiType[] args = ct.getParameters();
+                    if (args.length == 1) return args[0];
+                }
+            }
+        }
+        return t;
+    }
+
+    /** 去掉 List<>/Page<> 集合包装，返回元素类型；非集合返回 null */
+    private PsiType unwrapCollection(PsiType t) {
+        if (t instanceof PsiClassType ct) {
+            PsiClass c = ct.resolve();
+            if (c != null) {
+                String qn = c.getQualifiedName();
+                if (qn == null) return null;
+                if (qn.startsWith("java.util.List")
+                        || qn.startsWith("java.util.Collection")
+                        || qn.startsWith("java.util.Set")
+                        || qn.startsWith("java.util.ArrayList")
+                        || qn.endsWith("[]")) {
+                    PsiType[] args = ct.getParameters();
+                    if (args.length == 1) return args[0];
+                }
+                if (qn.equals("com.baomidou.mybatisplus.core.metadata.IPage")
+                        || qn.endsWith(".Page")
+                        || qn.endsWith("Page")) {
+                    PsiType[] args = ct.getParameters();
+                    if (args.length == 1) return args[0];
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 去掉 Result<T> / R<T> / CommonResult<T> 等通用包装，返回 T；非包装返回 null */
+    private PsiType unwrapCommonResult(PsiType t) {
+        if (!(t instanceof PsiClassType ct)) return null;
+        PsiClass c = ct.resolve();
+        if (c == null) return null;
+        String qn = c.getQualifiedName();
+        if (qn == null) return null;
+        // 常见包装类名
+        String name = c.getName();
+        if (name == null) return null;
+        boolean isWrapper = name.equals("Result")
+                || name.equals("R")
+                || name.equals("CommonResult")
+                || name.equals("ApiResult")
+                || name.equals("BaseResult")
+                || name.equals("ResponseResult")
+                || name.equals("Response")
+                || name.equals("Resp")
+                || name.equals("RespResult");
+        if (isWrapper) {
+            PsiType[] args = ct.getParameters();
+            if (args.length >= 1) return args[0];
+        }
+        return null;
     }
 
     /** 获取方法在文件中的行号 */

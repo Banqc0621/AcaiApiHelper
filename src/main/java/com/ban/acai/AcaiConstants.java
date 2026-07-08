@@ -34,7 +34,7 @@ public final class AcaiConstants {
     public static final String PLUGIN_NAME = "Acai API Helper";
 
     /** 插件版本 */
-    public static final String PLUGIN_VERSION = "3.0.0";
+    public static final String PLUGIN_VERSION = "1.0.0";
 
     /** ToolWindow ID */
     public static final String TOOLWINDOW_ID = "AcaiApiHelper";

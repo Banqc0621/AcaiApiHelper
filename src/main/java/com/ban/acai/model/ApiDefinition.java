@@ -45,6 +45,12 @@ public class ApiDefinition {
     private String requestBodyType = "";
     /** 响应体的Java类型名（如 Result<UserVO>） */
     private String responseBodyType = "";
+    /**
+     * 响应体出参实体类字段树（扫描器从返回类型中递归解析得到）。
+     * <p>对于 <code>Result&lt;UserVO&gt;</code>，这里存的是 <code>UserVO</code> 类的字段列表（嵌套字段放在每个字段的 children 里）。</p>
+     * <p>无字段时为空列表（由扫描器未能解析对应类）。导出 Markdown 时优先用这里生成响应参数表与示例。</p>
+     */
+    private List<ApiParameter> responseSchema = new ArrayList<>();
     /** 接口是否已标记为@Deprecated */
     private boolean isDeprecated = false;
     /** 接口来源：AUTO（自动扫描）/ MANUAL（手动添加） */
@@ -111,6 +117,9 @@ public class ApiDefinition {
 
     public String getResponseBodyType() { return responseBodyType; }
     public void setResponseBodyType(String responseBodyType) { this.responseBodyType = responseBodyType; }
+
+    public List<ApiParameter> getResponseSchema() { return responseSchema; }
+    public void setResponseSchema(List<ApiParameter> responseSchema) { this.responseSchema = responseSchema != null ? responseSchema : new ArrayList<>(); }
 
     public boolean isDeprecated() { return isDeprecated; }
     public void setDeprecated(boolean deprecated) { isDeprecated = deprecated; }

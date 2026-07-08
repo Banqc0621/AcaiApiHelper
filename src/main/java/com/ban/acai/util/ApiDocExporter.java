@@ -30,7 +30,7 @@ public class ApiDocExporter {
     public static String exportControllerDoc(String controllerName, List<ApiDefinition> apis, String outputFile) throws IOException {
         StringBuilder md = new StringBuilder();
         md.append("# ").append(controllerName).append("\n\n");
-        md.append("> 自动生成 by Acai API Helper v3.0.0  \n");
+        md.append("> 自动生成 by Acai API Helper v1.0.0  \n");
         md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
         md.append("---\n\n");
 
@@ -61,7 +61,7 @@ public class ApiDocExporter {
 
         StringBuilder md = new StringBuilder();
         md.append("# API 接口文档\n\n");
-        md.append("> 自动生成 by Acai API Helper v3.0.0  \n");
+        md.append("> 自动生成 by Acai API Helper v1.0.0  \n");
         md.append("> 接口总数: **").append(apis.size()).append("** 个  \n");
         md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
 
@@ -449,17 +449,220 @@ public class ApiDocExporter {
         } else {
             md.append("| 字段 | 类型 | 说明 |\n");
             md.append("|------|------|------|\n");
-            appendResponseParamRows(md, retType, 0);
+
+            // 优先用扫描器解析出的真实字段树（responseSchema）
+            List<ApiParameter> schema = api.getResponseSchema();
+            boolean hasSchema = schema != null && !schema.isEmpty();
+            if (hasSchema) {
+                appendResponseFieldRowsFromSchema(md, schema, "");
+            } else {
+                appendResponseParamRows(md, retType, 0);
+            }
             md.append("\n");
 
             // 响应示例
             md.append("响应示例\n\n");
             md.append("```json\n");
-            md.append(synthesizeExampleForType(retType));
+            md.append(hasSchema
+                    ? synthesizeExampleFromSchema(retType, schema)
+                    : synthesizeExampleForType(retType));
             md.append("\n```\n\n");
         }
 
         md.append("---\n\n");
+    }
+
+    /**
+     * 把扫描器返回的字段树渲染为响应参数表行（递归）。
+     *
+     * @param md     MD 文本缓冲
+     * @param fields 字段列表
+     * @param prefix 字段名前缀（嵌套时累积，如 "data." / "data.user."）
+     */
+    private static void appendResponseFieldRowsFromSchema(StringBuilder md, List<ApiParameter> fields, String prefix) {
+        if (fields == null) return;
+        for (ApiParameter f : fields) {
+            String name = prefix + f.getName();
+            String type = f.getType() == null ? "" : f.getType();
+            String desc = f.getDescription() == null ? "" : f.getDescription();
+            md.append("| `").append(name).append("` | ").append(type)
+              .append(" | ").append(escapeMd(desc)).append(" |\n");
+            if (f.getChildren() != null && !f.getChildren().isEmpty()) {
+                appendResponseFieldRowsFromSchema(md, f.getChildren(), name + ".");
+            }
+        }
+    }
+
+    /**
+     * 基于真实字段树 + 返回类型，合成响应示例 JSON。
+     * <p>对 Result/Page/List 这类包装类型，自动加 code/message/data 三层结构；</p>
+     * <p>嵌套对象按字段类型递归生成；List 字段生成一个元素的数组示例。</p>
+     */
+    static String synthesizeExampleFromSchema(String retType, List<ApiParameter> fields) {
+        if (fields == null || fields.isEmpty()) {
+            return synthesizeExampleForType(retType);
+        }
+        StringBuilder sb = new StringBuilder();
+        appendExampleForTypeAndFields(sb, retType, fields, 1);
+        return sb.toString();
+    }
+
+    /**
+     * 根据返回类型，决定最外层 JSON 形状。
+     * <ul>
+     *   <li>Result<T> / R<T> 等通用包装 → { code, message, data: T示例 }</li>
+     *   <li>List<T> / Collection<T> / Set<T> → [T示例]</li>
+     *   <li>Page<T> / IPage<T> → { total, records:[T示例], size, current }</li>
+     *   <li>基础类型 → 字面量</li>
+     *   <li>其它 → 字段树对应的对象</li>
+     * </ul>
+     */
+    private static void appendExampleForTypeAndFields(StringBuilder sb, String retType,
+                                                      List<ApiParameter> fields, int depth) {
+        if (depth > 6) {
+            sb.append("{}");
+            return;
+        }
+        String t = retType == null ? "" : retType.trim();
+        String low = t.toLowerCase();
+        // void
+        if (low.equals("void")) { sb.append("null"); return; }
+        // 基础
+        if (isPrimitiveType(t)) {
+            if (low.equals("string")) sb.append("\"\"");
+            else if (low.equals("boolean")) sb.append("false");
+            else if (low.equals("bigdecimal") || low.equals("double") || low.equals("float")) sb.append("0.0");
+            else sb.append("0");
+            return;
+        }
+        // 集合
+        if (low.startsWith("list<") || low.startsWith("java.util.list<")
+                || low.startsWith("collection<") || low.startsWith("set<")
+                || low.startsWith("arraylist<") || low.endsWith("[]")) {
+            sb.append("[\n");
+            appendObjectFromFields(sb, fields, 2);
+            sb.append("\n]");
+            return;
+        }
+        // Page
+        if (low.startsWith("page<") || low.startsWith("ipage<")
+                || low.startsWith("com.baomidou.mybatisplus.core.metadataipage<")) {
+            sb.append("{\n");
+            sb.append("  \"total\": 0,\n");
+            sb.append("  \"size\": 10,\n");
+            sb.append("  \"current\": 1,\n");
+            sb.append("  \"records\": [\n");
+            appendObjectFromFields(sb, fields, 3);
+            sb.append("\n  ]\n}");
+            return;
+        }
+        // 通用包装
+        if (isCommonWrapperName(extractSimpleName(t))) {
+            String innerType = extractGenericInner(t);
+            sb.append("{\n");
+            sb.append("  \"code\": 0,\n");
+            sb.append("  \"message\": \"success\",\n");
+            sb.append("  \"data\": ");
+            // data 自身再递归
+            String innerLow = innerType.toLowerCase();
+            if (isPrimitiveType(innerType)) {
+                if (innerLow.equals("string")) sb.append("\"\"");
+                else if (innerLow.equals("boolean")) sb.append("false");
+                else if (innerLow.equals("bigdecimal") || innerLow.equals("double") || innerLow.equals("float")) sb.append("0.0");
+                else sb.append("0");
+            } else if (innerLow.startsWith("list<") || innerLow.startsWith("java.util.list<")
+                    || innerLow.endsWith("[]")) {
+                sb.append("[\n");
+                appendObjectFromFields(sb, fields, 3);
+                sb.append("\n  ]");
+            } else if (innerLow.startsWith("page<") || innerLow.startsWith("ipage<")) {
+                sb.append("{\n");
+                sb.append("    \"total\": 0,\n");
+                sb.append("    \"size\": 10,\n");
+                sb.append("    \"current\": 1,\n");
+                sb.append("    \"records\": [\n");
+                appendObjectFromFields(sb, fields, 4);
+                sb.append("\n    ]\n  }");
+            } else {
+                appendObjectFromFields(sb, fields, 3);
+            }
+            sb.append("\n}");
+            return;
+        }
+        // 其它领域对象
+        appendObjectFromFields(sb, fields, depth);
+    }
+
+    private static void appendObjectFromFields(StringBuilder sb, List<ApiParameter> fields, int indentLevel) {
+        if (fields == null || fields.isEmpty()) {
+            sb.append("{}");
+            return;
+        }
+        String indent = repeatStr("  ", indentLevel);
+        String childIndent = repeatStr("  ", indentLevel + 1);
+        sb.append("{\n");
+        int count = 0;
+        for (ApiParameter f : fields) {
+            if (count > 0) sb.append(",\n");
+            sb.append(childIndent).append("\"").append(f.getName()).append("\": ");
+            if (f.getChildren() != null && !f.getChildren().isEmpty()) {
+                appendObjectFromFields(sb, f.getChildren(), indentLevel + 1);
+            } else {
+                String t = f.getType() == null ? "" : f.getType();
+                String low = t.toLowerCase();
+                if (low.equals("string") || low.endsWith("char") || low.endsWith("string")) {
+                    sb.append("\"\"");
+                } else if (low.equals("boolean")) {
+                    sb.append("false");
+                } else if (low.equals("bigdecimal") || low.equals("double") || low.equals("float")) {
+                    sb.append("0.0");
+                } else if (low.equals("int") || low.equals("integer")
+                        || low.equals("long") || low.equals("short") || low.equals("byte")) {
+                    sb.append("0");
+                } else if (low.startsWith("list<") || low.startsWith("java.util.list<")
+                        || low.startsWith("collection<") || low.startsWith("set<")
+                        || low.endsWith("[]")) {
+                    sb.append("[]");
+                } else if (low.startsWith("map<") || low.startsWith("java.util.map<")) {
+                    sb.append("{}");
+                } else if (low.endsWith("date") || low.endsWith("localdatetime")
+                        || low.endsWith("localdate") || low.endsWith("localtime")) {
+                    sb.append("\"2024-01-01 00:00:00\"");
+                } else if (!f.getExample().isBlank()) {
+                    String ex = f.getExample();
+                    if (ex.matches("-?\\d+(\\.\\d+)?")) sb.append(ex);
+                    else sb.append("\"").append(escapeMd(ex)).append("\"");
+                } else {
+                    // 未知类型对象，给个空对象占位
+                    sb.append("{}");
+                }
+            }
+            count++;
+        }
+        sb.append("\n").append(indent).append("}");
+    }
+
+    private static String repeatStr(String s, int n) {
+        StringBuilder r = new StringBuilder();
+        for (int i = 0; i < n; i++) r.append(s);
+        return r.toString();
+    }
+
+    private static String extractSimpleName(String type) {
+        if (type == null) return "";
+        int lt = type.indexOf('<');
+        String head = lt >= 0 ? type.substring(0, lt) : type;
+        int dot = head.lastIndexOf('.');
+        return dot >= 0 ? head.substring(dot + 1) : head;
+    }
+
+    private static boolean isCommonWrapperName(String simpleName) {
+        if (simpleName == null) return false;
+        return simpleName.equals("Result") || simpleName.equals("R")
+                || simpleName.equals("CommonResult") || simpleName.equals("ApiResult")
+                || simpleName.equals("BaseResult") || simpleName.equals("ResponseResult")
+                || simpleName.equals("Response") || simpleName.equals("Resp")
+                || simpleName.equals("RespResult");
     }
 
     /** 输出一行参数表。required=true 显示 ✓，否则空字符串。 */

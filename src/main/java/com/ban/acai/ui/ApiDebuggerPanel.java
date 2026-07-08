@@ -16,7 +16,7 @@ import com.google.gson.JsonParser;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileChooser.FileChooser;
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
+import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.Messages;
@@ -230,9 +230,7 @@ public class ApiDebuggerPanel extends JPanel {
         toolbar2.setFloatable(false);
         toolbar2.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
 
-        JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
-        saveBtn.setToolTipText("保存当前测试配置");
-        saveBtn.addActionListener(e -> saveCurrentProfile());
+
 
         JButton importBtn = new JButton("导入", AllIcons.ToolbarDecorator.Import);
         importBtn.setToolTipText("导入cURL或JSON测试用例");
@@ -258,14 +256,18 @@ public class ApiDebuggerPanel extends JPanel {
             statusLabel.setText("● Cookie已清空");
         });
 
+        JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
+        saveBtn.setToolTipText("保存当前测试配置");
+        saveBtn.addActionListener(e -> saveCurrentProfile());
+
         toolbar2.add(Box.createHorizontalGlue());
-        toolbar2.add(saveBtn);
         toolbar2.add(importBtn);
         toolbar2.add(exportBtn);
         toolbar2.add(exportDocBtn);
         toolbar2.add(exportReportBtn);
         toolbar2.addSeparator(new Dimension(4, 0));
         toolbar2.add(clearCookieBtn);
+        toolbar2.add(saveBtn);
 
         // ============== 外层：垂直 BoxLayout 包裹两行 ==============
         JPanel wrapper = new JPanel();
@@ -496,8 +498,10 @@ public class ApiDebuggerPanel extends JPanel {
             btnBox.setOpaque(false);
             JButton pickBtn = new JButton("选择文件...", AllIcons.Actions.Upload);
             pickBtn.addActionListener(e -> {
-                VirtualFile vf = FileChooser.chooseFile(
-                        FileChooserDescriptorFactory.createSingleFileDescriptor(), project, null);
+                FileChooserDescriptor singleFile =
+                        new FileChooserDescriptor(true, false, false, false, false, false);
+                singleFile.setTitle("选择文件");
+                VirtualFile vf = FileChooser.chooseFile(singleFile, project, null);
                 if (vf != null) {
                     String path = vf.getPath();
                     attachmentPaths.put(p.getName(), path);

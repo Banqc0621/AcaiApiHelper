@@ -57,6 +57,7 @@ class AcaiCheckinHandler extends CheckinHandler {
         return new RefreshableOnComponent() {
             @Override
             public JComponent getComponent() { return panel; }
+            @SuppressWarnings("deprecation")
             @Override
             public void refresh() {}
             @Override
