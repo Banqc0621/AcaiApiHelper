@@ -2,11 +2,15 @@ package com.ban.acai.ui;
 
 import com.ban.acai.AcaiConstants;
 import com.ban.acai.model.ApiDefinition;
+import com.ban.acai.model.RequestHistory;
 import com.ban.acai.scanner.ApiScannerService;
 import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.util.ApiDocExporter;
+import com.ban.acai.util.PostmanCollectionExporter;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
@@ -115,7 +119,7 @@ public class ApiTreePanel extends JPanel {
      * 配置树形控件
      */
     private void setupTree() {
-        tree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
+        tree.getSelectionModel().setSelectionMode(TreeSelectionModel.DISCONTIGUOUS_TREE_SELECTION);
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
         tree.setRowHeight(0);  // 可变行高，适配HTML渲染
@@ -156,18 +160,57 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * 右键弹出菜单
+     * 右键弹出菜单。
+     * <p>关键：保留多选。
+     * <ul>
+     *   <li>右键点中的节点已在已选集中 → 保留多选（让用户能右键多选后导出）</li>
+     *   <li>右键点中的节点未在已选集中 → <b>加入</b>已选集（不是覆盖）</li>
+     *   <li>右键点在空白处 → 保留原选择（不再覆盖，避免误清空多选）</li>
+     * </ul>
+     * 这样保证：用户先 Cmd+点 5 个接口，再右键其中任意一个，右键菜单触发时
+     * <code>tree.getSelectionPaths()</code> 仍是这 5 个路径。
      */
     private void handlePopup(MouseEvent e) {
         if (!e.isPopupTrigger()) return;
         TreePath path = tree.getPathForLocation(e.getX(), e.getY());
-        if (path == null) return;
-        tree.setSelectionPath(path);
 
-        Object node = path.getLastPathComponent();
+        if (path != null) {
+            TreePath[] cur = tree.getSelectionPaths();
+            java.util.Set<TreePath> selSet = cur == null
+                    ? new java.util.HashSet<>() : new java.util.HashSet<>(java.util.Arrays.asList(cur));
+            if (!selSet.contains(path)) {
+                // 把当前右键命中的路径加入选择（不清空其它已选项）
+                selSet.add(path);
+                tree.setSelectionPaths(selSet.toArray(new TreePath[0]));
+            }
+            // 若已在已选集中，啥都不做（保留多选）
+        }
+        // 空白处右键：保留原选择，不再覆盖
+
+        Object node = path == null ? null : path.getLastPathComponent();
+        if (node == null) return;
         if (!(node instanceof DefaultMutableTreeNode)) return;
         Object userObj = ((DefaultMutableTreeNode) node).getUserObject();
-        if (!(userObj instanceof ApiDefinition api)) return;
+
+        // 右键命中的节点若不是 API（Controller 或非 API 节点），
+        // 仍然允许弹菜单 —— 多选场景下用户可能右键空白处或 Controller 父节点。
+        // 但 api 变量必须有一个"上下文接口"以兼容菜单中的旧动作（调试/收藏/复制URL等）。
+        final ApiDefinition api;
+        if (userObj instanceof ApiDefinition) {
+            api = (ApiDefinition) userObj;
+        } else {
+            // 找已选中的第一个 API 作为上下文
+            TreePath[] cur2 = tree.getSelectionPaths();
+            ApiDefinition found = null;
+            if (cur2 != null) {
+                for (TreePath tp : cur2) {
+                    Object u = ((DefaultMutableTreeNode) tp.getLastPathComponent()).getUserObject();
+                    if (u instanceof ApiDefinition) { found = (ApiDefinition) u; break; }
+                }
+            }
+            if (found == null) return; // 既不是 API 节点又没已选 API → 不弹菜单
+            api = found;
+        }
 
         DefaultActionGroup group = new DefaultActionGroup();
 
@@ -238,6 +281,26 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(copyCurlAction);
 
+        // 导出选中接口（支持多选）
+        group.addSeparator();
+        AnAction exportMdAction = new AnAction("📄 导出 Markdown（多选）",
+                "将选中的接口（含最近测试数据）导出为 Markdown 文档", AllIcons.ToolbarDecorator.Export) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                exportSelectedApisAsMarkdown();
+            }
+        };
+        group.add(exportMdAction);
+
+        AnAction exportPostmanAction = new AnAction("📤 导出 Postman JSON（多选）",
+                "将选中的接口导出为 Postman/Apifox 可直接导入的 JSON", AllIcons.ToolbarDecorator.Export) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                exportSelectedApisAsPostmanJson();
+            }
+        };
+        group.add(exportPostmanAction);
+
         // 跳转到源码
         group.addSeparator();
         AnAction gotoSourceAction = new AnAction("跳转到源码", "在编辑器中打开此接口所在位置", AllIcons.Actions.EditSource) {
@@ -261,7 +324,7 @@ public class ApiTreePanel extends JPanel {
         topContainer.add(createFilterPanel(), BorderLayout.NORTH);
         
         // 配置搜索框
-        searchField.getTextEditor().getEmptyText().setText("🔍 搜索接口路径、名称、Controller或描述...");
+        searchField.getTextEditor().getEmptyText().setText("搜索接口路径、名称、Controller或描述...");
         searchField.setFont(searchField.getFont().deriveFont(Font.PLAIN, 11f));
         topContainer.add(searchField, BorderLayout.SOUTH);
 
@@ -583,6 +646,196 @@ public class ApiTreePanel extends JPanel {
             return (ApiDefinition) userObject;
         }
         return null;
+    }
+
+    /**
+     * 获取用户在接口树中**严格选中**的接口列表（多选语义）。
+     * <ul>
+     *   <li>仅收集用户真正点击选中的 API 节点；不展开 Controller 节点</li>
+     *   <li>不静默回退到 "最后选中的" 单选接口 —— 没多选就返回空列表</li>
+     *   <li>按树路径顺序排序（按 Controller 分组、按 url 排序），保持导出稳定</li>
+     * </ul>
+     * 如果希望单选也能导出，请用 {@link #getSelectedApisForExport()}。
+     */
+    public java.util.List<ApiDefinition> getSelectedApis() {
+        java.util.List<ApiDefinition> result = new java.util.ArrayList<>();
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null || paths.length == 0) {
+            return result;
+        }
+        for (TreePath tp : paths) {
+            Object node = tp.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) continue;
+            Object userObj = ((DefaultMutableTreeNode) node).getUserObject();
+            if (userObj instanceof ApiDefinition) {
+                result.add((ApiDefinition) userObj);
+            }
+            // Controller 节点不展开 — 严格只导出用户明确点击的接口
+        }
+        // 去重（按 ApiDefinition 自身 hashCode/equals）—— 用户不可能多选同节点但防御下
+        java.util.LinkedHashSet<ApiDefinition> uniq = new java.util.LinkedHashSet<>(result);
+        return new java.util.ArrayList<>(uniq);
+    }
+
+    /**
+     * 导出场景下使用的"选中接口"获取：
+     * <ul>
+     *   <li>若用户在树中选了 1+ 个节点（多选）→ 返回严格多选的接口列表（不含 Controller 展开）</li>
+     *   <li>若用户只单选了一个接口 → 也返回该接口（单选导出）</li>
+     *   <li>若用户没选任何节点 → 弹提示框说明，回退到当前聚焦节点；再不行返回空</li>
+     * </ul>
+     */
+    public java.util.List<ApiDefinition> getSelectedApisForExport() {
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths != null && paths.length > 1) {
+            // 多选：严格返回多选接口
+            return getSelectedApis();
+        }
+        // 单选/未选：尝试用当前最后选中的节点
+        ApiDefinition single = getSelectedApi();
+        if (single != null) {
+            java.util.List<ApiDefinition> one = new java.util.ArrayList<>();
+            one.add(single);
+            return one;
+        }
+        return new java.util.ArrayList<>();
+    }
+
+    /**
+     * 导出选中的接口（支持单选/多选）为 Markdown 文档（含最近测试数据）。
+     * <ul>
+     *   <li>文件命名精确到秒：<code>acai-api-yyyyMMdd-HHmmss.md</code></li>
+     *   <li>严格按用户在接口树中**明确选中**的节点生成；不展开 Controller 节点</li>
+     *   <li>导出前弹出确认框，列出要导出的接口（按 Controller 分组），用户可取消</li>
+     * </ul>
+     */
+    private void exportSelectedApisAsMarkdown() {
+        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Markdown（多选）\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Markdown（多选）\n• Shift 连选接口后再右键 → 导出 Markdown（多选）",
+                    "提示");
+            return;
+        }
+
+        // === 二次确认：按 Controller 分组列出即将导出的接口 ===
+        StringBuilder preview = new StringBuilder();
+        preview.append("<html><body style='width:480px;font-family:Menlo,Monaco,monospace;font-size:11px;'>")
+                .append("即将导出 <b>").append(selected.size())
+                .append("</b> 个接口到 Markdown 文档：<br/><br/>");
+        java.util.Map<String, java.util.List<ApiDefinition>> grouped = new java.util.LinkedHashMap<>();
+        for (ApiDefinition api : selected) {
+            grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
+        }
+        for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
+            preview.append("📁 <b>").append(escapeHtml(e.getKey())).append("</b> (")
+                    .append(e.getValue().size()).append(")<br/>");
+            for (ApiDefinition api : e.getValue()) {
+                String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
+                String url = api.getUrl() == null ? "" : api.getUrl();
+                preview.append("&nbsp;&nbsp;• <span style='color:#1f6feb;font-weight:bold;'>")
+                        .append(escapeHtml(method)).append("</span> ")
+                        .append(escapeHtml(url)).append("<br/>");
+            }
+        }
+        preview.append("</body></html>");
+        int ok = Messages.showDialog(project, preview.toString(),
+                "确认导出 - Markdown", new String[]{"导出", "取消"}, 0,
+                AllIcons.Actions.Help);
+        if (ok != 0) return;
+
+        // === 文件名精确到秒：acai-api-20260708-153022.md ===
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
+
+        FileSaverDescriptor fd = new FileSaverDescriptor("保存 Markdown 文档", "选择保存位置", "md");
+        com.intellij.openapi.vfs.VirtualFileWrapper wrapper =
+                com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                        .createSaveFileDialog(fd, project).save((VirtualFile) null, suggestName);
+        if (wrapper == null) return; // 用户取消
+        String outputPath = wrapper.getFile().getAbsolutePath();
+
+        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        List<RequestHistory> history = settings.loadRequestHistory();
+
+        try {
+            // === 严格按选择接口生成（不再传全量 apis） ===
+            ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), outputPath);
+            Messages.showInfoMessage(project,
+                    "已导出 " + selected.size() + " 个接口到:\n" + outputPath,
+                    "导出成功");
+        } catch (Exception ex) {
+            Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+        }
+    }
+
+    private static String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * 导出选中的接口（支持单选/多选）为 Postman / Apifox 可导入的 JSON Collection
+     */
+    private void exportSelectedApisAsPostmanJson() {
+        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Postman JSON（多选）\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Postman JSON（多选）\n• Shift 连选接口后再右键 → 导出 Postman JSON（多选）",
+                    "提示");
+            return;
+        }
+
+        // 二次确认
+        StringBuilder preview = new StringBuilder();
+        preview.append("<html><body style='width:480px;font-family:Menlo,Monaco,monospace;font-size:11px;'>")
+                .append("即将导出 <b>").append(selected.size())
+                .append("</b> 个接口到 Postman JSON：<br/><br/>");
+        java.util.Map<String, java.util.List<ApiDefinition>> grouped = new java.util.LinkedHashMap<>();
+        for (ApiDefinition api : selected) {
+            grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
+        }
+        for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
+            preview.append("📁 <b>").append(escapeHtml(e.getKey())).append("</b> (")
+                    .append(e.getValue().size()).append(")<br/>");
+            for (ApiDefinition api : e.getValue()) {
+                String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
+                String url = api.getUrl() == null ? "" : api.getUrl();
+                preview.append("&nbsp;&nbsp;• <span style='color:#1f6feb;font-weight:bold;'>")
+                        .append(escapeHtml(method)).append("</span> ")
+                        .append(escapeHtml(url)).append("<br/>");
+            }
+        }
+        preview.append("</body></html>");
+        int ok = Messages.showDialog(project, preview.toString(),
+                "确认导出 - Postman JSON", new String[]{"导出", "取消"}, 0,
+                AllIcons.Actions.Help);
+        if (ok != 0) return;
+
+        // 文件名精确到秒
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+        String suggestName = "acai-postman-" + sdf.format(new java.util.Date()) + ".json";
+
+        FileSaverDescriptor fd = new FileSaverDescriptor("保存 Postman JSON", "选择保存位置", "json");
+        com.intellij.openapi.vfs.VirtualFileWrapper wrapper =
+                com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                        .createSaveFileDialog(fd, project).save((VirtualFile) null, suggestName);
+        if (wrapper == null) return;
+        String outputPath = wrapper.getFile().getAbsolutePath();
+
+        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        String baseUrl = settings.getBaseUrl();
+        List<RequestHistory> history = settings.loadRequestHistory();
+
+        try {
+            PostmanCollectionExporter.exportToFile(selected, baseUrl, history, outputPath);
+            Messages.showInfoMessage(project,
+                    "已导出 " + selected.size() + " 个接口到:\n" + outputPath
+                            + "\n\n导入方式：Postman/Apifox → Import → File → 选择此 JSON",
+                    "导出成功");
+        } catch (Exception ex) {
+            Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+        }
     }
 
     /**

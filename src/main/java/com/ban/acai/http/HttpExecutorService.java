@@ -425,11 +425,91 @@ public class HttpExecutorService {
     }
 
     /**
-     * 构建HttpRequest对象
+     * 构建 multipart/form-data 请求体（用于文件上传场景）
+     *
+     * <p>遍历接口参数：
+     * <ul>
+     *   <li>文件参数（{@link ApiParameter#isFile()}）：从 paramValues 读取文件路径，读取文件字节作为二进制部分</li>
+     *   <li>普通表单参数（FORM / BODY）：作为文本字段</li>
+     * </ul>
+     * 路径参数和查询参数已拼接到 URL，不进入请求体。
+     *
+     * @return MultipartBody 包含字节数组、boundary 和可读摘要
      */
-    private HttpRequest buildHttpRequest(String method, String url, String body, String contentType,
-                                          ApiDefinition api, Map<String, String> extraHeaders,
-                                          Environment env) {
+    private MultipartBody buildMultipartBody(ApiDefinition api, Map<String, String> paramValues,
+                                             Environment env) {
+        String boundary = "----AcaiBoundary" + System.currentTimeMillis();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        List<String> summaryParts = new ArrayList<>();
+        String CRLF = "\r\n";
+
+        try {
+            for (ApiParameter param : api.getParameters()) {
+                ParameterLocation loc = param.getLocation();
+                if (loc == ParameterLocation.PATH || loc == ParameterLocation.QUERY) continue;
+
+                String name = param.getName();
+                String value = paramValues.getOrDefault(name, param.generateDefaultValue());
+                value = resolveEnvVars(value, env);
+
+                if (param.isFile()) {
+                    if (value == null || value.isBlank() || !Files.exists(Paths.get(value))) {
+                        summaryParts.add(name + "=[文件未提供: " + value + "]");
+                        continue;
+                    }
+                    Path filePath = Paths.get(value);
+                    byte[] fileBytes = Files.readAllBytes(filePath);
+                    String fileName = filePath.getFileName().toString();
+
+                    out.write(("--" + boundary + CRLF).getBytes(StandardCharsets.UTF_8));
+                    out.write(("Content-Disposition: form-data; name=\"" + name + "\"; filename=\""
+                            + fileName + "\"" + CRLF).getBytes(StandardCharsets.UTF_8));
+                    out.write(("Content-Type: application/octet-stream" + CRLF).getBytes(StandardCharsets.UTF_8));
+                    out.write(CRLF.getBytes(StandardCharsets.UTF_8));
+                    out.write(fileBytes);
+                    out.write(CRLF.getBytes(StandardCharsets.UTF_8));
+
+                    summaryParts.add(name + "=@" + fileName + " (" + fileBytes.length + " bytes)");
+                } else {
+                    out.write(("--" + boundary + CRLF).getBytes(StandardCharsets.UTF_8));
+                    out.write(("Content-Disposition: form-data; name=\"" + name + "\"" + CRLF).getBytes(StandardCharsets.UTF_8));
+                    out.write(CRLF.getBytes(StandardCharsets.UTF_8));
+                    out.write(value.getBytes(StandardCharsets.UTF_8));
+                    out.write(CRLF.getBytes(StandardCharsets.UTF_8));
+                    summaryParts.add(name + "=" + value);
+                }
+            }
+            // 结束边界
+            out.write(("--" + boundary + "--" + CRLF).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            log.warn("构建multipart请求体失败: " + e.getMessage());
+        }
+
+        MultipartBody result = new MultipartBody();
+        result.boundary = boundary;
+        result.bytes = out.toByteArray();
+        result.summary = String.join("; ", summaryParts);
+        return result;
+    }
+
+    /** multipart/form-data 请求体的载体（含二进制文件内容，必须用字节数组传输） */
+    private static class MultipartBody {
+        /** 请求体字节数组 */
+        byte[] bytes;
+        /** boundary 分隔符（需在 Content-Type 头中回传给服务端） */
+        String boundary;
+        /** 用于历史记录展示的可读摘要 */
+        String summary;
+    }
+
+    /**
+     * 构建HttpRequest对象
+     *
+     * @param multipartBytes multipart/form-data 请求体字节数组（非null时优先于 body 字符串使用，保证二进制安全）
+     */
+    private HttpRequest buildHttpRequest(String method, String url, String body, byte[] multipartBytes,
+                                          String contentType, ApiDefinition api,
+                                          Map<String, String> extraHeaders, Environment env) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(AcaiConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
@@ -444,10 +524,18 @@ public class HttpExecutorService {
         // 设置额外的请求头（优先级最高，支持环境变量替换）
         extraHeaders.forEach((k, v) -> builder.header(k, resolveEnvVars(v, env)));
 
-        // 根据HTTP方法设置请求方法和请求体
-        HttpRequest.BodyPublisher bodyPublisher = body != null
-                ? HttpRequest.BodyPublishers.ofString(body)
-                : HttpRequest.BodyPublishers.noBody();
+        // 根据请求体类型选择 BodyPublisher：
+        //   1. multipart 字节数组（文件上传场景，二进制安全，不能用 String 传输）
+        //   2. body 字符串（JSON / form-urlencoded / RAW）
+        //   3. 空请求体
+        HttpRequest.BodyPublisher bodyPublisher;
+        if (multipartBytes != null) {
+            bodyPublisher = HttpRequest.BodyPublishers.ofByteArray(multipartBytes);
+        } else if (body != null) {
+            bodyPublisher = HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8);
+        } else {
+            bodyPublisher = HttpRequest.BodyPublishers.noBody();
+        }
 
         switch (method.toUpperCase()) {
             case "GET" -> builder.GET();

@@ -32,6 +32,9 @@ public class AcaiToolWindowFactory implements ToolWindowFactory {
         // 持久化拖动比例，下次打开工具窗口自动恢复
         splitter.setSplitterProportionKey("AcaiToolWindow.splitter.proportion");
 
+        // 把 treePanel 注入到 debuggerPanel，使其能获取用户在树中的多选（用于 Markdown 导出）
+        debuggerPanel.setTreePanel(treePanel);
+
         JPanel mainPanel = new JPanel(new BorderLayout());
         mainPanel.add(splitter, BorderLayout.CENTER);
 

@@ -85,17 +85,22 @@ public class AiParameterService {
      */
     public List<Map<String, String>> generateParameters(ApiDefinition api, TestScenario scenario) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        log.info("[AI生成参数] 开始(简版) => API=" + api.getHttpMethod() + " " + api.getUrl()
+                + ", 场景=" + scenario + ", 参数个数=" + api.getParameters().size());
 
         // 检查AI服务是否配置
         if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("AI服务器未配置或未设置Token，使用默认值生成策略");
+            log.info("[AI生成参数] 跳过(简版)：AI服务器URL或Token未配置，使用默认值生成策略");
             return List.of(generateDefaultParameters(api));
         }
 
         try {
-            return callArkChatCompletions(api, scenario, settings);
+            List<Map<String, String>> result = callArkChatCompletions(api, scenario, settings);
+            log.info("[AI生成参数] 成功(简版) => API=" + api.getUrl() + ", 参数组数=" + result.size());
+            return result;
         } catch (Exception e) {
-            log.warn("AI服务调用失败: " + e.getMessage() + "，降级使用默认值");
+            log.warn("[AI生成参数] 失败(简版) => API=" + api.getUrl()
+                    + ", 异常=" + e.getClass().getSimpleName() + ": " + e.getMessage() + "，降级使用默认值");
             return List.of(generateDefaultParameters(api));
         }
     }
@@ -129,9 +134,12 @@ public class AiParameterService {
      */
     public GenerateResult generateParametersWithRaw(ApiDefinition api, TestScenario scenario) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        log.info("[AI生成参数] 开始 => API=" + api.getHttpMethod() + " " + api.getUrl()
+                + ", 控制器=" + api.getControllerName() + ", 场景=" + scenario
+                + ", 参数个数=" + api.getParameters().size());
 
         if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("AI服务器未配置或未设置Token，使用默认值生成策略");
+            log.info("[AI生成参数] 跳过：AI服务器URL或Token未配置，使用本地默认值生成策略");
             return new GenerateResult(
                     "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL和API Key以使用AI生成真实参数",
                     List.of(generateDefaultParameters(api)),
@@ -143,9 +151,17 @@ public class AiParameterService {
             String rawContent = callArkChatCompletionsRaw(api, scenario, settings);
             String cleanedContent = cleanMarkdownCodeBlock(rawContent);
             List<Map<String, String>> params = parseParameterJson(cleanedContent);
+            log.info("[AI生成参数] 成功 => API=" + api.getUrl()
+                    + ", 生成参数组数=" + params.size()
+                    + ", 原始响应长度=" + (rawContent != null ? rawContent.length() : 0));
+            for (int i = 0; i < params.size(); i++) {
+                log.info("[AI生成参数] 第" + (i + 1) + "组: " + params.get(i));
+            }
             return new GenerateResult(rawContent, params, true);
         } catch (Exception e) {
-            log.warn("AI服务调用失败: " + e.getMessage() + "，降级使用默认值");
+            log.warn("[AI生成参数] 失败 => API=" + api.getUrl()
+                    + ", 异常=" + e.getClass().getSimpleName() + ": " + e.getMessage()
+                    + "，降级使用默认值");
             return new GenerateResult(
                     "⚠ AI调用失败: " + e.getMessage() + "\n降级使用本地默认值生成",
                     List.of(generateDefaultParameters(api)),
@@ -164,28 +180,50 @@ public class AiParameterService {
         if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
 
+        String requestJson = gson.toJson(requestBody);
+        log.info("[AI-HTTP] 请求 => URL=" + fullUrl
+                + ", model=" + settings.getAiModel()
+                + ", 请求体长度=" + requestJson.length());
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                 .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
                 .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
+        long httpStart = System.currentTimeMillis();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        long httpDuration = System.currentTimeMillis() - httpStart;
+
+        log.info("[AI-HTTP] 响应 => 状态码=" + response.statusCode()
+                + ", 耗时=" + httpDuration + "ms"
+                + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
         if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
                 || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+            log.warn("[AI-HTTP] 失败 => 状态码=" + response.statusCode()
+                    + ", 响应体=" + truncate(response.body(), 2000));
             throw new RuntimeException("ARK API返回状态码: " + response.statusCode() + ", body: " + response.body());
         }
 
         // 提取content字段
         JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
         JsonArray choices = root.getAsJsonArray("choices");
-        if (choices == null || choices.isEmpty()) throw new RuntimeException("ARK响应中无choices字段");
+        if (choices == null || choices.isEmpty()) {
+            log.warn("[AI-HTTP] 响应解析失败：无choices字段, 响应体=" + truncate(response.body(), 2000));
+            throw new RuntimeException("ARK响应中无choices字段");
+        }
         JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
-        if (message == null) throw new RuntimeException("ARK响应中无message字段");
-        return message.get("content").getAsString();
+        if (message == null) {
+            log.warn("[AI-HTTP] 响应解析失败：无message字段, 响应体=" + truncate(response.body(), 2000));
+            throw new RuntimeException("ARK响应中无message字段");
+        }
+        String content = message.get("content").getAsString();
+        log.info("[AI-HTTP] 解析成功 => content长度=" + content.length()
+                + ", content预览=" + truncate(content, 500));
+        return content;
     }
 
     // ================================================================
@@ -207,23 +245,38 @@ public class AiParameterService {
         }
         String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
 
+        String requestJson = gson.toJson(requestBody);
+        log.info("[AI-HTTP] 请求(callArkChatCompletions) => URL=" + fullUrl
+                + ", model=" + settings.getAiModel()
+                + ", 请求体长度=" + requestJson.length());
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                 .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
                 .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
+        long httpStart = System.currentTimeMillis();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        long httpDuration = System.currentTimeMillis() - httpStart;
+
+        log.info("[AI-HTTP] 响(callArkChatCompletions) => 状态码=" + response.statusCode()
+                + ", 耗时=" + httpDuration + "ms"
+                + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
         if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
                 || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+            log.warn("[AI-HTTP] 失败(callArkChatCompletions) => 状态码=" + response.statusCode()
+                    + ", 响应体=" + truncate(response.body(), 2000));
             throw new RuntimeException("ARK API返回状态码: " + response.statusCode() + ", body: " + response.body());
         }
 
         // 解析 Chat Completions 响应
-        return parseChatCompletionResponse(response.body());
+        List<Map<String, String>> result = parseChatCompletionResponse(response.body());
+        log.info("[AI-HTTP] 解析成功(callArkChatCompletions) => 参数组数=" + result.size());
+        return result;
     }
 
     /**
@@ -620,9 +673,11 @@ public class AiParameterService {
      */
     public List<ResponseAssertion> generateAssertions(ApiDefinition api) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        log.info("[AI生成断言] 开始 => API=" + api.getHttpMethod() + " " + api.getUrl()
+                + ", 返回类型=" + api.getResponseBodyType());
 
         if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("AI未配置，生成默认断言");
+            log.info("[AI生成断言] 跳过：AI服务器URL或Token未配置，生成默认断言");
             return generateDefaultAssertions(api);
         }
 
@@ -632,18 +687,30 @@ public class AiParameterService {
             if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
             String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
 
+            String requestJson = gson.toJson(requestBody);
+            log.info("[AI生成断言] HTTP请求 => URL=" + fullUrl
+                    + ", model=" + settings.getAiModel()
+                    + ", 请求体长度=" + requestJson.length());
+
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(fullUrl))
                     .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                     .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
                     .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
-                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                    .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                     .build();
 
+            long httpStart = System.currentTimeMillis();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            long httpDuration = System.currentTimeMillis() - httpStart;
+            log.info("[AI生成断言] HTTP响应 => 状态码=" + response.statusCode()
+                    + ", 耗时=" + httpDuration + "ms"
+                    + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
             if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
                     || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+                log.warn("[AI生成断言] HTTP失败 => 状态码=" + response.statusCode()
+                        + ", 响应体=" + truncate(response.body(), 2000));
                 throw new RuntimeException("AI API返回: " + response.statusCode());
             }
 
@@ -656,11 +723,16 @@ public class AiParameterService {
             if (content.startsWith("```")) content = content.substring(3);
             if (content.endsWith("```")) content = content.substring(0, content.length() - 3);
             content = content.trim();
+            log.info("[AI生成断言] 解析content => 长度=" + content.length()
+                    + ", 预览=" + truncate(content, 500));
 
             // Parse assertion array
-            return parseAssertionsFromJson(content);
+            List<ResponseAssertion> assertions = parseAssertionsFromJson(content);
+            log.info("[AI生成断言] 成功 => 生成断言数=" + assertions.size());
+            return assertions;
         } catch (Exception e) {
-            log.warn("AI断言生成失败: " + e.getMessage() + "，使用默认断言");
+            log.warn("[AI生成断言] 失败 => API=" + api.getUrl()
+                    + ", 异常=" + e.getClass().getSimpleName() + ": " + e.getMessage() + "，使用默认断言");
             return generateDefaultAssertions(api);
         }
     }
@@ -732,6 +804,14 @@ public class AiParameterService {
         defaults.add(timeAssert);
 
         return defaults;
+    }
+
+    /**
+     * 截断字符串用于日志输出，避免超长响应体刷爆日志
+     */
+    private String truncate(String s, int maxLen) {
+        if (s == null) return "null";
+        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...(truncated, total=" + s.length() + ")";
     }
 
     /**

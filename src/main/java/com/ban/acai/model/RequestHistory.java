@@ -13,6 +13,8 @@ public class RequestHistory {
     private long timestamp = System.currentTimeMillis();
     private String method = "";
     private String url = "";
+    /** 接口稳定键（ApiDefinition.uniqueKey()）— 用于在历史中精确找回该接口的测试记录 */
+    private String apiKey = "";
     private Map<String, String> headers = Collections.emptyMap();
     private String requestBody = "";
     private int statusCode = 0;
@@ -24,9 +26,15 @@ public class RequestHistory {
 
     public RequestHistory(String method, String url, Map<String, String> headers, String requestBody,
                            int statusCode, String responseBody, long durationMs, String apiName) {
+        this(method, url, "", headers, requestBody, statusCode, responseBody, durationMs, apiName);
+    }
+
+    public RequestHistory(String method, String url, String apiKey, Map<String, String> headers, String requestBody,
+                           int statusCode, String responseBody, long durationMs, String apiName) {
         this.id = String.valueOf(System.currentTimeMillis());
         this.method = method != null ? method : "";
         this.url = url != null ? url : "";
+        this.apiKey = apiKey != null ? apiKey : "";
         this.headers = headers != null ? headers : Collections.emptyMap();
         this.requestBody = requestBody != null ? requestBody : "";
         this.statusCode = statusCode;
@@ -50,6 +58,8 @@ public class RequestHistory {
     public void setMethod(String method) { this.method = method; }
     public String getUrl() { return url; }
     public void setUrl(String url) { this.url = url; }
+    public String getApiKey() { return apiKey; }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
     public Map<String, String> getHeaders() { return headers; }
     public void setHeaders(Map<String, String> headers) { this.headers = headers; }
     public String getRequestBody() { return requestBody; }
