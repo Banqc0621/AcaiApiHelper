@@ -174,11 +174,17 @@ public class ApiDebuggerPanel extends JPanel {
 
     /**
      * 创建顶部工具栏 - 扫描、刷新、环境切换等快捷操作
+     * <p>拆为上下两排，避免单行过长：</p>
+     * <ul>
+     *   <li>第 1 行：扫描API + 环境（下拉+管理）</li>
+     *   <li>第 2 行：保存配置 / 导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie</li>
+     * </ul>
      */
-    private JToolBar createToolbar() {
-        JToolBar toolbar = new JToolBar();
-        toolbar.setFloatable(false);
-        toolbar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+    private JPanel createToolbar() {
+        // ============== 第 1 行：扫描 + 环境 ==============
+        JToolBar toolbar1 = new JToolBar();
+        toolbar1.setFloatable(false);
+        toolbar1.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
 
         JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
         scanBtn.setToolTipText("重新扫描项目中的所有API接口");
@@ -187,7 +193,7 @@ public class ApiDebuggerPanel extends JPanel {
             statusLabel.setText("● 正在扫描API...");
         });
 
-        // v3: 环境选择下拉框
+        // 环境选择下拉框
         envCombo = new JComboBox<>();
         refreshEnvCombo();
         envCombo.setPreferredSize(new Dimension(150, 28));
@@ -212,6 +218,17 @@ public class ApiDebuggerPanel extends JPanel {
                 statusLabel.setText("● 环境配置已更新");
             }
         });
+
+        toolbar1.add(scanBtn);
+        toolbar1.addSeparator(new Dimension(8, 0));
+        toolbar1.add(new JBLabel("环境: "));
+        toolbar1.add(envCombo);
+        toolbar1.add(envBtn);
+
+        // ============== 第 2 行：保存 / 导入 / 导出 ==============
+        JToolBar toolbar2 = new JToolBar();
+        toolbar2.setFloatable(false);
+        toolbar2.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
 
         JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
         saveBtn.setToolTipText("保存当前测试配置");
@@ -241,22 +258,24 @@ public class ApiDebuggerPanel extends JPanel {
             statusLabel.setText("● Cookie已清空");
         });
 
-        toolbar.add(scanBtn);
-        toolbar.addSeparator(new Dimension(8, 0));
-        toolbar.add(new JBLabel("环境: "));
-        toolbar.add(envCombo);
-        toolbar.add(envBtn);
-        toolbar.addSeparator(new Dimension(8, 0));
-        toolbar.add(Box.createHorizontalGlue());
-        toolbar.add(saveBtn);
-        toolbar.add(importBtn);
-        toolbar.add(exportBtn);
-        toolbar.add(exportDocBtn);
-        toolbar.add(exportReportBtn);
-        toolbar.addSeparator(new Dimension(4, 0));
-        toolbar.add(clearCookieBtn);
+        toolbar2.add(Box.createHorizontalGlue());
+        toolbar2.add(saveBtn);
+        toolbar2.add(importBtn);
+        toolbar2.add(exportBtn);
+        toolbar2.add(exportDocBtn);
+        toolbar2.add(exportReportBtn);
+        toolbar2.addSeparator(new Dimension(4, 0));
+        toolbar2.add(clearCookieBtn);
 
-        return toolbar;
+        // ============== 外层：垂直 BoxLayout 包裹两行 ==============
+        JPanel wrapper = new JPanel();
+        wrapper.setLayout(new BoxLayout(wrapper, BoxLayout.Y_AXIS));
+        toolbar1.setAlignmentX(Component.LEFT_ALIGNMENT);
+        toolbar2.setAlignmentX(Component.LEFT_ALIGNMENT);
+        wrapper.add(toolbar1);
+        wrapper.add(toolbar2);
+
+        return wrapper;
     }
 
     /** 刷新环境下拉框 */
@@ -404,26 +423,11 @@ public class ApiDebuggerPanel extends JPanel {
         bottomBar.add(clearBtn);
         bottomBar.add(Box.createHorizontalStrut(12));
         
-        // 筛选按钮组
+        // 筛选按钮
         JButton filterAllBtn = iconButton("全部", null, e -> filterParamsByLocation(null));
         filterAllBtn.setToolTipText("显示所有参数");
         filterAllBtn.putClientProperty("JButton.buttonType", "default");
         bottomBar.add(filterAllBtn);
-        
-        JButton filterPathBtn = iconButton("PATH", null, e -> filterParamsByLocation("PATH"));
-        filterPathBtn.setToolTipText("只显示路径参数");
-        filterPathBtn.setForeground(AcaiConstants.COLOR_PUT);
-        bottomBar.add(filterPathBtn);
-        
-        JButton filterQueryBtn = iconButton("QUERY", null, e -> filterParamsByLocation("QUERY"));
-        filterQueryBtn.setToolTipText("只显示查询参数");
-        filterQueryBtn.setForeground(AcaiConstants.COLOR_GET);
-        bottomBar.add(filterQueryBtn);
-        
-        JButton filterBodyBtn = iconButton("BODY", null, e -> filterParamsByLocation("BODY"));
-        filterBodyBtn.setToolTipText("只显示请求体");
-        filterBodyBtn.setForeground(AcaiConstants.COLOR_POST);
-        bottomBar.add(filterBodyBtn);
 
         panel.add(bottomBar, BorderLayout.SOUTH);
 
@@ -823,8 +827,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         // === 使用提示（替代此前的 AI 日志面板） ===
         JBLabel hint = new JBLabel("<html><div style='color:gray;font-size:11px;'>"
-                + "💡 提示：AI 调用的请求/响应日志已写入 <b>idea.log</b>，关键字 <code>[AI生成参数]</code> / <code>[AI-HTTP]</code> / <code>[AI生成断言]</code>。<br/>"
-                + "生成完成后参数会自动填入『参数』Tab，状态栏会显示『● 生成完成 (AI, N 个参数)』。"
+                + "💡 生成完成后参数会自动填入『参数』Tab，状态栏会显示『生成完成 (AI, N 个参数)』。"
                 + "</div></html>");
         hint.setAlignmentX(Component.LEFT_ALIGNMENT);
         hint.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
