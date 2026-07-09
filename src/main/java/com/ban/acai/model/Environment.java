@@ -131,7 +131,7 @@ public class Environment {
 
     @Override
     public String toString() {
-        return active ? "✓ " + name : name;
+        return name;
     }
 
     @Override

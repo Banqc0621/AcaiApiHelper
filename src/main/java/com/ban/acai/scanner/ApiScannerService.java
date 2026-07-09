@@ -1693,6 +1693,43 @@ public class ApiScannerService {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * 导入接口定义到缓存，按 uniqueKey 去重：
+     * 本地已存在该接口（相同 method|url）则保留本地不覆盖，否则新增导入接口。
+     *
+     * @param importApis 待导入的接口定义列表
+     * @return int[2]：[新增数量, 跳过(已存在)数量]
+     */
+    public int[] importApis(List<ApiDefinition> importApis) {
+        if (importApis == null || importApis.isEmpty()) return new int[]{0, 0};
+        Set<String> localKeys = new HashSet<>();
+        for (ApiDefinition a : cachedApis) localKeys.add(a.uniqueKey());
+
+        List<ApiDefinition> newApis = new ArrayList<>(cachedApis);
+        int added = 0;
+        int skipped = 0;
+        for (ApiDefinition imp : importApis) {
+            if (imp == null || imp.getHttpMethod() == null || imp.getUrl() == null) continue;
+            String key = imp.uniqueKey();
+            if (localKeys.contains(key)) {
+                skipped++;
+            } else {
+                // 标记为手动来源，避免被自动扫描去重逻辑误删
+                imp.setSource(AcaiConstants.API_SOURCE_MANUAL);
+                newApis.add(imp);
+                localKeys.add(key);
+                added++;
+            }
+        }
+        if (added > 0) {
+            cachedApis = newApis;
+            for (ScanListener listener : listeners) {
+                listener.onScanComplete(cachedApis);
+            }
+        }
+        return new int[]{added, skipped};
+    }
+
     /** 获取手动添加的API列表 */
     public List<ApiDefinition> getManualApis() {
         return cachedApis.stream()

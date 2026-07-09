@@ -10,6 +10,7 @@ import com.ban.acai.util.ApiDocExporter;
 import com.ban.acai.util.CurlUtil;
 import com.ban.acai.util.ReportExporter;
 import com.ban.acai.util.SimpleDiff;
+import com.ban.acai.util.TestDataExporter;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParser;
@@ -17,11 +18,18 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
+import com.intellij.openapi.fileChooser.FileChooserFactory;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressManager;
+import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
+import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.vfs.VirtualFileWrapper;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.*;
 import com.intellij.ui.table.JBTable;
@@ -179,12 +187,12 @@ public class ApiDebuggerPanel extends JPanel {
      * 创建顶部工具栏 - 扫描、刷新、环境切换等快捷操作
      * <p>拆为上下两排，避免单行过长：</p>
      * <ul>
-     *   <li>第 1 行：扫描API + 环境（下拉+管理）</li>
-     *   <li>第 2 行：保存配置 / 导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie</li>
+     *   <li>第 1 行：扫描API + 环境（下拉+管理）+ 数据管理</li>
+     *   <li>第 2 行：导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie</li>
      * </ul>
      */
     private JPanel createToolbar() {
-        // ============== 第 1 行：扫描API + 环境 + 环境管理 + 保存配置 ==============
+        // ============== 第 1 行：扫描API + 环境 + 环境管理 + 数据管理 ==============
         JToolBar toolbar1 = new JToolBar();
         toolbar1.setFloatable(false);
         toolbar1.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
@@ -203,6 +211,27 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 环境选择下拉框
         envCombo = new JComboBox<>();
+        // 自定义渲染器：当前选中项（即激活环境）前显示 ✓，其余不显示。
+        // 不再依赖 Environment.active 字段（该字段为冗余状态，切换时未同步刷新会导致 ✓ 停留错误）。
+        envCombo.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                          boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof Environment) {
+                    Environment env = (Environment) value;
+                    // index == -1 表示当前下拉框选中项（编辑框显示）；列表项则仅高亮选中行
+                    boolean isComboSelection = (index == -1);
+                    boolean isListSelected = isSelected && index >= 0;
+                    if (isComboSelection || isListSelected) {
+                        setText("✓ " + env.getName());
+                    } else {
+                        setText(env.getName());
+                    }
+                }
+                return this;
+            }
+        });
         refreshEnvCombo();
         envCombo.setPreferredSize(new Dimension(140, 26));
         envCombo.setToolTipText("切换环境配置");
@@ -241,11 +270,11 @@ public class ApiDebuggerPanel extends JPanel {
 
         toolbar1.addSeparator(new Dimension(12, 0));
 
-        JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
-        saveBtn.setToolTipText("保存当前测试配置");
-        saveBtn.putClientProperty("JButton.buttonType", "roundRect");
-        saveBtn.addActionListener(e -> saveCurrentProfile());
-        toolbar1.add(saveBtn);
+        JButton dataMgrBtn = new JButton("数据管理", AllIcons.Actions.MenuSaveall);
+        dataMgrBtn.setToolTipText("保存 / 导入 / 导出 测试配置与全量测试数据");
+        dataMgrBtn.putClientProperty("JButton.buttonType", "roundRect");
+        dataMgrBtn.addActionListener(e -> showDataManagerDialog());
+        toolbar1.add(dataMgrBtn);
 
         // ============== 第 2 行：导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
         JToolBar toolbar2 = new JToolBar();
@@ -2655,17 +2684,6 @@ public class ApiDebuggerPanel extends JPanel {
         return (Environment) envCombo.getSelectedItem();
     }
 
-    private void saveCurrentProfile() {
-        String name = Messages.showInputDialog(project, "请输入配置名称:", "保存测试配置", Messages.getQuestionIcon());
-        if (name == null || name.isBlank()) return;
-        TestProfile profile = new TestProfile();
-        profile.setName(name);
-        profile.setBaseUrl(baseUrlField.getText().trim());
-        profile.setGlobalHeaders(collectHeaderValues());
-        AcaiSettingsState.getInstance(project).saveTestProfile(name, profile);
-        Messages.showInfoMessage(project, "配置 '" + name + "' 已保存", "保存成功");
-    }
-
     private void importCurlOrJson() {
         String input = Messages.showInputDialog(project,
                 "粘贴cURL命令或JSON:", "导入", Messages.getQuestionIcon());
@@ -2856,6 +2874,359 @@ public class ApiDebuggerPanel extends JPanel {
             }
         } catch (IOException e) {
             Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
+        }
+    }
+
+    // ================================================================
+    // 数据管理对话框：集中存放 保存/导入/导出 测试配置与全量测试数据
+    // ================================================================
+
+    /** 弹出「数据管理」对话框，集中管理测试配置与测试数据的保存/导入/导出 */
+    private void showDataManagerDialog() {
+        DataManagerDialog dialog = new DataManagerDialog();
+        dialog.show();
+    }
+
+    /**
+     * 数据管理对话框 - 把分散的「保存配置 / 导出测试配置 / 导入测试配置 /
+     * 导出测试数据 / 导入测试数据」集中到一个弹窗，避免工具栏按钮过多。
+     */
+    private class DataManagerDialog extends DialogWrapper {
+
+        DataManagerDialog() {
+            super(project);
+            setTitle("数据管理");
+            setOKButtonText("关闭");
+            init();
+        }
+
+        @Override
+        protected Action @NotNull [] createActions() {
+            // 只保留「关闭」按钮，操作均通过列表中的卡片触发
+            return new Action[]{getOKAction()};
+        }
+
+        @Override
+        protected javax.swing.JComponent createCenterPanel() {
+            JPanel panel = new JPanel(new BorderLayout(0, 10));
+            panel.setPreferredSize(new Dimension(540, 320));
+            panel.setBorder(JBUI.Borders.empty(4, 2, 2, 2));
+
+            // 顶部说明
+            JBLabel hint = new JBLabel("选择需要执行的操作，点击卡片即可触发");
+            hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 12f));
+            hint.setForeground(JBColor.GRAY);
+            hint.setBorder(JBUI.Borders.empty(0, 2, 0, 0));
+            panel.add(hint, BorderLayout.NORTH);
+
+            // 卡片列表容器
+            JPanel list = new JPanel();
+            list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+            list.setBorder(JBUI.Borders.empty(2, 2));
+
+            // —— 配置类 ——
+            list.add(sectionHeader("配置", "AI 设置 · 环境配置 · 测试配置"));
+            list.add(actionCard(AllIcons.ToolbarDecorator.Export, "导出配置",
+                    "将当前 AI 设置、环境配置、测试配置导出为 JSON",
+                    e -> exportTestConfigAction()));
+            list.add(actionCard(AllIcons.ToolbarDecorator.Import, "导入配置",
+                    "导入他人配置；AI 设置覆盖当前，环境/同名配置保留本地",
+                    e -> importTestConfigAction()));
+            list.add(Box.createVerticalStrut(8));
+
+            // —— 接口数据类 ——
+            list.add(sectionHeader("接口数据", "全量接口定义 · 已测接口测试数据"));
+            list.add(actionCard(AllIcons.Actions.Download, "导出接口数据",
+                    "导出全量接口定义与已测接口的测试数据",
+                    e -> exportTestDataAction()));
+            list.add(actionCard(AllIcons.ToolbarDecorator.Import, "导入接口数据",
+                    "按接口粒度合并；本地已测接口保留不覆盖，未测接口补入",
+                    e -> importTestDataAction()));
+
+            list.add(Box.createVerticalGlue());
+
+            JBScrollPane scroll = new JBScrollPane(list);
+            scroll.setBorder(JBUI.Borders.empty());
+            scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+            panel.add(scroll, BorderLayout.CENTER);
+
+            return panel;
+        }
+
+        /** 分区标题：左侧标签 + 右侧细线分隔，营造分组层次感 */
+        private JComponent sectionHeader(String title, String subtitle) {
+            JPanel header = new JPanel(new BorderLayout(8, 0));
+            header.setOpaque(false);
+            header.setBorder(JBUI.Borders.empty(8, 6, 4, 6));
+
+            JPanel left = new JPanel(new BorderLayout(0, 0));
+            left.setOpaque(false);
+            JBLabel titleLabel = new JBLabel(title);
+            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 13f));
+            titleLabel.setForeground(JBColor.foreground());
+            left.add(titleLabel, BorderLayout.CENTER);
+            header.add(left, BorderLayout.WEST);
+
+            JBLabel subLabel = new JBLabel(subtitle);
+            subLabel.setFont(subLabel.getFont().deriveFont(Font.PLAIN, 11f));
+            subLabel.setForeground(JBColor.GRAY);
+            header.add(subLabel, BorderLayout.EAST);
+
+            return header;
+        }
+
+        /**
+         * 构造一张可点击的操作卡片：图标 + 标题/描述，整行可点击。
+         * <p>hover 时浅色高亮、鼠标变手型，点击触发操作且不关闭对话框，便于连续操作。
+         * 相比「执行」按钮，整行卡片视觉更简洁、操作区更大、更符合成熟产品交互。</p>
+         */
+        private JComponent actionCard(Icon icon, String title, String desc, java.awt.event.ActionListener listener) {
+            JPanel card = new JPanel(new BorderLayout(10, 0));
+            card.setOpaque(false);
+            card.setBorder(JBUI.Borders.empty(8, 10));
+            card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+            // 图标
+            JBLabel iconLabel = new JBLabel(icon);
+            iconLabel.setVerticalAlignment(SwingConstants.CENTER);
+            card.add(iconLabel, BorderLayout.WEST);
+
+            // 标题 + 描述
+            JPanel text = new JPanel(new BorderLayout(0, 3));
+            text.setOpaque(false);
+            JBLabel titleLabel = new JBLabel(title);
+            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.PLAIN, 13f));
+            JBLabel descLabel = new JBLabel(desc);
+            descLabel.setFont(descLabel.getFont().deriveFont(Font.PLAIN, 11f));
+            descLabel.setForeground(JBColor.GRAY);
+            text.add(titleLabel, BorderLayout.CENTER);
+            text.add(descLabel, BorderLayout.SOUTH);
+            card.add(text, BorderLayout.CENTER);
+
+            // 右侧箭头指示可点击
+            JBLabel arrow = new JBLabel(AllIcons.Icons.Ide.NextStep);
+            arrow.setVerticalAlignment(SwingConstants.CENTER);
+            arrow.setForeground(JBColor.GRAY);
+            card.add(arrow, BorderLayout.EAST);
+
+            // hover 高亮 + 点击触发
+            card.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseEntered(java.awt.event.MouseEvent e) {
+                    card.setOpaque(true);
+                    card.setBackground(JBColor.PanelBackground.brighter());
+                }
+
+                @Override
+                public void mouseExited(java.awt.event.MouseEvent e) {
+                    card.setOpaque(false);
+                }
+
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    listener.actionPerformed(new java.awt.event.ActionEvent(card, 0, "click"));
+                }
+            });
+
+            return card;
+        }
+    }
+
+    // ================================================================
+    // 测试配置 / 测试数据 导入导出
+    // ================================================================
+
+    /** 构建 AI 配置实时摘要文本，用于导出前核对当前生效配置（与 AI 配置对话框显示口径一致）。
+     *  列出全部 AI 字段，便于导出前一眼发现“不是实时配置”的问题。 */
+    private static String buildAiConfigSummary(AcaiSettingsState settings) {
+        String url = nullToEmpty(settings.getAiServerUrl());
+        String path = settings.getAiApiPath();
+        String model = nullToEmpty(settings.getAiModel());
+        boolean enabled = settings.isAiEnabled();
+        String key = settings.getAiToken();
+        String keyMasked = (key == null || key.isBlank())
+                ? "(空)" : ("****" + key.substring(Math.max(0, key.length() - 4)));
+        return "  服务器: " + url + "\n"
+                + "  API 路径: " + (path == null || path.isBlank() ? "(空)" : path) + "\n"
+                + "  主模型: " + model + "\n"
+                + "  API Key: " + keyMasked + "\n"
+                + "  启用AI: " + (enabled ? "是" : "否") + "\n"
+                + "  系统提示词: " + previewText(settings.getAiSystemPrompt(), 40) + "\n"
+                + "  用户提示词: " + previewText(settings.getAiUserPromptTemplate(), 40);
+    }
+
+    private static String nullToEmpty(String s) { return s == null ? "" : s; }
+
+    /** 截取文本前 maxLen 字符（空白折叠为单空格），超出加省略号；空文本返回 (空) */
+    private static String previewText(String s, int maxLen) {
+        if (s == null) return "(空)";
+        String oneLine = s.replaceAll("\\s+", " ").trim();
+        if (oneLine.isEmpty()) return "(空)";
+        if (oneLine.length() <= maxLen) return oneLine;
+        return oneLine.substring(0, maxLen) + "...";
+    }
+
+    /** 导出配置信息（AI 设置 + 环境配置 + 测试 Profile）为 JSON 文件。
+     *  <p>数据收集与文件写入在后台线程执行，避免接口/历史数据量大时阻塞 EDT
+     *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
+    private void exportTestConfigAction() {
+        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        int profileCount = settings.getSavedProfileNames().size();
+        int envCount = settings.loadEnvironments().size();
+        int ok = Messages.showDialog(project,
+                "即将导出【当前实时】配置信息：\n\n"
+                        + "—— 当前 AI 配置（导出前请核对）——\n"
+                        + buildAiConfigSummary(settings)
+                        + "\n—— 环境配置 × " + envCount + " 个 ——\n"
+                        + "—— 已保存测试配置 × " + profileCount + " 个 ——\n\n"
+                        + "若上述配置非最新，请先在「AI 配置」对话框中点确定保存后再导出。",
+                "导出配置", new String[]{"确定", "取消"}, 0, AllIcons.ToolbarDecorator.Export);
+        if (ok != Messages.OK) return;
+
+        // 文件保存对话框必须在 EDT 调用；先选好保存位置，再后台写入
+        String suggestName = TestDataExporter.suggestFileName("acai-config", "json");
+        FileSaverDescriptor fd = new FileSaverDescriptor("保存配置信息", "选择保存位置", "json");
+        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
+                .save((VirtualFile) null, suggestName);
+        if (wrapper == null) return;
+        String outputPath = wrapper.getFile().getAbsolutePath();
+        statusLabel.setText("● 正在导出配置...");
+
+        // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
+        ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出配置", false) {
+            @Override
+            public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
+                indicator.setIndeterminate(true);
+                indicator.setText("正在序列化并写入配置文件...");
+                try {
+                    TestDataExporter.exportTestConfig(settings, project.getName(), outputPath);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        Messages.showInfoMessage(project,
+                                "配置信息已导出到:\n" + outputPath, "导出成功");
+                        statusLabel.setText("● 配置已导出: " + outputPath);
+                    });
+                } catch (IOException e) {
+                    ApplicationManager.getApplication().invokeLater(() ->
+                            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                }
+            }
+        });
+    }
+
+    /** 导入他人导出的配置信息 JSON（AI 设置覆盖；环境/Profile 合并） */
+    private void importTestConfigAction() {
+        FileChooserDescriptor fd = new FileChooserDescriptor(true, false, false, false, false, false);
+        fd.setTitle("选择配置信息文件");
+        fd.setDescription("选择他人导出的 acai-config JSON 文件");
+        fd.withFileFilter(virtualFile -> virtualFile.getName().toLowerCase().endsWith(".json"));
+        VirtualFile selected = FileChooser.chooseFile(fd, project, null);
+        if (selected == null) return;
+        String inputPath = selected.getPath();
+
+        int ok = Messages.showDialog(project,
+                "将导入配置信息：\n" + inputPath + "\n\n"
+                        + "合并规则：\n"
+                        + "• AI 设置：覆盖当前设置\n"
+                        + "• 环境配置：本地已存在同名的保留本地，否则新增\n"
+                        + "• 测试配置：本地已存在同名的保留本地，否则新增",
+                "导入配置", new String[]{"确定", "取消"}, 0, AllIcons.ToolbarDecorator.Import);
+        if (ok != Messages.OK) return;
+
+        try {
+            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            String result = TestDataExporter.importTestConfig(settings, inputPath);
+            Messages.showInfoMessage(project, result, "导入成功");
+            statusLabel.setText("● 配置已导入");
+        } catch (IOException e) {
+            Messages.showErrorDialog(project, "导入失败: " + e.getMessage(), "错误");
+        }
+    }
+
+    /** 导出接口数据（全量接口定义 + 已测接口的测试数据）为 JSON 文件。
+     *  <p>序列化与写盘在后台线程执行，避免接口数据量大时阻塞 EDT
+     *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
+    private void exportTestDataAction() {
+        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        ApiScannerService scanner = ApiScannerService.getInstance(project);
+        List<ApiDefinition> allApis = scanner.getCachedApis();
+        int historyCount = settings.loadRequestHistory().size();
+        int profileCount = settings.getSavedProfileNames().size();
+        int ok = Messages.showDialog(project,
+                "即将导出接口数据：\n"
+                        + "  • 全量接口定义 × " + allApis.size() + " 个\n"
+                        + "  • 已测接口测试数据 × " + historyCount + " 条\n"
+                        + "  • 测试配置 × " + profileCount + " 个\n"
+                        + "  • 调用统计 / 收藏\n\n"
+                        + "导出后，使用同插件用户，可通过「导入接口数据」复用你的接口与测试记录。",
+                "导出接口数据", new String[]{"确定", "取消"}, 0, AllIcons.Actions.Download);
+        if (ok != Messages.OK) return;
+
+        // 文件保存对话框必须在 EDT 调用；先选好保存位置，再后台写入
+        String suggestName = TestDataExporter.suggestFileName("acai-api-data", "json");
+        FileSaverDescriptor fd = new FileSaverDescriptor("保存接口数据", "选择保存位置", "json");
+        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
+                .save((VirtualFile) null, suggestName);
+        if (wrapper == null) return;
+        String outputPath = wrapper.getFile().getAbsolutePath();
+        statusLabel.setText("● 正在导出接口数据（" + allApis.size() + " 个接口）...");
+
+        // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
+        ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出接口数据", false) {
+            @Override
+            public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
+                indicator.setIndeterminate(true);
+                indicator.setText("正在序列化 " + allApis.size() + " 个接口与测试数据...");
+                try {
+                    TestDataExporter.exportTestData(settings, allApis, project.getName(), outputPath);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        Messages.showInfoMessage(project,
+                                "接口数据已导出到:\n" + outputPath, "导出成功");
+                        statusLabel.setText("● 接口数据已导出: " + outputPath);
+                    });
+                } catch (IOException e) {
+                    ApplicationManager.getApplication().invokeLater(() ->
+                            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                }
+            }
+        });
+    }
+
+    /** 导入他人导出的接口数据，按接口粒度合并（已有测试数据的接口不覆盖） */
+    private void importTestDataAction() {
+        FileChooserDescriptor fd = new FileChooserDescriptor(true, false, false, false, false, false);
+        fd.setTitle("选择接口数据文件");
+        fd.setDescription("选择他人导出的 acai-api-data JSON 文件");
+        fd.withFileFilter(virtualFile -> virtualFile.getName().toLowerCase().endsWith(".json"));
+        VirtualFile selected = FileChooser.chooseFile(fd, project, null);
+        if (selected == null) return;
+        String inputPath = selected.getPath();
+
+        int ok = Messages.showDialog(project,
+                "将导入接口数据：\n" + inputPath + "\n\n"
+                        + "合并规则：\n"
+                        + "• 接口定义：本地已存在的接口保留，没有的新增\n"
+                        + "• 测试数据：已测过的接口保留本地不覆盖，未测过的接口导入其测试记录\n"
+                        + "• 测试配置：本地已存在同名的保留本地，否则新增\n"
+                        + "• 调用统计 / 收藏：仅补入本地没有的部分",
+                "导入接口数据", new String[]{"确定", "取消"}, 0, AllIcons.ToolbarDecorator.Import);
+        if (ok != Messages.OK) return;
+
+        try {
+            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            ApiScannerService scanner = ApiScannerService.getInstance(project);
+            String result = TestDataExporter.importTestData(settings, scanner, inputPath);
+            // 刷新历史列表 UI
+            requestHistory = settings.loadRequestHistory();
+            if (historyListModel != null) {
+                historyListModel.clear();
+                for (RequestHistory rh : requestHistory) {
+                    historyListModel.addElement(rh);
+                }
+            }
+            Messages.showInfoMessage(project, result, "导入成功");
+            statusLabel.setText("● 接口数据已导入并合并");
+        } catch (IOException e) {
+            Messages.showErrorDialog(project, "导入失败: " + e.getMessage(), "错误");
         }
     }
 
