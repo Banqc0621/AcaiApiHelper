@@ -1645,6 +1645,45 @@ public class ApiDebuggerPanel extends JPanel {
     // ================================================================
 
     /**
+     * 可滚动的 GridBagLayout 面板。
+     * <p>实现 {@link javax.swing.Scrollable}，令 {@link javax.swing.JScrollPane}
+     * 把视口宽度强制设为本面板宽度（{@link #getScrollableTracksViewportWidth()} 返回 true），
+     * 这样 GridBagLayout 的 weightx=1 / fill=HORIZONTAL 才能随容器宽度真正拉伸/收缩，
+     * 而不是固定在首选宽度、出现水平滚动条或右侧留白。</p>
+     * <p>高度方向不跟踪视口（返回 false），内容超出时仍可垂直滚动。</p>
+     */
+    private static class ScrollableGridBagPanel extends JPanel implements javax.swing.Scrollable {
+        ScrollableGridBagPanel() {
+            super(new GridBagLayout());
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return 16;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return visibleRect.height;
+        }
+    }
+
+    /**
      * 显示AI配置对话框
      */
     private void showAiConfigDialog() {
@@ -1681,7 +1720,7 @@ public class ApiDebuggerPanel extends JPanel {
         keyFieldPanel.add(toggleKeyBtn, BorderLayout.EAST);
 
         JBTextField apiPathField = new JBTextField(settings.getAiApiPath(), 20);
-        apiPathField.setToolTipText("OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat");
+        apiPathField.setToolTipText("<html>OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat。<br>留空则请求直接打到服务器URL根路径。</html>");
 
         JComboBox<String> modelField = new JComboBox<>(AcaiConstants.AI_MODEL_OPTIONS);
         modelField.setEditable(true);
@@ -1736,7 +1775,11 @@ public class ApiDebuggerPanel extends JPanel {
             userPromptArea.setText(AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
         });
 
-        JPanel form = new JPanel(new GridBagLayout());
+        // 使用自定义 ScrollableGridBagPanel：实现 Scrollable 并令
+        // getScrollableTracksViewportWidth()=true，JScrollPane 据此把视口宽度
+        // 强制设为 form 宽度，GridBagLayout 的 weightx=1 / fill=HORIZONTAL
+        // 才能真正随对话框右边缘拉伸，输入框和小眼睛(BorderLayout.EAST)才会跟随右移。
+        JPanel form = new ScrollableGridBagPanel();
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.insets = new Insets(4, 4, 4, 4);
@@ -1794,46 +1837,71 @@ public class ApiDebuggerPanel extends JPanel {
         promptHeader.setForeground(JBColor.BLUE);
         form.add(promptHeader, gbc);
 
-        gbc.gridy = 8; gbc.fill = GridBagConstraints.HORIZONTAL;
-        JBLabel systemPromptLabel = new JBLabel("系统提示词 (System Prompt):");
-        systemPromptLabel.setFont(systemPromptLabel.getFont().deriveFont(Font.BOLD, 11f));
-        form.add(systemPromptLabel, gbc);
+        // 系统提示词 - 可折叠标题（默认折叠）
+        final boolean[] systemPromptExpanded = {false};
+        JButton systemPromptToggle = new JButton("▸ 系统提示词 (System Prompt)");
+        systemPromptToggle.setContentAreaFilled(false);
+        systemPromptToggle.setBorderPainted(false);
+        systemPromptToggle.setFocusPainted(false);
+        systemPromptToggle.setHorizontalAlignment(SwingConstants.LEFT);
+        systemPromptToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        systemPromptToggle.setFont(systemPromptToggle.getFont().deriveFont(Font.BOLD, 11f));
+        gbc.gridy = 8; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1; gbc.weighty = 0;
+        form.add(systemPromptToggle, gbc);
 
-        gbc.gridy = 9; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.3;
-        form.add(systemPromptScroll, gbc);
+        // 系统提示词内容（默认折叠隐藏）
+        JPanel systemPromptContent = new JPanel(new BorderLayout());
+        systemPromptContent.add(systemPromptScroll, BorderLayout.CENTER);
+        systemPromptContent.setVisible(false);
+        gbc.gridy = 9; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.35;
+        form.add(systemPromptContent, gbc);
 
+        // 用户提示词 - 可折叠标题（默认折叠）
+        final boolean[] userPromptExpanded = {false};
+        JButton userPromptToggle = new JButton("▸ 用户提示词模板 (User Prompt)");
+        userPromptToggle.setContentAreaFilled(false);
+        userPromptToggle.setBorderPainted(false);
+        userPromptToggle.setFocusPainted(false);
+        userPromptToggle.setHorizontalAlignment(SwingConstants.LEFT);
+        userPromptToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        userPromptToggle.setFont(userPromptToggle.getFont().deriveFont(Font.BOLD, 11f));
         gbc.gridy = 10; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
-        JBLabel userPromptLabel = new JBLabel("用户提示词模板 (User Prompt):");
-        userPromptLabel.setFont(userPromptLabel.getFont().deriveFont(Font.BOLD, 11f));
-        form.add(userPromptLabel, gbc);
+        form.add(userPromptToggle, gbc);
 
-        gbc.gridy = 11; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.5;
-        form.add(userPromptScroll, gbc);
+        // 用户提示词内容（默认折叠隐藏）
+        JPanel userPromptContent = new JPanel(new BorderLayout());
+        userPromptContent.add(userPromptScroll, BorderLayout.CENTER);
+        userPromptContent.setVisible(false);
+        gbc.gridy = 11; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.55;
+        form.add(userPromptContent, gbc);
 
         gbc.gridy = 12; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
         JBLabel placeholderHint = new JBLabel("<html><font color='#888888' size='2'>占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
         form.add(placeholderHint, gbc);
 
-        gbc.gridy = 13; gbc.fill = GridBagConstraints.NONE; gbc.anchor = GridBagConstraints.EAST;
-        form.add(resetPromptBtn, gbc);
-
-        // 内容较多，套滚动面板防止超出屏幕高度
+        // 内容较多，套滚动面板防止超出屏幕高度。
+        // 因 form 实现了 Scrollable.getScrollableTracksViewportWidth()=true，
+        // 视口宽度会强制传给 form，水平方向无需滚动条，输入框随对话框宽度伸缩。
         JScrollPane formScroll = new JScrollPane(form);
         formScroll.setBorder(null);
-        // 建议初始大小（稍大一些，640x640）
-        formScroll.setPreferredSize(new Dimension(640, 640));
+        formScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
         // 使用 JDialog 替代 JOptionPane，支持自由拉伸收缩（上下左右都可调）
         JDialog dialog = new JDialog((Frame) null, "AI 配置", true);
         dialog.setResizable(true);
-        dialog.setMinimumSize(new Dimension(520, 480));  // 最小尺寸保底
+        dialog.setMinimumSize(new Dimension(560, 400));  // 最小尺寸保底
 
-        // 按钮面板
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
+        // 按钮面板：恢复默认提示词(左) + 确定/取消(右) 同一排，减小上下高度
+        JPanel btnPanel = new JPanel(new BorderLayout());
+        JPanel leftBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        leftBtnPanel.add(resetPromptBtn);
+        JPanel rightBtnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
         JButton okBtn = new JButton("确定");
         JButton cancelBtn = new JButton("取消");
-        btnPanel.add(okBtn);
-        btnPanel.add(cancelBtn);
+        rightBtnPanel.add(okBtn);
+        rightBtnPanel.add(cancelBtn);
+        btnPanel.add(leftBtnPanel, BorderLayout.WEST);
+        btnPanel.add(rightBtnPanel, BorderLayout.EAST);
 
         // 主布局：滚动面板在中间，按钮栏在底部
         JPanel contentPane = new JPanel(new BorderLayout(0, 8));
@@ -1844,6 +1912,36 @@ public class ApiDebuggerPanel extends JPanel {
         dialog.setContentPane(contentPane);
         dialog.pack();
         dialog.setLocationRelativeTo(this);  // 居中显示
+
+        // 折叠/展开 互斥逻辑：系统提示词与用户提示词同一时间只能展开一个
+        systemPromptToggle.addActionListener(e -> {
+            boolean willExpand = !systemPromptExpanded[0];
+            systemPromptExpanded[0] = willExpand;
+            systemPromptToggle.setText((willExpand ? "▾ " : "▸ ") + "系统提示词 (System Prompt)");
+            systemPromptContent.setVisible(willExpand);
+            if (willExpand && userPromptExpanded[0]) {
+                userPromptExpanded[0] = false;
+                userPromptToggle.setText("▸ 用户提示词模板 (User Prompt)");
+                userPromptContent.setVisible(false);
+            }
+            form.revalidate();
+            form.repaint();
+            dialog.pack();
+        });
+        userPromptToggle.addActionListener(e -> {
+            boolean willExpand = !userPromptExpanded[0];
+            userPromptExpanded[0] = willExpand;
+            userPromptToggle.setText((willExpand ? "▾ " : "▸ ") + "用户提示词模板 (User Prompt)");
+            userPromptContent.setVisible(willExpand);
+            if (willExpand && systemPromptExpanded[0]) {
+                systemPromptExpanded[0] = false;
+                systemPromptToggle.setText("▸ 系统提示词 (System Prompt)");
+                systemPromptContent.setVisible(false);
+            }
+            form.revalidate();
+            form.repaint();
+            dialog.pack();
+        });
 
         // 结果标记
         final boolean[] okPressed = {false};
@@ -1860,10 +1958,9 @@ public class ApiDebuggerPanel extends JPanel {
                 urlField.requestFocusInWindow();
                 return;
             }
-            if (apiPath.isBlank()) {
-                apiPath = AcaiConstants.AI_DEFAULT_API_PATH;
-            }
-            if (!apiPath.startsWith("/")) {
+            // API 路径允许为空保存（留空时请求直接打到服务器URL根路径）；
+            // 非空时仅补前导斜杠，保证路径格式规范
+            if (!apiPath.isBlank() && !apiPath.startsWith("/")) {
                 apiPath = "/" + apiPath;
             }
 

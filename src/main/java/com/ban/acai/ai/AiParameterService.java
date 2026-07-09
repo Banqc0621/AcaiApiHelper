@@ -221,10 +221,11 @@ public class AiParameterService {
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        // 路径可配置：OpenAI 标准用 /chat/completions，部分私有部署/Qwen 网关用 /chat
+        // 路径可配置：OpenAI 标准用 /chat/completions，部分私有部署/Qwen 网关用 /chat；
+        // 留空时直接请求服务器URL根路径
         String apiPath = settings.getAiApiPath();
-        if (!apiPath.startsWith("/")) apiPath = "/" + apiPath;
-        String fullUrl = baseUrl + apiPath;
+        String fullUrl = apiPath.isBlank() ? baseUrl
+                : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
 
         String requestJson = gson.toJson(requestBody);
         log.info("[AI-HTTP] 请求 => URL=" + fullUrl
@@ -285,12 +286,14 @@ public class AiParameterService {
         // 构建 Chat Completions 请求体
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
 
-        // 拼接完整URL
+        // 拼接完整URL（路径可配置，留空时直接请求服务器URL根路径）
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
-        String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
+        String apiPath = settings.getAiApiPath();
+        String fullUrl = apiPath.isBlank() ? baseUrl
+                : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
 
         String requestJson = gson.toJson(requestBody);
         log.info("[AI-HTTP] 请求(callArkChatCompletions) => URL=" + fullUrl
@@ -743,10 +746,10 @@ public class AiParameterService {
             JsonObject requestBody = buildAssertionRequest(api, settings);
             String baseUrl = settings.getAiServerUrl();
             if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-            // 路径可配置：与参数生成保持一致
+            // 路径可配置：与参数生成保持一致；留空时直接请求服务器URL根路径
             String apiPath = settings.getAiApiPath();
-            if (!apiPath.startsWith("/")) apiPath = "/" + apiPath;
-            String fullUrl = baseUrl + apiPath;
+            String fullUrl = apiPath.isBlank() ? baseUrl
+                    : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
 
             String requestJson = gson.toJson(requestBody);
             log.info("[AI生成断言] HTTP请求 => URL=" + fullUrl

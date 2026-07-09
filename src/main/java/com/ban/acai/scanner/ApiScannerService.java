@@ -178,6 +178,42 @@ public class ApiScannerService {
                 LOG.info("@FeignClient: 发现 " + classes.size() + " 个接口");
             }
 
+            // ── 3.5 补充：扫描带类级 @RequestMapping 的类 ──
+            //    覆盖"组合注解控制器"场景：类用自定义组合注解（间接含 @RestController/@Controller），
+            //    导致 AnnotatedElementsSearch 按 @RestController/@Controller 搜不到，
+            //    但类级 @RequestMapping 通常仍在，可据此补充发现。
+            //    候选类会经过 isFrameworkInternalController 过滤 + parseControllerClass 解析，
+            //    无 HTTP 映射方法的类不会产出 API，故安全。
+            PsiClass requestMappingAnno = psiFacade.findClass(AcaiConstants.ANNO_REQUEST_MAPPING, scope);
+            if (requestMappingAnno != null) {
+                Collection<PsiClass> classes = AnnotatedElementsSearch
+                        .searchPsiClasses(requestMappingAnno, scope).findAll();
+                allControllers.addAll(classes);
+                LOG.info("补充扫描 @RequestMapping 类级注解: 候选 " + classes.size() + " 个类");
+            }
+
+            // ── 3.6 补充：扫描方法级 @*Mapping 注解，反向定位控制器类 ──
+            //    这是最稳妥的兜底：只要某个方法标了 @GetMapping/@PostMapping/...，
+            //    就把它的所属类纳入候选。可覆盖以下"类级注解搜不到"的场景：
+            //    - 组合注解控制器（类用自定义注解，间接含 @RestController）
+            //    - 类级无任何注解、仅在方法上标 @*Mapping 的轻量控制器
+            //    - Kotlin/其他 JVM 语言写的控制器（PSI 方法注解仍可被索引）
+            //    候选类会经过 isFrameworkInternalController 过滤 + parseControllerClass 解析，
+            //    无 HTTP 映射方法的类不会产出 API，故安全。
+            for (String mappingFqn : AcaiConstants.SPRING_MAPPING_ANNOTATIONS) {
+                if (indicator != null) indicator.checkCanceled();
+                PsiClass mappingAnno = psiFacade.findClass(mappingFqn, scope);
+                if (mappingAnno == null) continue;
+                Collection<PsiMethod> methods = AnnotatedElementsSearch
+                        .searchPsiMethods(mappingAnno, scope).findAll();
+                for (PsiMethod m : methods) {
+                    PsiClass owner = m.getContainingClass();
+                    if (owner != null) allControllers.add(owner);
+                }
+                LOG.info("补充扫描方法级 @" + mappingFqn.substring(mappingFqn.lastIndexOf('.') + 1)
+                        + ": 反向定位 " + methods.size() + " 个方法");
+            }
+
             // 去重（某些类可能同时带多个注解）
             Set<String> seen = new HashSet<>();
             List<PsiClass> uniqueControllers = new ArrayList<>();
@@ -202,8 +238,13 @@ public class ApiScannerService {
                 try {
                     List<ApiDefinition> classApis = parseControllerClass(psiClass);
                     apis.addAll(classApis);
-                    if (!classApis.isEmpty()) {
-                        LOG.info("解析 " + psiClass.getName() + ": 发现 " + classApis.size() + " 个接口");
+                    int methodCount = psiClass.getAllMethods().length;
+                    if (classApis.isEmpty()) {
+                        LOG.info("解析 " + psiClass.getName()
+                                + ": 0 个接口（共 " + methodCount + " 个方法，可能无HTTP映射注解或被过滤）");
+                    } else {
+                        LOG.info("解析 " + psiClass.getName() + ": 发现 " + classApis.size()
+                                + " 个接口（共 " + methodCount + " 个方法）");
                     }
                 } catch (Exception e) {
                     LOG.warn("解析控制器类失败: " + psiClass.getName() + " - " + e.getMessage(), e);
@@ -240,23 +281,45 @@ public class ApiScannerService {
         // 判断是否为 JAX-RS 风格
         boolean isJaxrs = isJaxrsClass(psiClass);
 
+        // 同一方法在 getAllMethods() 中可能多次返回（继承链/接口默认方法），
+        // 用 (控制器名 + 方法名 + 参数签名 + uniqueKey) 去重，避免重复；
+        // 但保留方法重载（同 URL 不同参数）和不同控制器下的同名继承方法。
+        Set<String> seenKeys = new HashSet<>();
+
         // 遍历类自身声明的方法（含从接口/父类继承的方法）
         for (PsiMethod method : psiClass.getAllMethods()) {
             try {
-                ApiDefinition api;
+                List<ApiDefinition> methodApis;
                 if (isJaxrs) {
-                    api = parseJaxrsMethod(method, controllerName, basePath, psiClass);
+                    methodApis = parseJaxrsMethod(method, controllerName, basePath, psiClass);
                 } else {
-                    api = parseSpringMethod(method, controllerName, basePath, psiClass);
+                    methodApis = parseSpringMethod(method, controllerName, basePath, psiClass);
                 }
-                if (api != null) {
-                    // 过滤路径含未解析占位符（${...}）的接口
+                for (ApiDefinition api : methodApis) {
+                    // 路径含未解析占位符（${...}）：尽量清理保留，而不是整条丢弃
                     if (hasUnresolvedPlaceholder(api.getUrl())) {
-                        LOG.info("跳过含未解析占位符的接口: " + api.getUrl()
+                        String cleaned = cleanPlaceholderInPath(api.getUrl());
+                        if (cleaned == null || cleaned.isBlank() || cleaned.equals("/")) {
+                            LOG.info("跳过含 SpEL 表达式或空路径的接口: " + api.getUrl()
+                                    + "（来自 " + controllerName + "." + method.getName() + "）");
+                            continue;
+                        }
+                        LOG.info("清理路径占位符: " + api.getUrl() + " -> " + cleaned
                                 + "（来自 " + controllerName + "." + method.getName() + "）");
-                        continue;
+                        api.setUrl(cleaned);
                     }
-                    apis.add(api);
+                    // 去重键：控制器 + 方法名 + 参数签名 + uniqueKey(METHOD|URL)。
+                    // 这样能去掉 getAllMethods() 对同一方法的重复返回，
+                    // 同时保留重载方法（同 URL 不同参数）。
+                    StringBuilder paramSig = new StringBuilder();
+                    for (PsiParameter p : method.getParameterList().getParameters()) {
+                        paramSig.append(p.getType().getCanonicalText()).append(',');
+                    }
+                    String dedupKey = controllerName + "#" + method.getName()
+                            + "(" + paramSig + ")|" + api.uniqueKey();
+                    if (seenKeys.add(dedupKey)) {
+                        apis.add(api);
+                    }
                 }
             } catch (Exception e) {
                 LOG.warn("解析方法失败: " + controllerName + "." + method.getName()
@@ -328,6 +391,36 @@ public class ApiScannerService {
         return url.contains("${") || url.contains("#{") || url.contains("$${");
     }
 
+    /**
+     * 清理 URL 中的 Spring 占位符 ${...}，尽量保留接口而不是丢弃：
+     * <ul>
+     *   <li>带默认值 <code>${key:default}</code> → 取 default（如 <code>${server.error.path:/error}</code> → <code>/error</code>）</li>
+     *   <li>无默认值 <code>${key}</code> → 取变量名 key（如 <code>${api.prefix}</code> → <code>api.prefix</code>），保留接口可被识别</li>
+     * </ul>
+     * SpEL 表达式 <code>#{...}</code> 无法静态求值，返回 null 表示应丢弃该接口。
+     * 清理后会对路径重新规范化（去重复斜杠、补前导斜杠）。
+     */
+    private String cleanPlaceholderInPath(String url) {
+        if (url == null) return null;
+        if (url.contains("#{")) return null;  // SpEL，无法静态解析
+        if (!url.contains("${")) return url;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\$\\{([^}]+)}").matcher(url);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String inner = m.group(1);
+            String replacement;
+            int colon = inner.indexOf(':');
+            if (colon >= 0) {
+                replacement = inner.substring(colon + 1).trim();
+            } else {
+                replacement = inner.trim();
+            }
+            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return normalizePath(sb.toString());
+    }
+
     // ================================================================
     // Spring MVC 方法解析
     // ================================================================
@@ -367,17 +460,30 @@ public class ApiScannerService {
 
     /**
      * 解析Spring风格的方法为API定义
+     * 支持多路径注解（如 @GetMapping({"/list","/query"})），
+     * 每个路径各生成一个 ApiDefinition。
      */
-    private ApiDefinition parseSpringMethod(PsiMethod method, String controllerName,
-                                             String basePath, PsiClass declaringClass) {
+    private List<ApiDefinition> parseSpringMethod(PsiMethod method, String controllerName,
+                                                  String basePath, PsiClass declaringClass) {
         PsiAnnotation mappingAnnotation = findSpringMappingAnnotation(method);
-        if (mappingAnnotation == null) return null;
+        if (mappingAnnotation == null) return Collections.emptyList();
 
         String httpMethod = resolveSpringHttpMethod(mappingAnnotation);
-        String methodPath = extractPathFromAnnotation(mappingAnnotation);
-        String fullPath = normalizePath(basePath + methodPath);
+        List<String> methodPaths = extractPathsFromAnnotation(mappingAnnotation);
 
-        return buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass);
+        List<ApiDefinition> result = new ArrayList<>();
+        if (methodPaths.isEmpty()) {
+            // 无显式路径（仅类级 basePath），生成单个接口
+            String fullPath = normalizePath(basePath);
+            ApiDefinition api = buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass);
+            result.add(api);
+            return result;
+        }
+        for (String methodPath : methodPaths) {
+            String fullPath = normalizePath(basePath + methodPath);
+            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+        }
+        return result;
     }
 
     /**
@@ -438,23 +544,33 @@ public class ApiScannerService {
 
     /**
      * 解析JAX-RS风格的方法为API定义
+     * 支持多路径 @Path 注解，每个路径各生成一个 ApiDefinition。
      */
-    private ApiDefinition parseJaxrsMethod(PsiMethod method, String controllerName,
-                                            String basePath, PsiClass declaringClass) {
+    private List<ApiDefinition> parseJaxrsMethod(PsiMethod method, String controllerName,
+                                                 String basePath, PsiClass declaringClass) {
         // 查找 JAX-RS HTTP 方法注解
         String httpMethod = resolveJaxrsHttpMethod(method);
-        if (httpMethod == null) return null;
+        if (httpMethod == null) return Collections.emptyList();
 
-        // JAX-RS @Path
-        String methodPath = "";
+        // JAX-RS @Path（支持多路径）
+        List<String> methodPaths = new ArrayList<>();
         PsiAnnotation pathAnno = method.getAnnotation(AcaiConstants.JAXRS_PATH_JAVAX);
         if (pathAnno == null) pathAnno = method.getAnnotation(AcaiConstants.JAXRS_PATH_JAKARTA);
         if (pathAnno != null) {
-            methodPath = extractJaxrsPath(pathAnno);
+            methodPaths = extractJaxrsPaths(pathAnno);
         }
 
-        String fullPath = normalizePath(basePath + methodPath);
-        return buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass);
+        List<ApiDefinition> result = new ArrayList<>();
+        if (methodPaths.isEmpty()) {
+            String fullPath = normalizePath(basePath);
+            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            return result;
+        }
+        for (String methodPath : methodPaths) {
+            String fullPath = normalizePath(basePath + methodPath);
+            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+        }
+        return result;
     }
 
     /**
@@ -477,14 +593,18 @@ public class ApiScannerService {
     }
 
     /**
-     * 从 JAX-RS @Path 注解提取路径
+     * 从 JAX-RS @Path 注解提取路径（单路径，保留兼容）
      */
     private String extractJaxrsPath(PsiAnnotation pathAnnotation) {
+        return extractJaxrsPaths(pathAnnotation).stream().findFirst().orElse("");
+    }
+
+    /**
+     * 从 JAX-RS @Path 注解提取全部路径（支持数组多路径）。
+     */
+    private List<String> extractJaxrsPaths(PsiAnnotation pathAnnotation) {
         PsiAnnotationMemberValue value = pathAnnotation.findAttributeValue("value");
-        if (value != null) {
-            return cleanAnnotationValue(value.getText());
-        }
-        return "";
+        return splitAnnotationValues(value);
     }
 
     // ================================================================
@@ -530,16 +650,28 @@ public class ApiScannerService {
     // ================================================================
 
     /**
-     * 从Spring注解中提取URL路径
+     * 从Spring注解中提取URL路径（单路径，保留兼容）
      */
     private String extractPathFromAnnotation(PsiAnnotation annotation) {
-        PsiAnnotationMemberValue pathValue = annotation.findAttributeValue("value");
-        String text = pathValue != null ? pathValue.getText() : null;
-        if (text == null || text.isBlank() || text.equals("{}")) {
-            PsiAnnotationMemberValue pathAttr = annotation.findAttributeValue("path");
-            text = pathAttr != null ? pathAttr.getText() : null;
-        }
-        return cleanAnnotationValue(text != null ? text : "");
+        return extractPathsFromAnnotation(annotation).stream().findFirst().orElse("");
+    }
+
+    /**
+     * 从Spring注解中提取全部URL路径（支持数组多路径）。
+     * <p>依次检查 value 和 path 属性。注解值可能为：</p>
+     * <ul>
+     *   <li>单路径：<code>"/users"</code> → ["/users"]</li>
+     *   <li>多路径：<code>{"/list","/query"}</code> → ["/list", "/query"]</li>
+     *   <li>未指定：返回空列表</li>
+     * </ul>
+     */
+    private List<String> extractPathsFromAnnotation(PsiAnnotation annotation) {
+        PsiAnnotationMemberValue value = annotation.findAttributeValue("value");
+        List<String> paths = splitAnnotationValues(value);
+        if (!paths.isEmpty()) return paths;
+
+        PsiAnnotationMemberValue pathAttr = annotation.findAttributeValue("path");
+        return splitAnnotationValues(pathAttr);
     }
 
     /**
@@ -557,6 +689,38 @@ public class ApiScannerService {
             cleaned = cleaned.substring(1, cleaned.length() - 1);
         }
         return cleaned;
+    }
+
+    /**
+     * 将注解属性值拆分为多个字符串值（支持单值和数组多值）。
+     * <p>处理 PSI 注解属性值的文本形式，如：</p>
+     * <ul>
+     *   <li><code>"/users"</code> → ["/users"]</li>
+     *   <li><code>{"/list", "/query"}</code> → ["/list", "/query"]</li>
+     *   <li><code>null</code> 或空 → []</li>
+     * </ul>
+     * <p>注意：跳过空字符串和纯空白项，避免产出无效路径。</p>
+     */
+    private List<String> splitAnnotationValues(PsiAnnotationMemberValue value) {
+        List<String> result = new ArrayList<>();
+        if (value == null) return result;
+        String text = value.getText();
+        if (text == null) return result;
+        text = text.trim();
+        // 去掉外层花括号（数组）
+        if (text.startsWith("{") && text.endsWith("}")) {
+            text = text.substring(1, text.length() - 1).trim();
+        }
+        if (text.isEmpty() || text.equals(",")) return result;
+        // 按逗号拆分（路径字符串内不会含逗号）
+        for (String part : text.split(",")) {
+            String s = part.trim();
+            if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+                s = s.substring(1, s.length() - 1);
+            }
+            if (!s.isEmpty()) result.add(s);
+        }
+        return result;
     }
 
     /** 规范化URL路径 */

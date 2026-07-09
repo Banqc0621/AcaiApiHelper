@@ -62,8 +62,8 @@ public class AcaiSettingsConfigurable implements Configurable {
         arkApiUrlField = new JBTextField(state != null ? state.arkApiUrl : AcaiConstants.ARK_API_BASE_URL);
         arkApiKeyField = new JBPasswordField();
         if (state != null) arkApiKeyField.setText(state.arkApiKey);
-        arkApiPathField = new JBTextField(state != null && state.aiApiPath != null && !state.aiApiPath.isBlank()
-                ? state.aiApiPath : AcaiConstants.AI_DEFAULT_API_PATH);
+        arkApiPathField = new JBTextField(state != null && state.aiApiPath != null
+                ? state.aiApiPath : "");
         arkModelProField = new JBTextField(state != null ? state.arkModelPro : AcaiConstants.ARK_MODEL_PRO);
         arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : AcaiConstants.ARK_MODEL_CODE);
         aiEnabledBox = new JBCheckBox("启用AI参数生成", state != null && state.aiEnabled);
@@ -220,8 +220,7 @@ public class AcaiSettingsConfigurable implements Configurable {
         baseUrlField.setText(state.baseUrl);
         arkApiUrlField.setText(state.arkApiUrl);
         arkApiKeyField.setText(state.arkApiKey);
-        arkApiPathField.setText(state.aiApiPath != null && !state.aiApiPath.isBlank()
-                ? state.aiApiPath : AcaiConstants.AI_DEFAULT_API_PATH);
+        arkApiPathField.setText(state.aiApiPath != null ? state.aiApiPath : "");
         arkModelProField.setText(state.arkModelPro);
         arkModelCodeField.setText(state.arkModelCode);
         aiEnabledBox.setSelected(state.aiEnabled);
