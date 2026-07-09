@@ -34,6 +34,7 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import java.awt.*;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -1765,11 +1766,52 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 内容较多，套滚动面板防止超出屏幕高度
         JScrollPane formScroll = new JScrollPane(form);
-        formScroll.setPreferredSize(new Dimension(560, 560));
         formScroll.setBorder(null);
-        int result = JOptionPane.showConfirmDialog(this, formScroll, "AI配置", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        
-        if (result == JOptionPane.OK_OPTION) {
+        // 建议初始大小（稍大一些，640x640）
+        formScroll.setPreferredSize(new Dimension(640, 640));
+
+        // 使用 JDialog 替代 JOptionPane，支持自由拉伸收缩（上下左右都可调）
+        JDialog dialog = new JDialog((Frame) null, "AI 配置", true);
+        dialog.setResizable(true);
+        dialog.setMinimumSize(new Dimension(520, 480));  // 最小尺寸保底
+
+        // 按钮面板
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
+        JButton okBtn = new JButton("确定");
+        JButton cancelBtn = new JButton("取消");
+        btnPanel.add(okBtn);
+        btnPanel.add(cancelBtn);
+
+        // 主布局：滚动面板在中间，按钮栏在底部
+        JPanel contentPane = new JPanel(new BorderLayout(0, 8));
+        contentPane.setBorder(JBUI.Borders.empty(8));
+        contentPane.add(formScroll, BorderLayout.CENTER);
+        contentPane.add(btnPanel, BorderLayout.SOUTH);
+
+        dialog.setContentPane(contentPane);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);  // 居中显示
+
+        // 结果标记
+        final boolean[] okPressed = {false};
+
+        // 按钮事件
+        okBtn.addActionListener(e -> {
+            okPressed[0] = true;
+            dialog.dispose();
+        });
+        cancelBtn.addActionListener(e -> dialog.dispose());
+
+        // ESC 键关闭对话框
+        dialog.getRootPane().registerKeyboardAction(
+                e -> dialog.dispose(),
+                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+                JComponent.WHEN_IN_FOCUSED_WINDOW);
+        dialog.getRootPane().setDefaultButton(okBtn);
+
+        dialog.setVisible(true);
+
+        if (okPressed[0]) {
             String serverUrl = urlField.getText().trim();
             String apiKey = new String(keyField.getPassword()).trim();
             String apiPath = apiPathField.getText().trim();
@@ -1787,8 +1829,6 @@ public class ApiDebuggerPanel extends JPanel {
             }
 
             settings.setAiServerUrl(serverUrl);
-            // 本地模型：token 存为字面量 "Bearer"（而非空字符串），下次打开面板可正确识别
-            // 云端模型：token 存为用户填入的真实 API Key 值
             settings.setAiToken(localModelCheck.isSelected()
                     ? AcaiConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
             settings.setAiApiPath(apiPath);
