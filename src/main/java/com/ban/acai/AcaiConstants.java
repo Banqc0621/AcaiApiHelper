@@ -230,6 +230,24 @@ public final class AcaiConstants {
     public static final String HEADER_AUTHORIZATION = "Authorization";
     public static final String BEARER_PREFIX = "Bearer ";
 
+    /**
+     * 本地部署模型的占位 Token。
+     * <p>对于 Ollama / vLLM / Qwen 自部署网关，HTTP Header 通常要求必须有
+     * <code>Authorization: Bearer &lt;xxx&gt;</code>，但 token 值可以是任意字符串。</p>
+     * <p>约定：用户在配置面板勾选"本地模型"后，API Key 字段自动填入字面量 "Bearer"，
+     * 最终发送的 Header 为 <code>Authorization: Bearer Bearer</code>。</p>
+     * <p>判断"是否本地模型"用 {@link #isLocalModelToken(String)}：token 为空或等于该字面量都视为本地模型。</p>
+     */
+    public static final String AI_LOCAL_BEARER_TOKEN = "Bearer";
+
+    /**
+     * 判断给定的 token 是否表示"本地模型"（无需真实 API Key）。
+     * <p>本地模型的特征：token 为空，或 token 等于字面量 "Bearer"（用户在面板勾选本地模型后自动填入）。</p>
+     */
+    public static boolean isLocalModelToken(String token) {
+        return token == null || token.isBlank() || AI_LOCAL_BEARER_TOKEN.equals(token.trim());
+    }
+
     /** 成功状态码范围 */
     public static final int HTTP_SUCCESS_MIN = 200;
     public static final int HTTP_SUCCESS_MAX = 299;
@@ -282,8 +300,14 @@ public final class AcaiConstants {
     /** AI最大重试次数 */
     public static final int AI_MAX_RETRIES = 3;
 
-    /** AI Chat Completions 路径 */
+    /** AI Chat Completions 路径（OpenAI 标准） */
     public static final String AI_CHAT_COMPLETIONS_PATH = "/chat/completions";
+
+    /** AI Chat 路径（部分私有部署/简化协议用，如 vLLM、Qwen 自研网关） */
+    public static final String AI_CHAT_PATH = "/chat";
+
+    /** AI API 路径默认值（可在设置中修改，支持 /chat/completions 和 /chat 两种风格） */
+    public static final String AI_DEFAULT_API_PATH = AI_CHAT_COMPLETIONS_PATH;
 
     /** AI System Prompt */
     public static final String AI_SYSTEM_PROMPT =
@@ -373,6 +397,8 @@ public final class AcaiConstants {
             "doubao-seed-2.0-code-250115",
             "qwen-plus-2025-04-28",
             "qwen-max-2025-01-25",
+            "Qwen3.5-35B-A3B",
+            "Qwen2.5-72B-Instruct",
             "doubao-1.5-pro-32k-250115"
     };
 

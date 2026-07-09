@@ -25,6 +25,7 @@ public class AcaiSettingsConfigurable implements Configurable {
     private JBTextField baseUrlField;
     private JBTextField arkApiUrlField;
     private JBPasswordField arkApiKeyField;
+    private JBTextField arkApiPathField;
     private JBTextField arkModelProField;
     private JBTextField arkModelCodeField;
     private JBCheckBox aiEnabledBox;
@@ -61,6 +62,8 @@ public class AcaiSettingsConfigurable implements Configurable {
         arkApiUrlField = new JBTextField(state != null ? state.arkApiUrl : AcaiConstants.ARK_API_BASE_URL);
         arkApiKeyField = new JBPasswordField();
         if (state != null) arkApiKeyField.setText(state.arkApiKey);
+        arkApiPathField = new JBTextField(state != null && state.aiApiPath != null && !state.aiApiPath.isBlank()
+                ? state.aiApiPath : AcaiConstants.AI_DEFAULT_API_PATH);
         arkModelProField = new JBTextField(state != null ? state.arkModelPro : AcaiConstants.ARK_MODEL_PRO);
         arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : AcaiConstants.ARK_MODEL_CODE);
         aiEnabledBox = new JBCheckBox("启用AI参数生成", state != null && state.aiEnabled);
@@ -95,10 +98,14 @@ public class AcaiSettingsConfigurable implements Configurable {
         JBLabel apiDesc = new JBLabel("<html><font color='#888888' size='2'>配置接口调试的基础参数</font></html>");
 
         // ── Section 2: Volcano Ark AI ──
-        JBLabel aiHeader = new JBLabel("火山引擎方舟 AI 配置");
+        JBLabel aiHeader = new JBLabel("AI 模型配置（OpenAI 兼容协议）");
         aiHeader.setForeground(sectionColor);
         aiHeader.setFont(sectionFont);
-        JBLabel aiDesc = new JBLabel("<html><font color='#888888' size='2'>对接内部AI算力，自动生成测试参数</font></html>");
+        JBLabel aiDesc = new JBLabel("<html><font color='#888888' size='2'>"
+                + "支持火山方舟 / OpenAI / Qwen / vLLM 等 OpenAI 兼容服务。<br>"
+                + "认证方式：HTTP Header <code>Authorization: Bearer &lt;API Key&gt;</code>；"
+                + "请求体必含 <code>model</code> 字段。"
+                + "</font></html>");
 
         // ── Section 2.5: AI Prompt Custom ──
         JBLabel promptHeader = new JBLabel("AI 提示词自定义");
@@ -131,8 +138,9 @@ public class AcaiSettingsConfigurable implements Configurable {
                 .addComponent(aiDesc)
                 .addSeparator()
                 .addComponent(aiEnabledBox, 1)
-                .addLabeledComponent(new JBLabel("方舟 API 地址:"), arkApiUrlField, 1, false)
-                .addLabeledComponent(new JBLabel("API Key:"), arkApiKeyField, 1, false)
+                .addLabeledComponent(new JBLabel("API 服务地址:"), arkApiUrlField, 1, false)
+                .addLabeledComponent(new JBLabel("API Key (Bearer):"), arkApiKeyField, 1, false)
+                .addLabeledComponent(new JBLabel("API 路径:"), arkApiPathField, 1, false)
                 .addLabeledComponent(new JBLabel("主模型(pro):"), arkModelProField, 1, false)
                 .addLabeledComponent(new JBLabel("轻量模型(code):"), arkModelCodeField, 1, false)
                 .addLabeledComponent(new JBLabel("单次最大AI调用:"), maxAiCallsField, 1, false)
@@ -172,6 +180,7 @@ public class AcaiSettingsConfigurable implements Configurable {
         return !fieldText(baseUrlField).equals(state.baseUrl)
                 || !fieldText(arkApiUrlField).equals(state.arkApiUrl)
                 || !new String(arkApiKeyField.getPassword()).equals(state.arkApiKey)
+                || !fieldText(arkApiPathField).equals(state.aiApiPath)
                 || !fieldText(arkModelProField).equals(state.arkModelPro)
                 || !fieldText(arkModelCodeField).equals(state.arkModelCode)
                 || aiEnabledBox.isSelected() != state.aiEnabled
@@ -190,6 +199,7 @@ public class AcaiSettingsConfigurable implements Configurable {
         s.setBaseUrl(fieldText(baseUrlField));
         s.setArkApiUrl(fieldText(arkApiUrlField));
         s.setArkApiKey(new String(arkApiKeyField.getPassword()));
+        s.setAiApiPath(fieldText(arkApiPathField));
         s.setArkModelPro(fieldText(arkModelProField));
         s.setArkModelCode(fieldText(arkModelCodeField));
         s.setAiEnabled(aiEnabledBox.isSelected());
@@ -210,6 +220,8 @@ public class AcaiSettingsConfigurable implements Configurable {
         baseUrlField.setText(state.baseUrl);
         arkApiUrlField.setText(state.arkApiUrl);
         arkApiKeyField.setText(state.arkApiKey);
+        arkApiPathField.setText(state.aiApiPath != null && !state.aiApiPath.isBlank()
+                ? state.aiApiPath : AcaiConstants.AI_DEFAULT_API_PATH);
         arkModelProField.setText(state.arkModelPro);
         arkModelCodeField.setText(state.arkModelCode);
         aiEnabledBox.setSelected(state.aiEnabled);

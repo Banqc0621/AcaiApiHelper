@@ -32,6 +32,8 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
         public String arkApiKey = "";
         /** 方舟API地址 */
         public String arkApiUrl = AcaiConstants.ARK_API_BASE_URL;
+        /** AI API 路径（如 /chat/completions 或 /chat），可配置以适配不同模型网关 */
+        public String aiApiPath = AcaiConstants.AI_DEFAULT_API_PATH;
         /** 主模型 */
         public String arkModelPro = AcaiConstants.ARK_MODEL_PRO;
         /** 轻量模型 */
@@ -147,6 +149,12 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
     /** AI主模型（兼容方法，等价于arkModelPro） */
     public String getAiModel() { return myState.arkModelPro; }
 
+    /** AI API 路径（如 /chat/completions 或 /chat） */
+    public String getAiApiPath() {
+        return (myState.aiApiPath == null || myState.aiApiPath.isBlank())
+                ? AcaiConstants.AI_DEFAULT_API_PATH : myState.aiApiPath;
+    }
+
     /** 设置AI服务器URL并同步到arkApiUrl */
     public void setAiServerUrl(String url) { myState.arkApiUrl = url; }
 
@@ -155,6 +163,9 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
 
     /** 设置AI模型并同步到arkModelPro */
     public void setAiModel(String model) { myState.arkModelPro = model; }
+
+    /** 设置AI API 路径 */
+    public void setAiApiPath(String path) { myState.aiApiPath = path; }
 
     /** 自定义系统提示词（空值回退到默认常量） */
     public String getAiSystemPrompt() {

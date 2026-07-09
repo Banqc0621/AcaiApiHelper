@@ -228,6 +228,12 @@ public class ApiScannerService {
         String controllerName = psiClass.getName();
         if (controllerName == null) return apis;
 
+        // 过滤框架/库内置控制器：这些类不是用户业务接口，路径常含未解析占位符
+        if (isFrameworkInternalController(psiClass)) {
+            LOG.info("跳过框架内置控制器: " + psiClass.getQualifiedName());
+            return apis;
+        }
+
         // 提取类级别的基础路径（Spring @RequestMapping 或 JAX-RS @Path）
         String basePath = extractClassBasePath(psiClass);
 
@@ -244,6 +250,12 @@ public class ApiScannerService {
                     api = parseSpringMethod(method, controllerName, basePath, psiClass);
                 }
                 if (api != null) {
+                    // 过滤路径含未解析占位符（${...}）的接口
+                    if (hasUnresolvedPlaceholder(api.getUrl())) {
+                        LOG.info("跳过含未解析占位符的接口: " + api.getUrl()
+                                + "（来自 " + controllerName + "." + method.getName() + "）");
+                        continue;
+                    }
                     apis.add(api);
                 }
             } catch (Exception e) {
@@ -263,6 +275,57 @@ public class ApiScannerService {
                 || psiClass.getAnnotation(AcaiConstants.ANNO_CONTROLLER) != null
                 || psiClass.getAnnotation(AcaiConstants.ANNO_FEIGN_CLIENT) != null;
         return hasPath && !hasSpring;
+    }
+
+    /**
+     * 判断是否为框架/库内置控制器（非用户业务接口）。
+     * <p>典型例子：Spring Boot 的 <code>BasicErrorController</code>，
+     * 它的 <code>@RequestMapping("${server.error.path:${error.path:/error}}")</code> 含未解析占位符，
+     * 不是用户业务接口，应当过滤掉。</p>
+     * <p>判定依据：</p>
+     * <ul>
+     *   <li>类的全限定名命中黑名单（BasicErrorController、ErrorController 实现类、actuator 端点）</li>
+     *   <li>包名以 <code>org.springframework.</code> 开头（Spring 框架本身及 Spring Boot 自动配置）</li>
+     *   <li>实现了 <code>org.springframework.boot.web.servlet.error.ErrorController</code></li>
+     * </ul>
+     */
+    private boolean isFrameworkInternalController(PsiClass psiClass) {
+        String qfn = psiClass.getQualifiedName();
+        if (qfn == null) return false;
+
+        // 1. 类名黑名单（Spring Boot 自动配置中常见的内置控制器）
+        if (qfn.endsWith(".BasicErrorController")
+                || qfn.endsWith(".DefaultErrorController")
+                || qfn.endsWith(".HealthEndpointController")
+                || qfn.endsWith(".AbstractEndpointHandlerMapping")) {
+            return true;
+        }
+
+        // 2. Spring 框架本身的类（用户业务控制器不会在 org.springframework.* 包下）
+        if (qfn.startsWith("org.springframework.")
+                && !qfn.startsWith("org.springframework.samples.")) {
+            return true;
+        }
+
+        // 3. 实现了 ErrorController 接口（Spring Boot 错误处理控制器）
+        for (PsiClass iface : psiClass.getInterfaces()) {
+            String ifqfn = iface.getQualifiedName();
+            if (ifqfn != null && ifqfn.endsWith(".ErrorController")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断 URL 是否含未解析的占位符（如 <code>${server.error.path}</code>）。
+     * <p>这类 URL 是 Spring 配置占位符未被环境注入导致的，
+     * 用户无法实际调试，应当在扫描时过滤掉。</p>
+     */
+    private boolean hasUnresolvedPlaceholder(String url) {
+        if (url == null) return false;
+        // Spring 占位符 ${...} 或 #{...}（SpEL）
+        return url.contains("${") || url.contains("#{") || url.contains("$${");
     }
 
     // ================================================================

@@ -53,6 +53,22 @@ public class AiParameterService {
     }
 
     /**
+     * 构造 Authorization Header 值。
+     * <p>规则：</p>
+     * <ul>
+     *   <li>云端模型（token 非空、非字面量 "Bearer"）：返回 <code>Bearer {token}</code></li>
+     *   <li>本地模型（token 为空）：返回 <code>Bearer Bearer</code>，满足网关必须有 Bearer Header 的要求</li>
+     *   <li>本地模型（token 为字面量 "Bearer"）：返回 <code>Bearer Bearer</code></li>
+     * </ul>
+     */
+    private String buildAuthHeader(String token) {
+        if (AcaiConstants.isLocalModelToken(token)) {
+            return AcaiConstants.BEARER_PREFIX + AcaiConstants.AI_LOCAL_BEARER_TOKEN;
+        }
+        return AcaiConstants.BEARER_PREFIX + token;
+    }
+
+    /**
      * 测试场景枚举 - 指定AI生成参数的测试场景类型
      */
     public enum TestScenario {
@@ -88,10 +104,13 @@ public class AiParameterService {
         log.info("[AI生成参数] 开始(简版) => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 场景=" + scenario + ", 参数个数=" + api.getParameters().size());
 
-        // 检查AI服务是否配置
-        if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("[AI生成参数] 跳过(简版)：AI服务器URL或Token未配置，使用默认值生成策略");
+        // 检查AI服务是否配置（本地模型无需 API Key，仅校验服务器URL）
+        if (settings.getAiServerUrl().isBlank()) {
+            log.info("[AI生成参数] 跳过(简版)：AI服务器URL未配置，使用默认值生成策略");
             return List.of(generateDefaultParameters(api));
+        }
+        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+            log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
         try {
@@ -138,13 +157,16 @@ public class AiParameterService {
                 + ", 控制器=" + api.getControllerName() + ", 场景=" + scenario
                 + ", 参数个数=" + api.getParameters().size());
 
-        if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("[AI生成参数] 跳过：AI服务器URL或Token未配置，使用本地默认值生成策略");
+        if (settings.getAiServerUrl().isBlank()) {
+            log.info("[AI生成参数] 跳过：AI服务器URL未配置，使用本地默认值生成策略");
             return new GenerateResult(
-                    "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL和API Key以使用AI生成真实参数",
+                    "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL以使用AI生成真实参数",
                     List.of(generateDefaultParameters(api)),
                     false
             );
+        }
+        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+            log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
         try {
@@ -178,18 +200,22 @@ public class AiParameterService {
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
+        // 路径可配置：OpenAI 标准用 /chat/completions，部分私有部署/Qwen 网关用 /chat
+        String apiPath = settings.getAiApiPath();
+        if (!apiPath.startsWith("/")) apiPath = "/" + apiPath;
+        String fullUrl = baseUrl + apiPath;
 
         String requestJson = gson.toJson(requestBody);
         log.info("[AI-HTTP] 请求 => URL=" + fullUrl
                 + ", model=" + settings.getAiModel()
+                + ", stream=false"
                 + ", 请求体长度=" + requestJson.length());
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                 .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
+                .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -254,7 +280,7 @@ public class AiParameterService {
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                 .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
+                .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -289,8 +315,14 @@ public class AiParameterService {
      *     {"role": "system", "content": "..."},
      *     {"role": "user", "content": "..."}
      *   ],
-     *   "temperature": 0.7
+     *   "temperature": 0.7,
+     *   "stream": false
      * }
+     *
+     * 兼容性说明：
+     * - model 字段为必填，由设置中的"主模型"提供（如 doubao-seed-2.0-pro / Qwen3.5-35B-A3B）
+     * - stream:false 显式声明非流式响应，兼容 vLLM、Qwen 网关等私有部署
+     * - 认证通过 HTTP Header Authorization: Bearer {token} 传递（在调用方设置）
      */
     private JsonObject buildChatCompletionRequest(ApiDefinition api, TestScenario scenario,
                                                    AcaiSettingsState settings) {
@@ -313,6 +345,8 @@ public class AiParameterService {
 
         root.add("messages", messages);
         root.addProperty("temperature", 0.7);
+        // 显式声明非流式响应，兼容 vLLM/Qwen 等私有部署网关
+        root.addProperty("stream", false);
 
         return root;
     }
@@ -676,27 +710,34 @@ public class AiParameterService {
         log.info("[AI生成断言] 开始 => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 返回类型=" + api.getResponseBodyType());
 
-        if (settings.getAiServerUrl().isBlank() || settings.getAiToken().isBlank()) {
-            log.info("[AI生成断言] 跳过：AI服务器URL或Token未配置，生成默认断言");
+        if (settings.getAiServerUrl().isBlank()) {
+            log.info("[AI生成断言] 跳过：AI服务器URL未配置，生成默认断言");
             return generateDefaultAssertions(api);
+        }
+        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+            log.info("[AI生成断言] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
         try {
             JsonObject requestBody = buildAssertionRequest(api, settings);
             String baseUrl = settings.getAiServerUrl();
             if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-            String fullUrl = baseUrl + AcaiConstants.AI_CHAT_COMPLETIONS_PATH;
+            // 路径可配置：与参数生成保持一致
+            String apiPath = settings.getAiApiPath();
+            if (!apiPath.startsWith("/")) apiPath = "/" + apiPath;
+            String fullUrl = baseUrl + apiPath;
 
             String requestJson = gson.toJson(requestBody);
             log.info("[AI生成断言] HTTP请求 => URL=" + fullUrl
                     + ", model=" + settings.getAiModel()
+                    + ", stream=false"
                     + ", 请求体长度=" + requestJson.length());
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(fullUrl))
                     .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
                     .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                    .header(AcaiConstants.HEADER_AUTHORIZATION, AcaiConstants.BEARER_PREFIX + settings.getAiToken())
+                    .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                     .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                     .build();
 
@@ -761,6 +802,8 @@ public class AiParameterService {
 
         root.add("messages", messages);
         root.addProperty("temperature", 0.3);
+        // 显式声明非流式响应，兼容 vLLM/Qwen 等私有部署网关
+        root.addProperty("stream", false);
         return root;
     }
 

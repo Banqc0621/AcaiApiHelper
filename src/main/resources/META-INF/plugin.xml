@@ -15,6 +15,7 @@
 
     <!-- 插件描述 - 在插件市场和IDE插件管理器中展示 -->
     <description><![CDATA[
+        Acai API Helper is an enterprise-grade API debugging and automated testing plugin for IntelliJ IDEA. It provides built-in HTTP debugging, API scanning, AI parameter generation, test case management, and Git pre-commit checks.
         <h2>Acai API Helper - 企业级API调试与自动化测试插件</h2>
         <p>功能全面的IDEA内置API调试工具，类似Apipost-Helper-2.0，专为内部企业环境定制：</p>
         <ul>

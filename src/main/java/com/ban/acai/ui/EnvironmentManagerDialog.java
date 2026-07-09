@@ -39,13 +39,24 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     private DefaultTableModel varTableModel;
     private DefaultTableModel headerTableModel;
     private boolean dirty = false;
+    private boolean initializing = true;
 
     public EnvironmentManagerDialog(Project project) {
         super(project);
         this.project = project;
         this.settings = AcaiSettingsState.getInstance(project);
         this.environments = settings.loadEnvironments();
-        this.selectedEnvironment = settings.getActiveEnvironmentObj();
+        this.selectedEnvironment = null;
+        String activeName = settings.getActiveEnvironment();
+        for (Environment e : this.environments) {
+            if (e.getName().equals(activeName)) {
+                this.selectedEnvironment = e;
+                break;
+            }
+        }
+        if (this.selectedEnvironment == null && !this.environments.isEmpty()) {
+            this.selectedEnvironment = this.environments.get(0);
+        }
         setTitle("环境管理");
         setSize(800, 550);
         init();
@@ -76,12 +87,12 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             }
         });
         envList.addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                saveCurrentEdits();
-                Environment selected = envList.getSelectedValue();
-                if (selected != null) {
-                    loadEnvironment(selected);
-                }
+            if (e.getValueIsAdjusting() || initializing) return;
+            saveCurrentEdits();
+            Environment selected = envList.getSelectedValue();
+            if (selected != null) {
+                selectedEnvironment = selected;
+                loadEnvironment(selected);
             }
         });
         refreshEnvList();
@@ -183,10 +194,17 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
         panel.add(rightPanel, BorderLayout.CENTER);
 
-        // Load first environment
-        if (!environments.isEmpty()) {
+        // Load initial environment (select active or first) without triggering save
+        if (selectedEnvironment != null) {
+            envList.setSelectedValue(selectedEnvironment, false);
+        } else if (!environments.isEmpty()) {
             envList.setSelectedIndex(0);
+            selectedEnvironment = environments.get(0);
         }
+        if (selectedEnvironment != null) {
+            loadEnvironment(selectedEnvironment);
+        }
+        initializing = false;
 
         return panel;
     }

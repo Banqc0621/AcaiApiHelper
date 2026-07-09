@@ -1623,21 +1623,40 @@ public class ApiDebuggerPanel extends JPanel {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
         
         JBTextField urlField = new JBTextField(settings.getAiServerUrl(), 35);
-        urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3");
-        
+        urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
+
         JBPasswordField keyField = new JBPasswordField();
         keyField.setText(settings.getAiToken());
-        keyField.setToolTipText("留空表示使用本地模型（如Ollama）");
-        
+        keyField.setToolTipText("Bearer Token 值（无需带 'Bearer ' 前缀，插件会自动加）；留空表示使用本地模型");
+
+        JBTextField apiPathField = new JBTextField(settings.getAiApiPath(), 20);
+        apiPathField.setToolTipText("OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat");
+
         JComboBox<String> modelField = new JComboBox<>(AcaiConstants.AI_MODEL_OPTIONS);
         modelField.setEditable(true);
         modelField.setSelectedItem(settings.getAiModel());
-        modelField.setToolTipText("选择或输入模型名称");
+        modelField.setToolTipText("选择或输入模型名称，如 Qwen3.5-35B-A3B");
         
-        JCheckBox localModelCheck = new JCheckBox("本地模型（无需API Key）");
-        localModelCheck.setSelected(settings.getAiToken().isBlank());
-        localModelCheck.setToolTipText("勾选后将跳过API Key验证");
-        localModelCheck.addActionListener(e -> keyField.setEnabled(!localModelCheck.isSelected()));
+        JCheckBox localModelCheck = new JCheckBox("本地模型（API Key 自动填为 Bearer 占位）");
+        // 判定本地模型：token 为空，或 token 为字面量 "Bearer"
+        localModelCheck.setSelected(AcaiConstants.isLocalModelToken(settings.getAiToken()));
+        localModelCheck.setToolTipText("<html>勾选后 API Key 字段自动填入字面量 <b>Bearer</b> 并禁用编辑。<br>"
+                + "调用时发送 <code>Authorization: Bearer Bearer</code>，满足 vLLM/Qwen 等网关要求。<br>"
+                + "云端模型请取消勾选，并填入真实的 API Key 值。</html>");
+        // 勾选时自动填 "Bearer" 并禁用；取消勾选时清空让用户填真实 token
+        if (localModelCheck.isSelected()) {
+            keyField.setText(AcaiConstants.AI_LOCAL_BEARER_TOKEN);
+        }
+        localModelCheck.addActionListener(e -> {
+            if (localModelCheck.isSelected()) {
+                keyField.setText(AcaiConstants.AI_LOCAL_BEARER_TOKEN);
+                keyField.setEnabled(false);
+            } else {
+                keyField.setText("");
+                keyField.setEnabled(true);
+                keyField.requestFocusInWindow();
+            }
+        });
         keyField.setEnabled(!localModelCheck.isSelected());
 
         // 自定义系统提示词
@@ -1677,61 +1696,71 @@ public class ApiDebuggerPanel extends JPanel {
         form.add(urlField, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0;
-        JBLabel keyLabel = new JBLabel("🔑 API Key:");
+        JBLabel keyLabel = new JBLabel("🔑 API Key(Bearer):");
         keyLabel.setFont(keyLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(keyLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
         form.add(keyField, gbc);
 
         gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0;
+        JBLabel apiPathLabel = new JBLabel("🛤️ API 路径:");
+        apiPathLabel.setFont(apiPathLabel.getFont().deriveFont(Font.BOLD, 11f));
+        form.add(apiPathLabel, gbc);
+        gbc.gridx = 1; gbc.weightx = 1;
+        form.add(apiPathField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0;
         JBLabel modelLabel = new JBLabel("🤖 模型:");
         modelLabel.setFont(modelLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(modelLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
         form.add(modelField, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
         form.add(localModelCheck, gbc);
 
         // 提示文字
-        JBLabel hintLabel = new JBLabel("<html><i>提示: 本地模型只需填URL和模型名，云端模型需要API Key</i></html>");
+        JBLabel hintLabel = new JBLabel("<html><i>"
+                + "云端模型：取消勾选'本地模型'，API Key 填真实 token（如 4702f55c...），无需带 'Bearer ' 前缀；<br>"
+                + "本地部署（vLLM/Qwen/Ollama）：勾选'本地模型'，API Key 自动填为 <b>Bearer</b> 占位。"
+                + "</i></html>");
         hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, 10f));
         hintLabel.setForeground(JBColor.GRAY);
-        gbc.gridy = 4;
+        gbc.gridy = 5;
         form.add(hintLabel, gbc);
 
         // ── AI 提示词自定义分区 ──
-        gbc.gridy = 5; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridy = 6; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
         JSeparator sep1 = new JSeparator();
         form.add(sep1, gbc);
 
-        gbc.gridy = 6; gbc.fill = GridBagConstraints.NONE;
+        gbc.gridy = 7; gbc.fill = GridBagConstraints.NONE;
         JBLabel promptHeader = new JBLabel("📝 AI 提示词自定义");
         promptHeader.setFont(promptHeader.getFont().deriveFont(Font.BOLD, 12f));
         promptHeader.setForeground(JBColor.BLUE);
         form.add(promptHeader, gbc);
 
-        gbc.gridy = 7; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridy = 8; gbc.fill = GridBagConstraints.HORIZONTAL;
         JBLabel systemPromptLabel = new JBLabel("系统提示词 (System Prompt):");
         systemPromptLabel.setFont(systemPromptLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(systemPromptLabel, gbc);
 
-        gbc.gridy = 8; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.3;
+        gbc.gridy = 9; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.3;
         form.add(systemPromptScroll, gbc);
 
-        gbc.gridy = 9; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
+        gbc.gridy = 10; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
         JBLabel userPromptLabel = new JBLabel("用户提示词模板 (User Prompt):");
         userPromptLabel.setFont(userPromptLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(userPromptLabel, gbc);
 
-        gbc.gridy = 10; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.5;
+        gbc.gridy = 11; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.5;
         form.add(userPromptScroll, gbc);
 
-        gbc.gridy = 11; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
+        gbc.gridy = 12; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
         JBLabel placeholderHint = new JBLabel("<html><font color='#888888' size='2'>占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
         form.add(placeholderHint, gbc);
 
-        gbc.gridy = 12; gbc.fill = GridBagConstraints.NONE; gbc.anchor = GridBagConstraints.EAST;
+        gbc.gridy = 13; gbc.fill = GridBagConstraints.NONE; gbc.anchor = GridBagConstraints.EAST;
         form.add(resetPromptBtn, gbc);
 
         // 内容较多，套滚动面板防止超出屏幕高度
@@ -1743,22 +1772,35 @@ public class ApiDebuggerPanel extends JPanel {
         if (result == JOptionPane.OK_OPTION) {
             String serverUrl = urlField.getText().trim();
             String apiKey = new String(keyField.getPassword()).trim();
+            String apiPath = apiPathField.getText().trim();
             String model = String.valueOf(modelField.getSelectedItem()).trim();
-            
+
             if (serverUrl.isBlank()) {
                 Messages.showWarningDialog(project, "服务器URL不能为空", "配置错误");
                 return;
             }
-            
+            if (apiPath.isBlank()) {
+                apiPath = AcaiConstants.AI_DEFAULT_API_PATH;
+            }
+            if (!apiPath.startsWith("/")) {
+                apiPath = "/" + apiPath;
+            }
+
             settings.setAiServerUrl(serverUrl);
-            settings.setAiToken(localModelCheck.isSelected() ? "" : apiKey);
+            // 本地模型：token 存为字面量 "Bearer"（而非空字符串），下次打开面板可正确识别
+            // 云端模型：token 存为用户填入的真实 API Key 值
+            settings.setAiToken(localModelCheck.isSelected()
+                    ? AcaiConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
+            settings.setAiApiPath(apiPath);
             settings.setAiModel(model);
             settings.setAiSystemPrompt(systemPromptArea.getText());
             settings.setAiUserPromptTemplate(userPromptArea.getText());
 
             statusLabel.setText("● AI配置已更新");
-            
-            Messages.showInfoMessage(project, "AI配置已成功保存！\n\n服务器: " + serverUrl + "\n模型: " + model, "保存成功");
+
+            Messages.showInfoMessage(project,
+                    "AI配置已成功保存！\n\n服务器: " + serverUrl + "\nAPI 路径: " + apiPath
+                            + "\n模型: " + model, "保存成功");
         }
     }
 
