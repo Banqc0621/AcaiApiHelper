@@ -136,16 +136,25 @@ public class AiParameterService {
         private final String rawResponse;
         private final List<Map<String, String>> parameters;
         private final boolean usedAi;
+        private final String errorMessage;
 
         public GenerateResult(String rawResponse, List<Map<String, String>> parameters, boolean usedAi) {
+            this(rawResponse, parameters, usedAi, null);
+        }
+
+        public GenerateResult(String rawResponse, List<Map<String, String>> parameters,
+                              boolean usedAi, String errorMessage) {
             this.rawResponse = rawResponse;
             this.parameters = parameters;
             this.usedAi = usedAi;
+            this.errorMessage = errorMessage;
         }
 
         public String getRawResponse() { return rawResponse; }
         public List<Map<String, String>> getParameters() { return parameters; }
         public boolean isUsedAi() { return usedAi; }
+        public String getErrorMessage() { return errorMessage; }
+        public boolean isSuccess() { return errorMessage == null && usedAi; }
     }
 
     /**
@@ -162,7 +171,8 @@ public class AiParameterService {
             return new GenerateResult(
                     "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL以使用AI生成真实参数",
                     List.of(generateDefaultParameters(api)),
-                    false
+                    false,
+                    "AI服务器URL未配置，请在「AI配置」中填写服务器URL"
             );
         }
         if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
@@ -179,6 +189,16 @@ public class AiParameterService {
             for (int i = 0; i < params.size(); i++) {
                 log.info("[AI生成参数] 第" + (i + 1) + "组: " + params.get(i));
             }
+            if (params.isEmpty()) {
+                return new GenerateResult(
+                        rawContent,
+                        params,
+                        true,
+                        "AI返回内容未解析出有效参数，请检查模型输出格式或调整提示词。\n原始响应预览: "
+                                + (rawContent != null && rawContent.length() > 500
+                                    ? rawContent.substring(0, 500) + "..." : rawContent)
+                );
+            }
             return new GenerateResult(rawContent, params, true);
         } catch (Exception e) {
             log.warn("[AI生成参数] 失败 => API=" + api.getUrl()
@@ -187,7 +207,8 @@ public class AiParameterService {
             return new GenerateResult(
                     "⚠ AI调用失败: " + e.getMessage() + "\n降级使用本地默认值生成",
                     List.of(generateDefaultParameters(api)),
-                    false
+                    false,
+                    "AI调用失败: " + e.getClass().getSimpleName() + " - " + e.getMessage()
             );
         }
     }

@@ -182,22 +182,27 @@ public class ApiDebuggerPanel extends JPanel {
      * </ul>
      */
     private JPanel createToolbar() {
-        // ============== 第 1 行：扫描 + 环境 ==============
+        // ============== 第 1 行：扫描API + 环境 + 环境管理 + 保存配置 ==============
         JToolBar toolbar1 = new JToolBar();
         toolbar1.setFloatable(false);
         toolbar1.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
 
         JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
         scanBtn.setToolTipText("重新扫描项目中的所有API接口");
+        scanBtn.putClientProperty("JButton.buttonType", "roundRect");
         scanBtn.addActionListener(e -> {
             ApiScannerService.getInstance(project).scanProjectApisAsync();
             statusLabel.setText("● 正在扫描API...");
         });
+        toolbar1.add(scanBtn);
+
+        toolbar1.addSeparator(new Dimension(12, 0));
+        toolbar1.add(new JBLabel("环境: "));
 
         // 环境选择下拉框
         envCombo = new JComboBox<>();
         refreshEnvCombo();
-        envCombo.setPreferredSize(new Dimension(150, 28));
+        envCombo.setPreferredSize(new Dimension(140, 26));
         envCombo.setToolTipText("切换环境配置");
         envCombo.addActionListener(e -> {
             Environment selected = (Environment) envCombo.getSelectedItem();
@@ -209,9 +214,11 @@ public class ApiDebuggerPanel extends JPanel {
                 statusLabel.setText("● 已切换到环境: " + selected.getName());
             }
         });
+        toolbar1.add(envCombo);
 
-        JButton envBtn = new JButton("管理", AllIcons.General.Settings);
+        JButton envBtn = new JButton("环境管理", AllIcons.General.Settings);
         envBtn.setToolTipText("管理环境配置");
+        envBtn.putClientProperty("JButton.buttonType", "roundRect");
         envBtn.addActionListener(e -> {
             EnvironmentManagerDialog dialog = new EnvironmentManagerDialog(project);
             if (dialog.showAndGet()) {
@@ -219,56 +226,56 @@ public class ApiDebuggerPanel extends JPanel {
                 statusLabel.setText("● 环境配置已更新");
             }
         });
-
-        toolbar1.add(scanBtn);
-        toolbar1.addSeparator(new Dimension(8, 0));
-        toolbar1.add(new JBLabel("环境: "));
-        toolbar1.add(envCombo);
         toolbar1.add(envBtn);
 
-        // ============== 第 2 行：保存 / 导入 / 导出 ==============
+        toolbar1.addSeparator(new Dimension(12, 0));
+
+        JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
+        saveBtn.setToolTipText("保存当前测试配置");
+        saveBtn.putClientProperty("JButton.buttonType", "roundRect");
+        saveBtn.addActionListener(e -> saveCurrentProfile());
+        toolbar1.add(saveBtn);
+
+        // ============== 第 2 行：导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
         JToolBar toolbar2 = new JToolBar();
         toolbar2.setFloatable(false);
         toolbar2.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
 
-
-
         JButton importBtn = new JButton("导入", AllIcons.ToolbarDecorator.Import);
         importBtn.setToolTipText("导入cURL或JSON测试用例");
+        importBtn.putClientProperty("JButton.buttonType", "roundRect");
         importBtn.addActionListener(e -> importCurlOrJson());
+        toolbar2.add(importBtn);
 
         JButton exportBtn = new JButton("导出cURL", AllIcons.ToolbarDecorator.Export);
         exportBtn.setToolTipText("导出为cURL命令");
+        exportBtn.putClientProperty("JButton.buttonType", "roundRect");
         exportBtn.addActionListener(e -> exportCurl());
+        toolbar2.add(exportBtn);
 
         JButton exportDocBtn = new JButton("导出文档", AllIcons.Actions.Download);
         exportDocBtn.setToolTipText("导出API文档(Markdown)");
+        exportDocBtn.putClientProperty("JButton.buttonType", "roundRect");
         exportDocBtn.addActionListener(e -> exportApiDoc());
+        toolbar2.add(exportDocBtn);
 
         JButton exportReportBtn = new JButton("导出报告", AllIcons.Actions.Dump);
         exportReportBtn.setToolTipText("导出HTML测试报告");
+        exportReportBtn.putClientProperty("JButton.buttonType", "roundRect");
         exportReportBtn.addActionListener(e -> exportLastReport());
+        toolbar2.add(exportReportBtn);
+
+        toolbar2.addSeparator(new Dimension(4, 0));
 
         JButton clearCookieBtn = new JButton("清Cookie", AllIcons.Actions.GC);
         clearCookieBtn.setToolTipText("清空Cookie");
+        clearCookieBtn.putClientProperty("JButton.buttonType", "roundRect");
         clearCookieBtn.addActionListener(e -> {
             HttpExecutorService.getInstance(project).clearCookies();
             cookieStatusLabel.setText("Cookie: 已清空");
             statusLabel.setText("● Cookie已清空");
         });
-
-        JButton saveBtn = new JButton("保存配置", AllIcons.Actions.MenuSaveall);
-        saveBtn.setToolTipText("保存当前测试配置");
-        saveBtn.addActionListener(e -> saveCurrentProfile());
-
-        toolbar2.add(Box.createHorizontalGlue());
-        toolbar2.add(importBtn);
-        toolbar2.add(exportBtn);
-        toolbar2.add(exportDocBtn);
-        toolbar2.add(exportReportBtn);
-        toolbar2.addSeparator(new Dimension(4, 0));
         toolbar2.add(clearCookieBtn);
-        toolbar2.add(saveBtn);
 
         // ============== 外层：垂直 BoxLayout 包裹两行 ==============
         JPanel wrapper = new JPanel();
@@ -1193,30 +1200,34 @@ public class ApiDebuggerPanel extends JPanel {
     
             ApplicationManager.getApplication().invokeLater(() -> {
                 List<Map<String, String>> sets = result.getParameters();
-                    
-                // 显示模型原始返回内容
-                String rawResponse = result.getRawResponse();
-                if (rawResponse != null && !rawResponse.isBlank()) {
-                } else {
+                String errMsg = result.getErrorMessage();
+
+                // ===== 失败情况：显示失败原因 =====
+                if (errMsg != null) {
+                    String rawResponse = result.getRawResponse();
+                    StringBuilder failInfo = new StringBuilder();
+                    failInfo.append("╔══════════════════════════════════════════╗\n");
+                    failInfo.append("║          ⚠ AI 生成失败                   ║\n");
+                    failInfo.append("╚══════════════════════════════════════════╝\n\n");
+                    failInfo.append("【失败原因】\n").append(errMsg).append("\n\n");
+                    if (rawResponse != null && !rawResponse.isBlank()) {
+                        failInfo.append("【AI原始响应】\n").append(rawResponse);
+                    }
+                    testResultArea.setText(failInfo.toString());
+                    testResultArea.setCaretPosition(0);
+                    tabbedPane.setSelectedIndex(3); // 跳到响应tab展示失败原因
+                    statusLabel.setText("❌ AI生成失败: " + errMsg.split("\n")[0]);
+                    return;
                 }
-                    
-                // 显示是否使用了AI
-                if (!result.isUsedAi()) {
-                }
-                    
+
+                // ===== 成功情况：填充参数表格 + 跳转请求体显示格式化JSON =====
                 if (!sets.isEmpty()) {
                     Map<String, String> first = sets.get(0);
-                        
-                    // 显示解析后的参数JSON
-                    try {
-                        String json = gson.toJson(first);
-                    } catch (Exception e) {
-                    }
-                        
+
                     // 自动填充到参数表格
                     int filledCount = 0;
                     List<Integer> modifiedRows = new ArrayList<>();
-                        
+
                     for (int i = 0; i < paramTableModel.getRowCount(); i++) {
                         Object name = paramTableModel.getValueAt(i, 0);
                         if (name instanceof String && first.containsKey(name)) {
@@ -1226,10 +1237,24 @@ public class ApiDebuggerPanel extends JPanel {
                             filledCount++;
                         }
                     }
-                        
-                    statusLabel.setText("● 生成完成 (" + (result.isUsedAi() ? "AI" : "默认") + ", " + filledCount + " 个参数)");
-                        
-                    tabbedPane.setSelectedIndex(0);
+
+                    // 将生成的参数转为格式化JSON填入请求体编辑器
+                    try {
+                        String prettyJson = gson.toJson(first);
+                        // 二次格式化美化
+                        var elem = JsonParser.parseString(prettyJson);
+                        bodyEditor.setText(gson.toJson(elem));
+                        bodyEditor.setCaretPosition(0);
+                    } catch (Exception ex) {
+                        bodyEditor.setText(gson.toJson(first));
+                    }
+
+                    // 跳转到请求体Tab页（index=2），显示格式化JSON内容
+                    tabbedPane.setSelectedIndex(2);
+
+                    statusLabel.setText("● 生成完成 (" + (result.isUsedAi() ? "AI" : "默认")
+                            + ", " + filledCount + " 个参数, 已填入请求体)");
+
                     SwingUtilities.invokeLater(() -> {
                         try {
                             Thread.sleep(200);
@@ -1237,7 +1262,9 @@ public class ApiDebuggerPanel extends JPanel {
                         } catch (InterruptedException e) { /* ignore */ }
                     });
                 } else {
-                    statusLabel.setText("○ 生成失败");
+                    statusLabel.setText("○ 生成失败：未解析出参数");
+                    testResultArea.setText("AI返回内容为空，未解析出有效参数。\n\n原始响应:\n" + result.getRawResponse());
+                    tabbedPane.setSelectedIndex(3);
                 }
             });
         });
@@ -1626,9 +1653,32 @@ public class ApiDebuggerPanel extends JPanel {
         JBTextField urlField = new JBTextField(settings.getAiServerUrl(), 35);
         urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
 
+        // API Key 输入框：默认密文显示，支持小眼睛切换明文
         JBPasswordField keyField = new JBPasswordField();
         keyField.setText(settings.getAiToken());
         keyField.setToolTipText("Bearer Token 值（无需带 'Bearer ' 前缀，插件会自动加）；留空表示使用本地模型");
+        // 小眼睛切换按钮：明文/密文
+        JButton toggleKeyBtn = new JButton(AllIcons.Actions.Preview);
+        toggleKeyBtn.setToolTipText("显示/隐藏 API Key 内容");
+        toggleKeyBtn.putClientProperty("JButton.buttonType", "square");
+        toggleKeyBtn.setMargin(new Insets(0, 2, 0, 2));
+        toggleKeyBtn.setPreferredSize(new Dimension(28, keyField.getPreferredSize().height));
+        final boolean[] keyVisible = {false};
+        toggleKeyBtn.addActionListener(e -> {
+            keyVisible[0] = !keyVisible[0];
+            if (keyVisible[0]) {
+                keyField.setEchoChar((char) 0);  // 明文显示
+                toggleKeyBtn.setIcon(AllIcons.Actions.Cancel);
+                toggleKeyBtn.setToolTipText("点击隐藏 API Key");
+            } else {
+                keyField.setEchoChar('\u2022');  // 圆点密文
+                toggleKeyBtn.setIcon(AllIcons.Actions.Preview);
+                toggleKeyBtn.setToolTipText("点击显示 API Key");
+            }
+        });
+        JPanel keyFieldPanel = new JPanel(new BorderLayout(2, 0));
+        keyFieldPanel.add(keyField, BorderLayout.CENTER);
+        keyFieldPanel.add(toggleKeyBtn, BorderLayout.EAST);
 
         JBTextField apiPathField = new JBTextField(settings.getAiApiPath(), 20);
         apiPathField.setToolTipText("OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat");
@@ -1652,13 +1702,16 @@ public class ApiDebuggerPanel extends JPanel {
             if (localModelCheck.isSelected()) {
                 keyField.setText(AcaiConstants.AI_LOCAL_BEARER_TOKEN);
                 keyField.setEnabled(false);
+                toggleKeyBtn.setEnabled(false);
             } else {
                 keyField.setText("");
                 keyField.setEnabled(true);
+                toggleKeyBtn.setEnabled(true);
                 keyField.requestFocusInWindow();
             }
         });
         keyField.setEnabled(!localModelCheck.isSelected());
+        toggleKeyBtn.setEnabled(!localModelCheck.isSelected());
 
         // 自定义系统提示词
         JBTextArea systemPromptArea = new JBTextArea(settings.getAiSystemPrompt());
@@ -1701,7 +1754,7 @@ public class ApiDebuggerPanel extends JPanel {
         keyLabel.setFont(keyLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(keyLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
-        form.add(keyField, gbc);
+        form.add(keyFieldPanel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0;
         JBLabel apiPathLabel = new JBLabel("🛤️ API 路径:");
@@ -1795,10 +1848,42 @@ public class ApiDebuggerPanel extends JPanel {
         // 结果标记
         final boolean[] okPressed = {false};
 
-        // 按钮事件
+        // 按钮事件：确定时先校验，校验通过才关闭对话框并保存
         okBtn.addActionListener(e -> {
+            String serverUrl = urlField.getText().trim();
+            String apiKey = new String(keyField.getPassword()).trim();
+            String apiPath = apiPathField.getText().trim();
+            String model = String.valueOf(modelField.getSelectedItem()).trim();
+
+            if (serverUrl.isBlank()) {
+                Messages.showWarningDialog(dialog, "服务器URL不能为空", "配置错误");
+                urlField.requestFocusInWindow();
+                return;
+            }
+            if (apiPath.isBlank()) {
+                apiPath = AcaiConstants.AI_DEFAULT_API_PATH;
+            }
+            if (!apiPath.startsWith("/")) {
+                apiPath = "/" + apiPath;
+            }
+
+            // 校验通过，保存配置
+            settings.setAiServerUrl(serverUrl);
+            settings.setAiToken(localModelCheck.isSelected()
+                    ? AcaiConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
+            settings.setAiApiPath(apiPath);
+            settings.setAiModel(model);
+            settings.setAiSystemPrompt(systemPromptArea.getText());
+            settings.setAiUserPromptTemplate(userPromptArea.getText());
+
             okPressed[0] = true;
             dialog.dispose();
+
+            statusLabel.setText("● AI配置已更新");
+
+            Messages.showInfoMessage(project,
+                    "AI配置已成功保存！\n\n服务器: " + serverUrl + "\nAPI 路径: " + apiPath
+                            + "\n模型: " + model, "保存成功");
         });
         cancelBtn.addActionListener(e -> dialog.dispose());
 
@@ -1810,38 +1895,7 @@ public class ApiDebuggerPanel extends JPanel {
         dialog.getRootPane().setDefaultButton(okBtn);
 
         dialog.setVisible(true);
-
-        if (okPressed[0]) {
-            String serverUrl = urlField.getText().trim();
-            String apiKey = new String(keyField.getPassword()).trim();
-            String apiPath = apiPathField.getText().trim();
-            String model = String.valueOf(modelField.getSelectedItem()).trim();
-
-            if (serverUrl.isBlank()) {
-                Messages.showWarningDialog(project, "服务器URL不能为空", "配置错误");
-                return;
-            }
-            if (apiPath.isBlank()) {
-                apiPath = AcaiConstants.AI_DEFAULT_API_PATH;
-            }
-            if (!apiPath.startsWith("/")) {
-                apiPath = "/" + apiPath;
-            }
-
-            settings.setAiServerUrl(serverUrl);
-            settings.setAiToken(localModelCheck.isSelected()
-                    ? AcaiConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
-            settings.setAiApiPath(apiPath);
-            settings.setAiModel(model);
-            settings.setAiSystemPrompt(systemPromptArea.getText());
-            settings.setAiUserPromptTemplate(userPromptArea.getText());
-
-            statusLabel.setText("● AI配置已更新");
-
-            Messages.showInfoMessage(project,
-                    "AI配置已成功保存！\n\n服务器: " + serverUrl + "\nAPI 路径: " + apiPath
-                            + "\n模型: " + model, "保存成功");
-        }
+        // 保存逻辑已在 okBtn 事件中完成，此处无需重复处理
     }
 
     // ================================================================
