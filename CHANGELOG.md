@@ -1,6 +1,40 @@
 # Acai API Helper - 更新日志
 
-## [3.0.0] - 2026-07-06
+## [1.0.3] - 2026-07-09
+
+### 🤖 AI 配置界面优化
+
+1. **系统/用户提示词可折叠（互斥）** - AI 提示词自定义区域的「系统提示词」「用户提示词」默认折叠，点击其一展开时自动折叠另一个，两者同时只能打开一个；折叠/展开时对话框高度自适应，紧凑无空白
+2. **底部三按钮同一排** - 「恢复默认提示词」「确定」「取消」按钮放至底部同一行（恢复默认在左、确定/取消在右），显著减小底部上下高度
+3. **横向伸缩真正生效** - 表单容器改为 `ScrollableGridBagPanel`（`getScrollableTracksViewportWidth` 返回 true），对话框左右拉伸时输入框撑满、API Key 小眼睛按钮跟随右边缘移动
+4. **API 路径允许留空保存** - 移除保存时的强制默认值回填，留空时请求直接打到 Base URL 根路径；同步修复 `AiParameterService` 三个 HTTP 调用点（`callArkChatCompletions` 主入口此前完全无视配置，硬编码 `/chat/completions`）及设置页 `getAiApiPath`/`reset()` 的空值回填
+
+### 🔍 API 接口扫描增强（修复接口列表显示不全）
+
+1. **路径占位符不再整条丢弃** - `${key:default}` 取默认值、`${key}` 取变量名（至少保证接口被识别），仅 `#{...}`（SpEL）无法静态求值才丢弃
+2. **组合注解控制器可发现** - 在 `@RestController`/`@Controller`/`@FeignClient`/JAX-RS `@Path` 之外，补充按类级 `@RequestMapping` 搜索，覆盖自定义组合注解控制器
+3. **方法级 `@*Mapping` 反向定位** - 只要某方法标了 `@GetMapping`/`@PostMapping` 等，其所属类即被纳入候选，兜底覆盖轻量控制器、Kotlin 控制器等「类级搜不到」的场景
+4. **多路径注解完整展开** - `@GetMapping({"/list","/query"})` 等多值注解展开为多个独立接口（此前只取第一个，其余丢弃）；Spring/JAX-RS 路径提取均改为返回列表
+5. **方法重载不再被误去重** - 去重键由 `METHOD|URL` 改为 `控制器名#方法名(参数签名)|METHOD|URL`，保留同 URL 不同参数的重载方法，同时仍能去除 `getAllMethods()` 的重复返回
+6. **诊断日志** - 每个控制器解析结果（接口数/方法数）写入 `idea.log`，便于定位「0 个接口」的异常类
+7. **Kotlin/无名类控制器不再整类被丢** - 控制器去重此前用 `getQualifiedName()` 判空，对 Kotlin 的 `KtLightClass`、局部类、二次开发类 qfn 可能为 null，导致整类被跳过、接口整批丢失。改为 qfn 为 null 时用「类名 + 源文件路径」兜底去重
+8. **自定义 ErrorController 控制器不再被误杀** - 旧逻辑因「实现了 `ErrorController` 接口」就丢弃整个类，会误伤用户自定义 ErrorController 实现类中的其他业务接口。移除该整类判定，框架内置 `BasicErrorController` 仍由类名黑名单 + `org.springframework.` 包名过滤挡住，其 errorPath 占位符由方法解析层单独清理
+9. **扫描总结日志增强** - 输出「候选控制器数(含重复/多注解) → 去重后数 → 产出接口数」全链路计数，便于从 `idea.log` 定位是哪一环丢了接口
+10. **路径常量引用解析** - `@GetMapping(ApiConstants.PATH)` / `@GetMapping(PATH)` 等 `static final String` 常量引用，此前取注解文本得到 `ApiConstants.PATH` 当作路径，接口虽显示但路径错误/无法识别。新增 `resolveMemberValuePaths` 用 PSI 语义解析常量实际值，回退到文本解析保证兼容
+11. **多类级基路径展开** - `@RequestMapping({"/api/v1","/api/v2"})` 此前只取第一个基路径，`/api/v2` 前缀下的方法路径全部丢失。改为 `extractClassBasePaths` 返回多路径列表，方法路径与每个基路径做笛卡尔积，多版本前缀接口完整识别（JAX-RS `@Path` 同理）
+12. **逐控制器诊断日志增强** - 每个控制器输出 `qfn + 带映射注解的方法数 + 产出接口数 + 被占位符过滤的方法名列表`，0 接口时区分「无映射注解」与「有映射但全被过滤」两种情况，精确定位丢接口的类
+
+### 📝 AI 参数体 JSON 格式化修复
+
+- **双重转义乱码修复** - AI 生成的请求体此前出现 `\"`、`\n`、全角引号等乱码。根因：嵌套对象/数组被 `jsonObjectToMap` 序列化为 JSON 字符串存入 Map，再次 `gson.toJson(map)` 时被二次转义。新增 `mapToNestedJson`，将形似 JSON 的字符串值解析回真实结构后单次美化输出，请求体现为规整的、带缩进的可读 JSON
+
+### 🌐 环境管理回显修复
+
+1. **对话框激活环境后主面板回显** - 在环境管理对话框内激活其他环境并确定后，主面板的 Base URL 输入框、请求头表格此前不更新。新增 `applyEnvironmentToPanel`，对话框 OK 后将当前激活环境回显到主面板
+2. **下拉框切换带全局请求头** - 下拉框切换环境时除了更新 Base URL，还将该环境的全局请求头注入请求头表格顶部（保留接口自身/Content-Type 等已有头，同名跳过避免重复）
+3. **下拉框重建不再误切换** - `refreshEnvCombo` 重建期间用 `suppressEnvComboAction` 标志抑制 `ActionListener`，避免 `removeAllItems`/`setSelectedItem` 触发误切换、激活状态被错误覆盖
+
+## [1.0.2] - 2026-07-06
 
 ### 🔴 P0 - v2遗留问题修复 (100%完成)
 

@@ -215,13 +215,38 @@ public class ApiScannerService {
             }
 
             // 去重（某些类可能同时带多个注解）
+            // 注意：getQualifiedName() 对 Kotlin 的 KtLightClass、局部类、动态生成类等可能返回 null，
+            // 若直接用 qfn 判空跳过，会导致整批接口被丢弃（表现为"接口列表显示不全"）。
+            // 因此 qfn 为 null 时改用「类名 + 源文件路径」作为兜底去重键，保证此类仍被解析。
             Set<String> seen = new HashSet<>();
             List<PsiClass> uniqueControllers = new ArrayList<>();
+            int skippedNullQfn = 0;
             for (PsiClass cls : allControllers) {
                 String qfn = cls.getQualifiedName();
-                if (qfn != null && seen.add(qfn)) {
+                String dedupKey;
+                if (qfn != null) {
+                    dedupKey = qfn;
+                } else {
+                    // 兜底：类名 + 源文件路径（尽量唯一）
+                    String name = cls.getName();
+                    if (name == null) {
+                        // 连类名都没有（匿名类/lambda），无法稳定去重，跳过避免重复
+                        skippedNullQfn++;
+                        continue;
+                    }
+                    String filePath = "";
+                    PsiFile f = cls.getContainingFile();
+                    if (f != null && f.getVirtualFile() != null) {
+                        filePath = f.getVirtualFile().getPath();
+                    }
+                    dedupKey = "@nullQfn:" + name + "@" + filePath;
+                }
+                if (seen.add(dedupKey)) {
                     uniqueControllers.add(cls);
                 }
+            }
+            if (skippedNullQfn > 0) {
+                LOG.info("控制器去重: " + skippedNullQfn + " 个匿名/lambda 类被跳过（无类名无法稳定解析）");
             }
 
             // ── 4. 逐个解析控制器 ──
@@ -238,20 +263,15 @@ public class ApiScannerService {
                 try {
                     List<ApiDefinition> classApis = parseControllerClass(psiClass);
                     apis.addAll(classApis);
-                    int methodCount = psiClass.getAllMethods().length;
-                    if (classApis.isEmpty()) {
-                        LOG.info("解析 " + psiClass.getName()
-                                + ": 0 个接口（共 " + methodCount + " 个方法，可能无HTTP映射注解或被过滤）");
-                    } else {
-                        LOG.info("解析 " + psiClass.getName() + ": 发现 " + classApis.size()
-                                + " 个接口（共 " + methodCount + " 个方法）");
-                    }
+                    // 详细的逐控制器日志已在 parseControllerClass 内输出（含 qfn、映射方法数、被过滤方法）
                 } catch (Exception e) {
                     LOG.warn("解析控制器类失败: " + psiClass.getName() + " - " + e.getMessage(), e);
                 }
             }
 
-            LOG.info("扫描总结: " + uniqueControllers.size() + " 个控制器, " + apis.size() + " 个接口");
+            LOG.info("扫描总结: 候选控制器 " + allControllers.size()
+                    + " 个(含重复/多注解), 去重后 " + uniqueControllers.size()
+                    + " 个, 产出接口 " + apis.size() + " 个");
             return apis;
         }).inSmartMode(project).executeSynchronously();
     }
@@ -275,8 +295,8 @@ public class ApiScannerService {
             return apis;
         }
 
-        // 提取类级别的基础路径（Spring @RequestMapping 或 JAX-RS @Path）
-        String basePath = extractClassBasePath(psiClass);
+        // 提取类级别的基础路径列表（Spring @RequestMapping / JAX-RS @Path，支持多路径）
+        List<String> basePaths = extractClassBasePaths(psiClass);
 
         // 判断是否为 JAX-RS 风格
         boolean isJaxrs = isJaxrsClass(psiClass);
@@ -286,14 +306,21 @@ public class ApiScannerService {
         // 但保留方法重载（同 URL 不同参数）和不同控制器下的同名继承方法。
         Set<String> seenKeys = new HashSet<>();
 
+        // 诊断计数：带HTTP映射注解的方法数、被占位符过滤的方法名
+        int mappedMethodCount = 0;
+        List<String> filteredMethods = new ArrayList<>();
+
         // 遍历类自身声明的方法（含从接口/父类继承的方法）
         for (PsiMethod method : psiClass.getAllMethods()) {
             try {
                 List<ApiDefinition> methodApis;
                 if (isJaxrs) {
-                    methodApis = parseJaxrsMethod(method, controllerName, basePath, psiClass);
+                    methodApis = parseJaxrsMethod(method, controllerName, basePaths, psiClass);
                 } else {
-                    methodApis = parseSpringMethod(method, controllerName, basePath, psiClass);
+                    methodApis = parseSpringMethod(method, controllerName, basePaths, psiClass);
+                }
+                if (!methodApis.isEmpty()) {
+                    mappedMethodCount++;
                 }
                 for (ApiDefinition api : methodApis) {
                     // 路径含未解析占位符（${...}）：尽量清理保留，而不是整条丢弃
@@ -302,6 +329,7 @@ public class ApiScannerService {
                         if (cleaned == null || cleaned.isBlank() || cleaned.equals("/")) {
                             LOG.info("跳过含 SpEL 表达式或空路径的接口: " + api.getUrl()
                                     + "（来自 " + controllerName + "." + method.getName() + "）");
+                            filteredMethods.add(method.getName() + ":" + api.getHttpMethod() + " " + api.getUrl());
                             continue;
                         }
                         LOG.info("清理路径占位符: " + api.getUrl() + " -> " + cleaned
@@ -327,6 +355,19 @@ public class ApiScannerService {
             }
         }
 
+        // 增强诊断：输出 qfn + 带映射注解的方法数 + 产出接口数 + 被过滤的方法
+        String qfn = psiClass.getQualifiedName();
+        if (apis.isEmpty()) {
+            String hint = mappedMethodCount > 0
+                    ? "（有 " + mappedMethodCount + " 个方法带映射注解但全被占位符过滤: " + filteredMethods + "）"
+                    : "（共 " + psiClass.getAllMethods().length + " 个方法，无HTTP映射注解）";
+            LOG.info("解析控制器 [" + controllerName + "] " + qfn + ": 0 个接口 " + hint);
+        } else {
+            LOG.info("解析控制器 [" + controllerName + "] " + qfn + ": " + apis.size()
+                    + " 个接口（带映射注解的方法 " + mappedMethodCount + " 个）"
+                    + (filteredMethods.isEmpty() ? "" : "，被过滤: " + filteredMethods));
+        }
+
         return apis;
     }
 
@@ -347,10 +388,14 @@ public class ApiScannerService {
      * 不是用户业务接口，应当过滤掉。</p>
      * <p>判定依据：</p>
      * <ul>
-     *   <li>类的全限定名命中黑名单（BasicErrorController、ErrorController 实现类、actuator 端点）</li>
+     *   <li>类的全限定名命中黑名单（BasicErrorController、DefaultErrorController、actuator 端点）</li>
      *   <li>包名以 <code>org.springframework.</code> 开头（Spring 框架本身及 Spring Boot 自动配置）</li>
-     *   <li>实现了 <code>org.springframework.boot.web.servlet.error.ErrorController</code></li>
      * </ul>
+     * <p><b>注意</b>：不再因「实现了 ErrorController 接口」就丢弃整个类。
+     * 早期版本有此判定，会误伤用户自定义的 ErrorController 实现类——这类类里往往还含其他业务接口，
+     * 整类丢弃会导致「接口列表显示不全」。框架内置的 BasicErrorController 已被上面的类名黑名单 +
+     * Spring 包名过滤覆盖；其 errorPath 方法的 <code>${...}</code> 占位符则由
+     * {@link #hasUnresolvedPlaceholder} / {@link #cleanPlaceholderInPath} 在方法解析层单独处理。</p>
      */
     private boolean isFrameworkInternalController(PsiClass psiClass) {
         String qfn = psiClass.getQualifiedName();
@@ -370,13 +415,6 @@ public class ApiScannerService {
             return true;
         }
 
-        // 3. 实现了 ErrorController 接口（Spring Boot 错误处理控制器）
-        for (PsiClass iface : psiClass.getInterfaces()) {
-            String ifqfn = iface.getQualifiedName();
-            if (ifqfn != null && ifqfn.endsWith(".ErrorController")) {
-                return true;
-            }
-        }
         return false;
     }
 
@@ -426,19 +464,24 @@ public class ApiScannerService {
     // ================================================================
 
     /**
-     * 提取控制器类级别的 @RequestMapping 基础路径（Spring MVC）
+     * 提取控制器类级别的基础路径列表（支持多路径）。
+     * <p>Spring <code>@RequestMapping({"/api/v1","/api/v2"})</code> 会返回两个基路径，
+     * 方法路径会与每个基路径做笛卡尔积，确保多版本前缀下的接口都能被识别。</p>
+     * <p>无类级路径注解时返回 <code>[""]</code>（单元素空串），保持与旧逻辑兼容。</p>
      */
-    private String extractClassBasePath(PsiClass psiClass) {
-        // Spring @RequestMapping
+    private List<String> extractClassBasePaths(PsiClass psiClass) {
+        // Spring @RequestMapping（支持多路径）
         PsiAnnotation requestMapping = psiClass.getAnnotation(AcaiConstants.ANNO_REQUEST_MAPPING);
         if (requestMapping != null) {
-            return extractPathFromAnnotation(requestMapping);
+            List<String> paths = extractPathsFromAnnotation(requestMapping);
+            if (!paths.isEmpty()) return paths;
         }
-        // JAX-RS @Path
+        // JAX-RS @Path（支持多路径）
         PsiAnnotation jaxrsPath = psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAVAX);
         if (jaxrsPath == null) jaxrsPath = psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAKARTA);
         if (jaxrsPath != null) {
-            return extractJaxrsPath(jaxrsPath);
+            List<String> paths = extractJaxrsPaths(jaxrsPath);
+            if (!paths.isEmpty()) return paths;
         }
         // FeignClient @FeignClient(path = "...")
         PsiAnnotation feignClient = psiClass.getAnnotation(AcaiConstants.ANNO_FEIGN_CLIENT);
@@ -446,25 +489,26 @@ public class ApiScannerService {
             PsiAnnotationMemberValue pathVal = feignClient.findAttributeValue("path");
             if (pathVal != null) {
                 String path = cleanAnnotationValue(pathVal.getText());
-                if (!path.isEmpty()) return path;
+                if (!path.isEmpty()) return Collections.singletonList(path);
             }
             // 也尝试 value 属性
             PsiAnnotationMemberValue valVal = feignClient.findAttributeValue("value");
             if (valVal != null) {
                 String path = cleanAnnotationValue(valVal.getText());
-                if (!path.isEmpty() && path.startsWith("/")) return path;
+                if (!path.isEmpty() && path.startsWith("/")) return Collections.singletonList(path);
             }
         }
-        return "";
+        // 默认：单元素空串，兼容旧逻辑
+        return Collections.singletonList("");
     }
 
     /**
      * 解析Spring风格的方法为API定义
      * 支持多路径注解（如 @GetMapping({"/list","/query"})），
-     * 每个路径各生成一个 ApiDefinition。
+     * 每个方法路径与每个类级基路径做笛卡尔积，各生成一个 ApiDefinition。
      */
     private List<ApiDefinition> parseSpringMethod(PsiMethod method, String controllerName,
-                                                  String basePath, PsiClass declaringClass) {
+                                                  List<String> basePaths, PsiClass declaringClass) {
         PsiAnnotation mappingAnnotation = findSpringMappingAnnotation(method);
         if (mappingAnnotation == null) return Collections.emptyList();
 
@@ -473,15 +517,18 @@ public class ApiScannerService {
 
         List<ApiDefinition> result = new ArrayList<>();
         if (methodPaths.isEmpty()) {
-            // 无显式路径（仅类级 basePath），生成单个接口
-            String fullPath = normalizePath(basePath);
-            ApiDefinition api = buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass);
-            result.add(api);
+            // 无显式方法路径，仅用类级基路径
+            for (String basePath : basePaths) {
+                String fullPath = normalizePath(basePath);
+                result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            }
             return result;
         }
-        for (String methodPath : methodPaths) {
-            String fullPath = normalizePath(basePath + methodPath);
-            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+        for (String basePath : basePaths) {
+            for (String methodPath : methodPaths) {
+                String fullPath = normalizePath(basePath + methodPath);
+                result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            }
         }
         return result;
     }
@@ -547,7 +594,7 @@ public class ApiScannerService {
      * 支持多路径 @Path 注解，每个路径各生成一个 ApiDefinition。
      */
     private List<ApiDefinition> parseJaxrsMethod(PsiMethod method, String controllerName,
-                                                 String basePath, PsiClass declaringClass) {
+                                                 List<String> basePaths, PsiClass declaringClass) {
         // 查找 JAX-RS HTTP 方法注解
         String httpMethod = resolveJaxrsHttpMethod(method);
         if (httpMethod == null) return Collections.emptyList();
@@ -562,13 +609,17 @@ public class ApiScannerService {
 
         List<ApiDefinition> result = new ArrayList<>();
         if (methodPaths.isEmpty()) {
-            String fullPath = normalizePath(basePath);
-            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            for (String basePath : basePaths) {
+                String fullPath = normalizePath(basePath);
+                result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            }
             return result;
         }
-        for (String methodPath : methodPaths) {
-            String fullPath = normalizePath(basePath + methodPath);
-            result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+        for (String basePath : basePaths) {
+            for (String methodPath : methodPaths) {
+                String fullPath = normalizePath(basePath + methodPath);
+                result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
+            }
         }
         return result;
     }
@@ -693,17 +744,25 @@ public class ApiScannerService {
 
     /**
      * 将注解属性值拆分为多个字符串值（支持单值和数组多值）。
-     * <p>处理 PSI 注解属性值的文本形式，如：</p>
+     * <p>处理 PSI 注解属性值，支持：</p>
      * <ul>
-     *   <li><code>"/users"</code> → ["/users"]</li>
-     *   <li><code>{"/list", "/query"}</code> → ["/list", "/query"]</li>
+     *   <li>字符串字面量：<code>"/users"</code> → ["/users"]</li>
+     *   <li>多路径：<code>{"/list", "/query"}</code> → ["/list", "/query"]</li>
+     *   <li><b>常量引用</b>：<code>@GetMapping(ApiConstants.PATH)</code> 或 <code>@GetMapping(PATH)</code>
+     *       —— 解析 <code>static final String</code> 常量的实际值，避免接口因路径不可识别而丢失</li>
      *   <li><code>null</code> 或空 → []</li>
      * </ul>
-     * <p>注意：跳过空字符串和纯空白项，避免产出无效路径。</p>
+     * <p>优先用 PSI 语义解析（支持常量引用）；解析不到时回退到文本解析，保证兼容。</p>
      */
     private List<String> splitAnnotationValues(PsiAnnotationMemberValue value) {
         List<String> result = new ArrayList<>();
         if (value == null) return result;
+
+        // ── 优先：PSI 语义解析（支持常量引用） ──
+        List<String> resolved = resolveMemberValuePaths(value);
+        if (!resolved.isEmpty()) return resolved;
+
+        // ── 回退：文本解析（兼容旧逻辑） ──
         String text = value.getText();
         if (text == null) return result;
         text = text.trim();
@@ -720,6 +779,46 @@ public class ApiScannerService {
             }
             if (!s.isEmpty()) result.add(s);
         }
+        return result;
+    }
+
+    /**
+     * 用 PSI 语义解析注解属性值为字符串路径列表。
+     * 支持：字符串字面量、数组初始化器、static final String 常量引用。
+     */
+    private List<String> resolveMemberValuePaths(PsiAnnotationMemberValue value) {
+        List<String> result = new ArrayList<>();
+        if (value == null) return result;
+
+        // 字符串字面量 "/users"
+        if (value instanceof PsiLiteralExpression lit) {
+            Object v = lit.getValue();
+            if (v instanceof String s && !s.isEmpty()) {
+                result.add(s);
+            }
+            return result;
+        }
+
+        // 数组初始化 {"/a", "/b"} 或 {Const.A, Const.B}
+        if (value instanceof PsiArrayInitializerMemberValue arr) {
+            for (PsiAnnotationMemberValue init : arr.getInitializers()) {
+                result.addAll(resolveMemberValuePaths(init));
+            }
+            return result;
+        }
+
+        // 常量引用 ApiConstants.PATH 或 PATH（解析 static final String 常量值）
+        if (value instanceof PsiReferenceExpression ref) {
+            PsiElement resolved = ref.resolve();
+            if (resolved instanceof PsiVariable var) {
+                Object constVal = var.computeConstantValue();
+                if (constVal instanceof String s && !s.isEmpty()) {
+                    result.add(s);
+                }
+            }
+            return result;
+        }
+
         return result;
     }
 

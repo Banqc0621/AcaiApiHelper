@@ -102,6 +102,8 @@ public class ApiDebuggerPanel extends JPanel {
     // v3 新增字段
     private JComboBox<String> bodyFormatCombo;
     private JComboBox<Environment> envCombo;
+    /** 环境下拉框重建期间的抑制标志，避免 setSelectedItem 触发 ActionListener 误切换环境 */
+    private boolean suppressEnvComboAction = false;
     private DefaultListModel<RequestHistory> historyListModel;
     private JList<RequestHistory> historyList;
     private DefaultTableModel assertionTableModel;
@@ -205,12 +207,14 @@ public class ApiDebuggerPanel extends JPanel {
         envCombo.setPreferredSize(new Dimension(140, 26));
         envCombo.setToolTipText("切换环境配置");
         envCombo.addActionListener(e -> {
+            // 重建下拉框（refreshEnvCombo）期间触发的选择事件忽略，避免误切环境
+            if (suppressEnvComboAction) return;
             Environment selected = (Environment) envCombo.getSelectedItem();
             if (selected != null) {
                 AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
                 settings.setActiveEnvironment(selected.getName());
                 settings.setBaseUrl(selected.getBaseUrl());
-                baseUrlField.setText(selected.getBaseUrl());
+                applyEnvironmentToPanel(selected);
                 statusLabel.setText("● 已切换到环境: " + selected.getName());
             }
         });
@@ -223,7 +227,14 @@ public class ApiDebuggerPanel extends JPanel {
             EnvironmentManagerDialog dialog = new EnvironmentManagerDialog(project);
             if (dialog.showAndGet()) {
                 refreshEnvCombo();
-                statusLabel.setText("● 环境配置已更新");
+                // 对话框内可能激活了其他环境，回显到主面板
+                Environment active = AcaiSettingsState.getInstance(project).getActiveEnvironmentObj();
+                if (active != null) {
+                    applyEnvironmentToPanel(active);
+                    statusLabel.setText("● 已切换到环境: " + active.getName());
+                } else {
+                    statusLabel.setText("● 环境配置已更新");
+                }
             }
         });
         toolbar1.add(envBtn);
@@ -292,12 +303,51 @@ public class ApiDebuggerPanel extends JPanel {
     private void refreshEnvCombo() {
         if (envCombo == null) return;
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
-        envCombo.removeAllItems();
-        Environment active = settings.getActiveEnvironmentObj();
-        for (Environment env : settings.loadEnvironments()) {
-            envCombo.addItem(env);
-            if (env.getName().equals(settings.getActiveEnvironment())) {
-                envCombo.setSelectedItem(env);
+        // 重建期间抑制 ActionListener，避免 removeAllItems/setSelectedItem 触发误切换
+        suppressEnvComboAction = true;
+        try {
+            envCombo.removeAllItems();
+            for (Environment env : settings.loadEnvironments()) {
+                envCombo.addItem(env);
+                if (env.getName().equals(settings.getActiveEnvironment())) {
+                    envCombo.setSelectedItem(env);
+                }
+            }
+        } finally {
+            suppressEnvComboAction = false;
+        }
+    }
+
+    /**
+     * 将指定环境的配置回显到主调试面板：更新 Base URL 输入框，
+     * 并在请求头表格顶部注入该环境的全局请求头（保留已有的接口级请求头）。
+     */
+    private void applyEnvironmentToPanel(Environment env) {
+        if (env == null) return;
+        baseUrlField.setText(env.getBaseUrl());
+        // 注入全局请求头：先移除旧的"全局请求头"标记区，再在表格顶部插入当前环境的全局头。
+        // 这里采用简单策略：保留接口自身请求头，把全局头前置并标记，避免重复。
+        Map<String, String> globalHeaders = env.getGlobalHeaders();
+        if (globalHeaders != null && !globalHeaders.isEmpty()) {
+            // 收集当前表格中非全局头的请求头（即接口自身/Content-Type 等）
+            java.util.List<Object[]> rows = new java.util.ArrayList<>();
+            for (int i = 0; i < headerTableModel.getRowCount(); i++) {
+                rows.add(new Object[]{
+                        headerTableModel.getValueAt(i, 0),
+                        headerTableModel.getValueAt(i, 1)
+                });
+            }
+            headerTableModel.setRowCount(0);
+            // 先放全局头
+            for (Map.Entry<String, String> e : globalHeaders.entrySet()) {
+                headerTableModel.addRow(new Object[]{e.getKey(), e.getValue()});
+            }
+            // 再放原有请求头（跳过与全局头同名的，避免重复）
+            java.util.Set<String> globalKeys = new java.util.HashSet<>(globalHeaders.keySet());
+            for (Object[] row : rows) {
+                Object key = row[0];
+                if (key instanceof String k && globalKeys.contains(k)) continue;
+                headerTableModel.addRow(row);
             }
         }
     }
@@ -1239,11 +1289,13 @@ public class ApiDebuggerPanel extends JPanel {
                     }
 
                     // 将生成的参数转为格式化JSON填入请求体编辑器
+                    // 关键：Map 的值是 String，其中嵌套对象/数组已被 jsonObjectToMap 序列化为
+                    // JSON 字符串。若直接 gson.toJson(map) 会把这些字符串再转义一次，
+                    // 导致请求体里出现 \"、\\n 等双重转义、无法正常阅读。
+                    // 这里把每个值尝试解析回 JsonElement，重建为真正的嵌套结构再美化输出。
                     try {
-                        String prettyJson = gson.toJson(first);
-                        // 二次格式化美化
-                        var elem = JsonParser.parseString(prettyJson);
-                        bodyEditor.setText(gson.toJson(elem));
+                        com.google.gson.JsonObject nested = mapToNestedJson(first);
+                        bodyEditor.setText(gson.toJson(nested));
                         bodyEditor.setCaretPosition(0);
                     } catch (Exception ex) {
                         bodyEditor.setText(gson.toJson(first));
@@ -1268,6 +1320,40 @@ public class ApiDebuggerPanel extends JPanel {
                 }
             });
         });
+    }
+
+    /**
+     * 将 AI 生成的参数 Map 转为嵌套的 JsonObject。
+     * <p>AI 响应解析时（{@code jsonObjectToMap}）会把嵌套对象/数组序列化为 JSON 字符串存进 Map。
+     * 直接 {@code gson.toJson(map)} 会把这些字符串再转义一次，导致请求体里出现
+     * {@code \"}、{@code \\n} 等双重转义，无法阅读。</p>
+     * <p>本方法逐个值尝试解析回 JsonElement：能解析为 JSON 的还原为真实结构（对象/数组），
+     * 解析失败的保留为原始字符串，从而得到规整的、可直接阅读的格式化 JSON。</p>
+     */
+    private com.google.gson.JsonObject mapToNestedJson(Map<String, String> map) {
+        com.google.gson.JsonObject obj = new com.google.gson.JsonObject();
+        for (Map.Entry<String, String> entry : map.entrySet()) {
+            String key = entry.getKey();
+            String val = entry.getValue();
+            if (val == null) {
+                obj.add(key, com.google.gson.JsonNull.INSTANCE);
+                continue;
+            }
+            String trimmed = val.trim();
+            // 仅当看起来像 JSON 结构时才尝试解析，避免把普通字符串误判
+            if ((trimmed.startsWith("{") && trimmed.endsWith("}"))
+                    || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+                try {
+                    com.google.gson.JsonElement parsed = JsonParser.parseString(trimmed);
+                    obj.add(key, parsed);
+                    continue;
+                } catch (Exception ignore) {
+                    // 解析失败则当作普通字符串
+                }
+            }
+            obj.addProperty(key, val);
+        }
+        return obj;
     }
 
     private void runCurrentTest() {

@@ -10,7 +10,7 @@ plugins {
 // 插件元信息
 // ============================================================
 group = "com.ban"
-version = "1.0.0"
+version = "1.0.3"
 
 // ============================================================
 // Java 编译配置 - Java 17 (匹配 IntelliJ Platform 2022.3+ 运行时)
@@ -67,7 +67,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.ban.acai"
         name = "Acai API Helper"
-        version = "1.0.0"
+        version = "1.0.3"
 
         ideaVersion {
             sinceBuild = "223"
@@ -101,9 +101,8 @@ tasks {
     patchPluginXml {
         sinceBuild = "223"
         untilBuild = "261.*"
-        // 显式指定变更日志，避免插件检测 "Version is missing: Unreleased" 报错
-        // 这里留空字符串，change-notes 段由 plugin.xml 自己提供
-        changeNotes = "v1.0.0 - Acai API Helper 功能完善版（兼容 IDEA 2022.3 - 2026.1.x）"
+        // 不在此处设置 changeNotes，<change-notes> 段由 plugin.xml 自己提供
+        // （若赋值会覆盖 plugin.xml 中完整的多版本变更日志，用户在插件管理器只能看到单行）
     }
 
     jar {

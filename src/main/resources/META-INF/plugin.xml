@@ -8,7 +8,7 @@
     <!-- 插件显示名称 -->
     <name>Acai API Helper</name>
 
-    <version>1.0.0</version>
+    <version>1.0.3</version>
 
     <!-- 供应商信息 -->
     <vendor email="1332039050@qq.com" url="https://blog.banqc.com.cn/">Banqc</vendor>
@@ -28,7 +28,7 @@
             <li><b>Git预提交检查</b>：接口测试未通过（非200状态码）时阻断提交</li>
             <li><b>编辑器Gutter导航</b>：在代码行号旁显示API图标，快速调试</li>
         </ul>
-        <h3>📦 兼容版本（v1.0.0）</h3>
+        <h3>📦 兼容版本（v1.0.3）</h3>
         <p>插件基于 <code>org.jetbrains.intellij.platform</code> 构建（<b>Java 17</b> 编译），<code>idea-version</code> 声明为 <b>since-build="223" / until-build="261.*"</b>，覆盖 <b>4 年</b>共 11 个大版本：</p>
         <ul>
             <li>✅ <b>IntelliJ IDEA 2022.3 / 2022.3.x</b>（最低支持）</li>
@@ -45,7 +45,14 @@
 
     <!-- 变更日志 -->
     <change-notes><![CDATA[
-        <h3>v1.0.0 功能完善版</h3>
+        <h3>v1.0.3 体验优化版（2026-07-09）</h3>
+        <ul>
+            <li><b>🤖 AI 配置界面优化</b>：系统/用户提示词可折叠（互斥，高度自适应）；底部「恢复默认/确定/取消」同一排；横向拉伸真正生效（输入框撑满、API Key 小眼睛跟随右移）；API 路径允许留空保存，修复主 HTTP 入口硬编码 <code>/chat/completions</code> 的问题</li>
+            <li><b>🔍 API 接口扫描增强</b>：路径占位符 <code>${key:default}</code> 不再整条丢弃；补充按类级 <code>@RequestMapping</code> 搜索以发现组合注解控制器；方法级 <code>@*Mapping</code> 反向定位兜底 Kotlin/轻量控制器；多路径注解 <code>@GetMapping({"/list","/query"})</code> 完整展开为多个接口；去重键加入方法名+参数签名，方法重载不再被误去重</li>
+            <li><b>📝 AI 参数体 JSON 格式化修复</b>：修复请求体 <code>\"</code>/<code>\n</code> 双重转义乱码，新增 <code>mapToNestedJson</code> 还原嵌套结构，输出规整可读 JSON</li>
+            <li><b>🌐 环境管理回显修复</b>：对话框激活环境后主面板 Base URL / 请求头立即回显；下拉框切换环境时注入该环境的全局请求头；修复下拉框重建期间的误切换环境问题</li>
+        </ul>
+        <h3>v1.0.2 功能完善版</h3>
         <ul>
             <li><b>兼容版本</b>：<code>idea-version since-build="223" until-build="261.*"</code>，覆盖 IntelliJ IDEA 2022.3 ~ 2026.1.x（4 年共 11 个大版本）</li>
             <li><b>编译目标</b>：Java 17（兼容老版本 IDE 运行时）</li>
@@ -53,7 +60,7 @@
             <li><b>P1增强</b>：请求历史持久化、接口收藏、form-data支持、可视化断言编辑器、环境管理面板、cURL导入导出</li>
             <li><b>P2创意</b>：AI智能断言生成、API文档导出、变更检测、Diff对比、使用频率统计</li>
         </ul>
-        <h3>v2.0.0</h3>
+        <h3>v1.0.1</h3>
         <ul>
             <li>全新架构：完整实现Apipost-Helper-2.0核心功能</li>
             <li>新增AI测试参数生成（对接内部模型算力）</li>
