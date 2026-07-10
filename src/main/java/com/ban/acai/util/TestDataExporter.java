@@ -3,7 +3,9 @@ package com.ban.acai.util;
 import com.ban.acai.AcaiConstants;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.Environment;
+import com.ban.acai.model.FolderApiStatus;
 import com.ban.acai.model.RequestHistory;
+import com.ban.acai.model.StarredFolder;
 import com.ban.acai.model.TestProfile;
 import com.ban.acai.settings.AcaiSettingsState;
 import com.google.gson.Gson;
@@ -270,6 +272,13 @@ public class TestDataExporter {
         public Map<String, Integer> apiCallCounts = new LinkedHashMap<>();
         public Map<String, Long> apiLastCallTimes = new LinkedHashMap<>();
         public Set<String> starredApis = new LinkedHashSet<>();
+        /** 收藏文件夹结构（List<StarredFolder>） */
+        public List<StarredFolder> starredFolders = new ArrayList<>();
+        /** 各文件夹下接口的实时参数（key=folderId\napiKey -> Map<paramName,value>）。
+         *  同一接口在不同文件夹中的参数各自独立，导出时全部保留。 */
+        public Map<String, Map<String, String>> folderApiParams = new LinkedHashMap<>();
+        /** 各文件夹下接口的测试状态（key=folderId\napiKey -> FolderApiStatus） */
+        public Map<String, FolderApiStatus> folderApiStatus = new LinkedHashMap<>();
     }
 
     /**
@@ -294,6 +303,11 @@ public class TestDataExporter {
             if (st.apiCallCounts != null) data.apiCallCounts.putAll(st.apiCallCounts);
             if (st.apiLastCallTimes != null) data.apiLastCallTimes.putAll(st.apiLastCallTimes);
             if (st.starredApis != null) data.starredApis.addAll(st.starredApis);
+            // 收藏文件夹结构 + 各文件夹下的实时参数/状态：同一接口在不同文件夹中的参数
+            // 各自独立归档，导出时全部保留（避免只导出一份导致另一份丢失）
+            data.starredFolders = settings.loadStarredFolders();
+            data.folderApiParams = settings.loadFolderApiParams();
+            data.folderApiStatus = settings.loadFolderApiStatus();
         }
 
         return writeJson(data, outputFile);
@@ -330,6 +344,8 @@ public class TestDataExporter {
         int historySkipped = 0;
         int profileAdded = 0;
         int profileSkipped = 0;
+        int folderAdded = 0;
+        int folderParamsAdded = 0;
 
         // 0) 接口定义合并：本地已存在的接口保留，没有的新增
         if (scanner != null && data.apis != null && !data.apis.isEmpty()) {
@@ -399,11 +415,50 @@ public class TestDataExporter {
             if (data.starredApis != null) {
                 st.starredApis.addAll(data.starredApis);
             }
+            // 5) 收藏文件夹 + 各文件夹下的实时参数/状态合并：
+            //    文件夹按 id 合并（本地已有同 id 则并入其接口，否则新增文件夹）；
+            //    实时参数/状态按 folderId\napiKey 合并，本地已有的键保留本地，没有的补入——
+            //    保证同一接口在不同文件夹中的参数互不覆盖、各自归档。
+            if (data.starredFolders != null && !data.starredFolders.isEmpty()) {
+                List<StarredFolder> localFolders = settings.loadStarredFolders();
+                Map<String, StarredFolder> byId = new LinkedHashMap<>();
+                for (StarredFolder f : localFolders) byId.put(f.getId(), f);
+                for (StarredFolder imp : data.starredFolders) {
+                    StarredFolder exist = imp.getId() != null ? byId.get(imp.getId()) : null;
+                    if (exist != null) {
+                        for (String k : imp.getApiKeys()) {
+                            if (!exist.getApiKeys().contains(k)) exist.getApiKeys().add(k);
+                        }
+                    } else {
+                        byId.put(imp.getId(), imp);
+                        folderAdded++;
+                    }
+                }
+                settings.saveStarredFolders(new ArrayList<>(byId.values()));
+            }
+            Map<String, Map<String, String>> localParams = settings.loadFolderApiParams();
+            if (data.folderApiParams != null) {
+                for (Map.Entry<String, Map<String, String>> e : data.folderApiParams.entrySet()) {
+                    if (!localParams.containsKey(e.getKey())) {
+                        localParams.put(e.getKey(), e.getValue());
+                        folderParamsAdded++;
+                    }
+                }
+                settings.saveFolderApiParams(localParams);
+            }
+            Map<String, FolderApiStatus> localStatus = settings.loadFolderApiStatus();
+            if (data.folderApiStatus != null) {
+                for (Map.Entry<String, FolderApiStatus> e : data.folderApiStatus.entrySet()) {
+                    localStatus.putIfAbsent(e.getKey(), e.getValue());
+                }
+                settings.saveFolderApiStatus(localStatus);
+            }
         }
 
         return "接口数据已导入。新增接口 " + apiAdded + " 个（跳过已存在 " + apiSkipped + " 个），"
                 + "新增测试数据 " + historyAdded + " 条（已测接口保留本地 " + historySkipped + " 条），"
-                + "新增测试配置 " + profileAdded + " 个（跳过已存在 " + profileSkipped + " 个）。";
+                + "新增测试配置 " + profileAdded + " 个（跳过已存在 " + profileSkipped + " 个），"
+                + "新增收藏文件夹 " + folderAdded + " 个，补入实时参数 " + folderParamsAdded + " 份。";
     }
 
     // ================================================================

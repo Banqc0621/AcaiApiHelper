@@ -35,7 +35,7 @@ public class AcaiToolWindowFactory implements ToolWindowFactory {
         // 把 treePanel 注入到 debuggerPanel，使其能获取用户在树中的多选（用于 Markdown 导出）
         debuggerPanel.setTreePanel(treePanel);
 
-        // 注册到持有服务，供编辑器右键 Action 拿到面板实例并精准定位到选中接口
+        // 注册到持有服务，供编辑键 Action 拿到面板实例并精准定位到选中接口
         AcaiToolWindowHolder.getInstance(project).setPanels(treePanel, debuggerPanel);
 
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -45,7 +45,7 @@ public class AcaiToolWindowFactory implements ToolWindowFactory {
         content.setCloseable(false);
         toolWindow.getContentManager().addContent(content);
 
-        treePanel.setOnApiSelected(debuggerPanel::loadApi);
+        treePanel.setOnApiSelected(api -> debuggerPanel.loadApi(api, treePanel.getSelectedFolderId()));
 
         ApiScannerService scanner = ApiScannerService.getInstance(project);
         scanner.addListener(new ApiScannerService.ScanListener() {

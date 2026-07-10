@@ -59,8 +59,14 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
         public String activeEnvironment = "开发环境";
 
         // ========== v3 新增持久化字段 ==========
-        /** 收藏的API唯一标识集合 (uniqueKey) */
+        /** 收藏的API唯一标识集合 (uniqueKey) —— 兼容旧数据，新逻辑以 starredFoldersJson 为准 */
         public Set<String> starredApis = new HashSet<>();
+        /** 收藏文件夹结构 JSON（List<StarredFolder>） */
+        public String starredFoldersJson = "";
+        /** 文件夹内接口测试参数 JSON（key=folderId\napiKey -> Map<paramName,value>） */
+        public String folderApiParamsJson = "";
+        /** 文件夹内接口测试状态 JSON（key=folderId\napiKey -> FolderApiStatus） */
+        public String folderApiStatusJson = "";
         /** 请求历史JSON */
         public String requestHistoryJson = "";
         /** 保存的测试Profile名称 -> JSON */
@@ -205,6 +211,82 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
     /** 获取所有收藏的API key */
     public Set<String> getStarredApis() {
         return Collections.unmodifiableSet(myState.starredApis);
+    }
+
+    // ========== 收藏文件夹（v3）持久化 ==========
+
+    /** 加载收藏文件夹列表；空时返回含「未分类」的初始列表 */
+    public List<StarredFolder> loadStarredFolders() {
+        if (myState.starredFoldersJson == null || myState.starredFoldersJson.isBlank()) {
+            List<StarredFolder> init = new ArrayList<>();
+            init.add(new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME));
+            return init;
+        }
+        try {
+            Type t = new TypeToken<List<StarredFolder>>(){}.getType();
+            List<StarredFolder> folders = gson.fromJson(myState.starredFoldersJson, t);
+            if (folders == null || folders.isEmpty()) {
+                List<StarredFolder> init = new ArrayList<>();
+                init.add(new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME));
+                return init;
+            }
+            // 确保未分类文件夹始终存在且在首位
+            boolean hasUncat = false;
+            for (StarredFolder f : folders) {
+                if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) { hasUncat = true; break; }
+            }
+            if (!hasUncat) {
+                folders.add(0, new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME));
+            }
+            return folders;
+        } catch (Exception e) {
+            List<StarredFolder> init = new ArrayList<>();
+            init.add(new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME));
+            return init;
+        }
+    }
+
+    /** 保存收藏文件夹列表 */
+    public void saveStarredFolders(List<StarredFolder> folders) {
+        myState.starredFoldersJson = gson.toJson(folders);
+    }
+
+    /** 加载文件夹内接口测试参数（key=folderId\napiKey -> paramValues） */
+    public Map<String, Map<String, String>> loadFolderApiParams() {
+        if (myState.folderApiParamsJson == null || myState.folderApiParamsJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, Map<String, String>>>(){}.getType();
+            Map<String, Map<String, String>> m = gson.fromJson(myState.folderApiParamsJson, t);
+            return m != null ? m : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** 保存文件夹内接口测试参数 */
+    public void saveFolderApiParams(Map<String, Map<String, String>> params) {
+        myState.folderApiParamsJson = gson.toJson(params);
+    }
+
+    /** 加载文件夹内接口测试状态（key=folderId\napiKey -> FolderApiStatus） */
+    public Map<String, FolderApiStatus> loadFolderApiStatus() {
+        if (myState.folderApiStatusJson == null || myState.folderApiStatusJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, FolderApiStatus>>(){}.getType();
+            Map<String, FolderApiStatus> m = gson.fromJson(myState.folderApiStatusJson, t);
+            return m != null ? m : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** 保存文件夹内接口测试状态 */
+    public void saveFolderApiStatus(Map<String, FolderApiStatus> status) {
+        myState.folderApiStatusJson = gson.toJson(status);
     }
 
     /** 记录API调用统计 */

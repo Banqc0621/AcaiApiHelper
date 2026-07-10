@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
  * 8. 每个类/方法独立容错，不会因单个错误中断整体扫描
  */
 @Service(Service.Level.PROJECT)
-public class ApiScannerService {
+public final class ApiScannerService {
 
     private static final Logger LOG = Logger.getInstance(ApiScannerService.class);
 

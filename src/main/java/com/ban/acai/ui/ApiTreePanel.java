@@ -1,6 +1,7 @@
 package com.ban.acai.ui;
 
 import com.ban.acai.AcaiConstants;
+import com.ban.acai.git.ApiChangeDetector;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.RequestHistory;
 import com.ban.acai.scanner.ApiScannerService;
@@ -22,6 +23,7 @@ import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.SearchTextField;
 import com.intellij.ui.components.JBLabel;
+import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.treeStructure.Tree;
 import com.intellij.util.ui.JBUI;
@@ -33,11 +35,13 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreeNode;
 import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.datatransfer.Transferable;
 import java.util.*;
 import java.util.List;
 import java.util.function.Consumer;
@@ -48,7 +52,7 @@ import java.util.stream.Collectors;
  *
  * 功能：
  * 1. 按控制器（Controller）分组展示所有API端点
- * 2. 顶部分类标签：全量 / 自动扫描 / 手动添加 / 最新
+ * 2. 顶部分类标签：全量 / 收藏 / 最新（最近3天 Git 变更的接口）
  * 3. 搜索框支持URL/名称/控制器名的模糊搜索
  * 4. 双击API节点跳转到对应的源码位置
  * 5. 单选API节点触发调试面板更新
@@ -59,8 +63,8 @@ import java.util.stream.Collectors;
  * ├── ControllerA (分组节点，带蓝色图标)
  * │   ├── [GET] /api/users - 获取用户列表 (API节点，方法彩色徽章)
  * │   └── [POST] /api/users - 创建用户
- * └── 手动添加
- *     └── [POST] /api/custom - 自定义接口 ✋
+ * └── ControllerB
+ *     └── [POST] /api/custom - 自定义接口
  */
 public class ApiTreePanel extends JPanel {
 
@@ -70,10 +74,11 @@ public class ApiTreePanel extends JPanel {
 
     /** 分类标签常量 */
     private static final String FILTER_ALL = "全量";
-    private static final String FILTER_AUTO = "自动";
-    private static final String FILTER_MANUAL = "手动";
     private static final String FILTER_STARRED = "收藏";
     private static final String FILTER_LATEST = "最新";
+
+    /** 「最新」过滤的天数窗口：仅显示最近 N 天 Git 变更涉及的接口（1 个月 ≈ 30 天） */
+    private static final int LATEST_CHANGE_DAYS = 30;
 
     /** 树形控件 - 展示API分组和端点 */
     private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("API列表"));
@@ -85,8 +90,6 @@ public class ApiTreePanel extends JPanel {
     /** 分类按钮组 */
     private final ButtonGroup filterGroup = new ButtonGroup();
     private final JToggleButton btnAll = new JToggleButton(FILTER_ALL, AllIcons.General.Filter);
-    private final JToggleButton btnAuto = new JToggleButton(FILTER_AUTO, AllIcons.Vcs.Changelist);
-    private final JToggleButton btnManual = new JToggleButton(FILTER_MANUAL, AllIcons.Nodes.Plugin);
     private final JToggleButton btnStarred = new JToggleButton(FILTER_STARRED, AllIcons.Nodes.Favorite);
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
 
@@ -96,14 +99,28 @@ public class ApiTreePanel extends JPanel {
     /** API选中回调 - 通知调试面板更新 */
     private Consumer<ApiDefinition> onApiSelected = null;
 
+    /** 收藏模式下：apiKey -> ApiDefinition 解析表 */
+    private final Map<String, ApiDefinition> starredApiByKey = new LinkedHashMap<>();
+
+    /** 收藏文件夹服务（构造器内初始化，依赖 project 字段赋值） */
+    private com.ban.acai.scanner.StarredFolderService folderService;
+    /** AI 参数服务（收藏模式批量生成参数） */
+    private com.ban.acai.ai.AiParameterService aiService;
+    /** HTTP 服务（收藏模式批量测试） */
+    private com.ban.acai.http.HttpExecutorService httpService;
+
     /** 全量API列表（未过滤） */
     private List<ApiDefinition> allApis = Collections.emptyList();
 
     /** 当前分类过滤类型 */
     private String currentFilter = FILTER_ALL;
 
-    /** 最后一次扫描的时间戳（用于"最新"过滤） */
-    private long lastScanTimestamp = 0;
+    /** 「最新」过滤的预计算结果：最近 {@link #LATEST_CHANGE_DAYS} 天有 Git 变更的接口列表。
+     *  <p>由 {@link ApiChangeDetector} 在后台线程计算，null 表示尚未计算（首次点击「最新」时触发）。</p> */
+    private volatile List<ApiDefinition> latestChangedApis = null;
+
+    /** 「最新」是否正在后台计算中（避免重复触发） */
+    private volatile boolean latestComputing = false;
 
     /** 空状态面板 */
     private final JPanel emptyPanel = new JPanel(new GridBagLayout());
@@ -111,6 +128,9 @@ public class ApiTreePanel extends JPanel {
     public ApiTreePanel(@NotNull Project project) {
         super(new BorderLayout());
         this.project = project;
+        this.folderService = com.ban.acai.scanner.StarredFolderService.getInstance(project);
+        this.aiService = com.ban.acai.ai.AiParameterService.getInstance(project);
+        this.httpService = com.ban.acai.http.HttpExecutorService.getInstance(project);
         setupTree();
         setupLayout();
     }
@@ -127,12 +147,20 @@ public class ApiTreePanel extends JPanel {
         tree.setFont(tree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         tree.setBackground(JBColor.namedColor("Tree.background", Color.WHITE));
 
-        // 双击事件：跳转到API源码
+        // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
+        tree.setDragEnabled(true);
+        tree.setTransferHandler(new StarredDragTransferHandler());
+
+        // 双击事件：跳转到API源码（收藏模式下改为调试此接口）
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
-                    navigateToSource();
+                    if (FILTER_STARRED.equals(currentFilter)) {
+                        starredDebugApi();
+                    } else {
+                        navigateToSource();
+                    }
                 }
             }
 
@@ -149,6 +177,11 @@ public class ApiTreePanel extends JPanel {
 
         // 选择事件：通知调试面板
         tree.addTreeSelectionListener(e -> {
+            if (FILTER_STARRED.equals(currentFilter)) {
+                StarredApiNode n = getSelectedStarredApiNode();
+                if (n != null && onApiSelected != null) onApiSelected.accept(n.api);
+                return;
+            }
             ApiDefinition selectedApi = getSelectedApi();
             if (selectedApi != null && onApiSelected != null) {
                 onApiSelected.accept(selectedApi);
@@ -172,6 +205,11 @@ public class ApiTreePanel extends JPanel {
      */
     private void handlePopup(MouseEvent e) {
         if (!e.isPopupTrigger()) return;
+        // 收藏模式：走收藏专属右键菜单（文件夹/接口操作）
+        if (FILTER_STARRED.equals(currentFilter)) {
+            showStarredPopup(e);
+            return;
+        }
         TreePath path = tree.getPathForLocation(e.getX(), e.getY());
 
         if (path != null) {
@@ -218,34 +256,47 @@ public class ApiTreePanel extends JPanel {
         AnAction debugAction = new AnAction("调试此接口", "在调试面板打开此接口", AllIcons.Actions.Execute) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
-                if (onApiSelected != null) onApiSelected.accept(api);
+                try {
+                    if (onApiSelected != null) onApiSelected.accept(api);
+                } catch (Exception ex) {
+                    LOG.warn("调试接口回调失败: " + api.getUrl(), ex);
+                    Messages.showErrorDialog(project, "打开调试面板失败：" + ex.getMessage(), "调试失败");
+                }
             }
         };
         group.add(debugAction);
 
-        // 收藏/取消收藏
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
-        boolean isStarred = settings.isApiStarred(api.uniqueKey());
-        AnAction starAction = new AnAction(
-                isStarred ? "取消收藏" : "收藏",
-                isStarred ? "从收藏中移除此接口" : "将此接口添加到收藏",
-                isStarred ? AllIcons.Nodes.Favorite : AllIcons.Nodes.Favorite) {
+        // 收藏：已收藏则提供「取消收藏」+「添加到其它文件夹…」；未收藏则「添加到收藏文件夹…」
+        com.ban.acai.scanner.StarredFolderService folderSvc =
+                com.ban.acai.scanner.StarredFolderService.getInstance(project);
+        boolean isStarred = folderSvc.isStarred(api.uniqueKey());
+        if (isStarred) {
+            AnAction unstarAction = new AnAction("取消收藏", "从所有收藏文件夹中移除此接口", AllIcons.Nodes.Favorite) {
+                @Override
+                public void actionPerformed(@NotNull AnActionEvent e) {
+                    ApiDefinition selectedApi = getSelectedApi();
+                    if (selectedApi == null) return;
+                    com.ban.acai.scanner.StarredFolderService svc =
+                            com.ban.acai.scanner.StarredFolderService.getInstance(project);
+                    svc.unstarApi(selectedApi.uniqueKey());
+                    selectedApi.setStarred(false);
+                    tree.repaint();
+                }
+            };
+            group.add(unstarAction);
+        }
+        AnAction addToFolderAction = new AnAction(
+                isStarred ? "添加到其它文件夹…" : "添加到收藏文件夹…",
+                "选择目标收藏文件夹，将此接口加入（同文件夹内自动去重）",
+                AllIcons.General.Add) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
                 ApiDefinition selectedApi = getSelectedApi();
                 if (selectedApi == null) return;
-                AcaiSettingsState s = AcaiSettingsState.getInstance(project);
-                if (s.isApiStarred(selectedApi.uniqueKey())) {
-                    s.unstarApi(selectedApi.uniqueKey());
-                    selectedApi.setStarred(false);
-                } else {
-                    s.starApi(selectedApi.uniqueKey());
-                    selectedApi.setStarred(true);
-                }
-                tree.repaint();
+                addApiToFolderDialog(selectedApi);
             }
         };
-        group.add(starAction);
+        group.add(addToFolderAction);
 
         // 复制URL
         group.addSeparator();
@@ -397,11 +448,11 @@ public class ApiTreePanel extends JPanel {
         JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0));
         buttonRow.setBorder(JBUI.Borders.emptyBottom(3));
         filterGroup.add(btnAll);
-        filterGroup.add(btnAuto);
-        filterGroup.add(btnManual);
+        filterGroup.add(btnStarred);
         filterGroup.add(btnLatest);
 
-        for (JToggleButton btn : new JToggleButton[]{btnAll, btnAuto, btnManual, btnStarred, btnLatest}) {
+        // 三个过滤器均为单选切换：全量 / 收藏（文件夹视图） / 最新
+        for (JToggleButton btn : new JToggleButton[]{btnAll, btnStarred, btnLatest}) {
             styleFilterButton(btn);
             buttonRow.add(btn);
         }
@@ -411,10 +462,8 @@ public class ApiTreePanel extends JPanel {
 
         // 过滤器按钮点击事件
         btnAll.addActionListener(e -> { currentFilter = FILTER_ALL; applyFilters(); });
-        btnAuto.addActionListener(e -> { currentFilter = FILTER_AUTO; applyFilters(); });
-        btnManual.addActionListener(e -> { currentFilter = FILTER_MANUAL; applyFilters(); });
         btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
-        btnLatest.addActionListener(e -> { currentFilter = FILTER_LATEST; applyFilters(); });
+        btnLatest.addActionListener(e -> { currentFilter = FILTER_LATEST; triggerLatestFilter(); });
 
         filterPanel.add(buttonRow, BorderLayout.WEST);
         return filterPanel;
@@ -437,17 +486,11 @@ public class ApiTreePanel extends JPanel {
             case FILTER_ALL:
                 btn.setToolTipText("显示所有API接口");
                 break;
-            case FILTER_AUTO:
-                btn.setToolTipText("仅显示自动扫描的API");
-                break;
-            case FILTER_MANUAL:
-                btn.setToolTipText("仅显示手动添加的API");
-                break;
             case FILTER_STARRED:
-                btn.setToolTipText("仅显示收藏的API");
+                btn.setToolTipText("打开收藏文件夹管理（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试）");
                 break;
             case FILTER_LATEST:
-                btn.setToolTipText("仅显示本次扫描新增的API");
+                btn.setToolTipText("仅显示最近1个月（" + LATEST_CHANGE_DAYS + "天）Git 变更涉及的接口（含 Controller/Service/实体类等全栈逻辑改动）");
                 break;
         }
     }
@@ -464,6 +507,21 @@ public class ApiTreePanel extends JPanel {
         this.onApiSelected = onApiSelected;
     }
 
+    /** 当前选中接口所属的收藏文件夹ID（仅收藏视图有效；全量视图返回null）。
+     *  供外层在加载接口时传入，以实现同一接口在不同文件夹中参数各自独立归档。 */
+    public String getSelectedFolderId() {
+        if (FILTER_STARRED.equals(currentFilter)) {
+            StarredApiNode n = getSelectedStarredApiNode();
+            return n != null ? n.folderId : null;
+        }
+        return null;
+    }
+
+    /** 设置「收藏」按钮回调：点击后由外层切换到收藏 Tab */
+    public void setOnShowStarred(Runnable onShowStarred) {
+        // 保留空方法以兼容潜在的外部调用，但收藏已改为内嵌视图切换，不再使用此回调
+    }
+
     // ================================================================
     // 公共方法
     // ================================================================
@@ -476,13 +534,40 @@ public class ApiTreePanel extends JPanel {
      */
     public void updateTree(List<ApiDefinition> apis) {
         allApis = apis;
+        LOG.warn("[ApiTree] updateTree 接收接口数=" + (apis == null ? 0 : apis.size())
+                + ", 当前过滤=" + currentFilter);
+        // 扫描产生新数据时清空搜索框，避免旧搜索词把新数据过滤掉（"显示不全"的诱因之一）
+        if (!searchField.getText().trim().isEmpty()) {
+            searchField.setText("");
+        }
+        // 扫描产生新数据：失效「最新」缓存，并清空 latestChangedApis 以便用新数据重算。
+        // applyCategoryFilter 在 latestChangedApis==null 时回退全量显示，
+        // 故此处先渲染全量，再后台重算最新子集。
+        latestChangedApis = null;
+        try {
+            ApiChangeDetector.getInstance(project).onScanComplete();
+        } catch (Exception e) {
+            LOG.warn("失效最新过滤缓存失败: " + e.getMessage());
+        }
         applyFilters();
+        // 若用户正在看「最新」，后台重算（算完会自动刷新树为最新子集）
+        if (FILTER_LATEST.equals(currentFilter)) {
+            triggerLatestFilter();
+        }
     }
 
     /**
      * 应用分类过滤 + 搜索过滤，更新树显示
      */
     private void applyFilters() {
+        // 收藏模式：直接构建文件夹视图（不走普通 API 过滤管线）
+        if (FILTER_STARRED.equals(currentFilter)) {
+            refreshStarredApiIndex();
+            buildStarredTree();
+            updateStats(Collections.emptyList());
+            return;
+        }
+
         List<ApiDefinition> filtered = applyCategoryFilter(allApis);
 
         // 再应用搜索过滤
@@ -508,29 +593,14 @@ public class ApiTreePanel extends JPanel {
     private List<ApiDefinition> applyCategoryFilter(List<ApiDefinition> apis) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
         switch (currentFilter) {
-            case FILTER_AUTO:
-                return apis.stream()
-                        .filter(ApiDefinition::isAutoDetected)
-                        .collect(Collectors.toList());
-            case FILTER_MANUAL:
-                return apis.stream()
-                        .filter(api -> !api.isAutoDetected())
-                        .collect(Collectors.toList());
-            case FILTER_STARRED:
-                return apis.stream()
-                        .filter(api -> settings.isApiStarred(api.uniqueKey()) || api.isStarred())
-                        .collect(Collectors.toList());
             case FILTER_LATEST:
-                if (lastScanTimestamp > 0) {
-                    return apis.stream()
-                            .filter(api -> api.getScanTimestamp() >= lastScanTimestamp
-                                    || AcaiConstants.CHANGE_ADDED.equals(api.getChangeMarker()))
-                            .collect(Collectors.toList());
-                }
-                return apis.stream()
-                        .filter(api -> AcaiConstants.CHANGE_ADDED.equals(api.getChangeMarker()))
-                        .collect(Collectors.toList());
+                // 「最新」使用后台预计算的结果（最近 N 天 Git 变更涉及的接口）。
+                // 尚未计算时（latestChangedApis == null）回退到全量显示，
+                // 避免扫描后/重算期间用户看到空白列表（"接口显示不全"的根因之一）。
+                // triggerLatestFilter 会在后台计算完成后刷新为最新变更子集。
+                return latestChangedApis != null ? new ArrayList<>(latestChangedApis) : new ArrayList<>(apis);
             default:
+                // 全量 / 收藏（收藏按钮已改为打开管理器，不再切换过滤器，故同全量）
                 return new ArrayList<>(apis);
         }
     }
@@ -540,13 +610,12 @@ public class ApiTreePanel extends JPanel {
      */
     private void updateStats(List<ApiDefinition> filtered) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
-        long autoCount = allApis.stream().filter(ApiDefinition::isAutoDetected).count();
-        long manualCount = allApis.size() - autoCount;
         long starredCount = allApis.stream()
                 .filter(api -> settings.isApiStarred(api.uniqueKey()) || api.isStarred()).count();
+        long latestCount = latestChangedApis != null ? latestChangedApis.size() : 0;
         statsLabel.setText(String.format(
-                "\u2022 全量 %d  \u2022 自动 %d  \u2022 手动 %d  \u2022 ⭐ %d  \u2022 显示 %d",
-                allApis.size(), autoCount, manualCount, starredCount, filtered.size()));
+                "\u2022 全量 %d  \u2022 ⭐ %d  \u2022 最新 %d  \u2022 显示 %d",
+                allApis.size(), starredCount, latestCount, filtered.size()));
     }
 
     /**
@@ -611,6 +680,539 @@ public class ApiTreePanel extends JPanel {
                 TreePath path = new TreePath(((DefaultMutableTreeNode) root.getChildAt(i)).getPath());
                 tree.expandPath(path);
             }
+
+            // 诊断：确认实际建树节点数与传入数一致（排查"显示不全"）
+            int builtApiNodes = 0;
+            for (int i = 0; i < controllerNodeCount; i++) {
+                builtApiNodes += root.getChildAt(i).getChildCount();
+            }
+            LOG.warn("[ApiTree] buildTree 传入=" + apis.size()
+                    + ", Controller节点=" + controllerNodeCount
+                    + ", 实际API叶子节点=" + builtApiNodes);
+        });
+    }
+
+    // ================================================================
+    // 收藏文件夹视图（「收藏」按钮切换到此模式）
+    // ================================================================
+
+    /** 文件夹节点包装 */
+    private static final class FolderNode {
+        final com.ban.acai.model.StarredFolder folder;
+        FolderNode(com.ban.acai.model.StarredFolder f) { this.folder = f; }
+        public String toString() { return folder.getName() + " (" + folder.getApiKeys().size() + ")"; }
+    }
+
+    /** 收藏接口节点包装（带所属文件夹 id，用于移动/移除/参数编辑） */
+    private static final class StarredApiNode {
+        final ApiDefinition api;
+        final String folderId;
+        /** 渲染时使用的测试状态快照（buildStarredTree 时填充，渲染器无 project 故用字段传递） */
+        com.ban.acai.model.FolderApiStatus status;
+        /** 是否已配置测试参数（buildStarredTree 时填充，渲染器据此显示参数标记） */
+        boolean hasParams;
+        StarredApiNode(ApiDefinition api, String folderId) { this.api = api; this.folderId = folderId; }
+        public String toString() { return api.getHttpMethod() + " " + api.getUrl(); }
+    }
+
+    /** 刷新收藏模式的接口索引（从扫描缓存解析 uniqueKey -> ApiDefinition） */
+    private void refreshStarredApiIndex() {
+        starredApiByKey.clear();
+        for (ApiDefinition api : allApis) {
+            starredApiByKey.put(api.uniqueKey(), api);
+        }
+    }
+
+    /** 构建收藏文件夹视图树 */
+    private void buildStarredTree() {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
+            String keyword = searchField.getText().trim().toLowerCase();
+
+            List<com.ban.acai.model.StarredFolder> folders = folderService.loadFolders();
+            int folderCount = 0, apiCount = 0, failedCount = 0;
+            for (com.ban.acai.model.StarredFolder folder : folders) {
+                DefaultMutableTreeNode folderNode = new DefaultMutableTreeNode(new FolderNode(folder));
+                for (String apiKey : folder.getApiKeys()) {
+                    ApiDefinition api = starredApiByKey.get(apiKey);
+                    if (api == null) continue;
+                    // 搜索过滤
+                    if (!keyword.isBlank()) {
+                        String key = (api.getHttpMethod() + " " + api.getUrl() + " " + api.getName()).toLowerCase();
+                        if (!key.contains(keyword)) continue;
+                    }
+                    com.ban.acai.model.FolderApiStatus st = folderService.getStatus(folder.getId(), apiKey);
+                    StarredApiNode sNode = new StarredApiNode(api, folder.getId());
+                    sNode.status = st;
+                    Map<String, String> savedParams = folderService.getParams(folder.getId(), apiKey);
+                    sNode.hasParams = savedParams != null && !savedParams.isEmpty();
+                    folderNode.add(new DefaultMutableTreeNode(sNode));
+                    apiCount++;
+                    if (st.shouldHighlightRed()) failedCount++;
+                }
+                root.add(folderNode);
+                folderCount++;
+            }
+            treeModel.setRoot(root);
+            treeModel.reload();
+            for (int i = 0; i < root.getChildCount(); i++) {
+                TreeNode n = root.getChildAt(i);
+                tree.expandPath(new TreePath(((DefaultMutableTreeNode) n).getPath()));
+            }
+            statsLabel.setText(String.format("● 文件夹 %d · 接口 %d · 失败标红 %d",
+                    folderCount, apiCount, failedCount));
+        });
+    }
+
+    /** 获取收藏模式下选中的文件夹节点 */
+    private com.ban.acai.model.StarredFolder getSelectedStarredFolder() {
+        Object node = tree.getLastSelectedPathComponent();
+        if (!(node instanceof DefaultMutableTreeNode)) return null;
+        Object uo = ((DefaultMutableTreeNode) node).getUserObject();
+        if (uo instanceof FolderNode) return ((FolderNode) uo).folder;
+        if (uo instanceof StarredApiNode) {
+            DefaultMutableTreeNode parent = (DefaultMutableTreeNode) ((DefaultMutableTreeNode) node).getParent();
+            if (parent != null && parent.getUserObject() instanceof FolderNode) {
+                return ((FolderNode) parent.getUserObject()).folder;
+            }
+        }
+        return null;
+    }
+
+    /** 获取收藏模式下选中的接口节点 */
+    private StarredApiNode getSelectedStarredApiNode() {
+        Object node = tree.getLastSelectedPathComponent();
+        if (!(node instanceof DefaultMutableTreeNode)) return null;
+        Object uo = ((DefaultMutableTreeNode) node).getUserObject();
+        return uo instanceof StarredApiNode ? (StarredApiNode) uo : null;
+    }
+
+    // ── 收藏模式右键菜单 ──
+
+    /** 拖拽 TransferHandler：收藏模式下拖接口到文件夹即移动；非收藏模式不干预 */
+    private final class StarredDragTransferHandler extends TransferHandler {
+        private final java.awt.datatransfer.DataFlavor flavor =
+                new java.awt.datatransfer.DataFlavor(StarredApiNode.class, "StarredApiNode");
+
+        @Override public int getSourceActions(JComponent c) {
+            return FILTER_STARRED.equals(currentFilter) ? MOVE : NONE;
+        }
+
+        @Override protected Transferable createTransferable(JComponent c) {
+            if (!FILTER_STARRED.equals(currentFilter)) return null;
+            StarredApiNode n = getSelectedStarredApiNode();
+            if (n == null) return null;
+            final StarredApiNode data = n;
+            return new Transferable() {
+                @Override public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() { return new java.awt.datatransfer.DataFlavor[]{flavor}; }
+                @Override public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) { return flavor.equals(f); }
+                @Override public Object getTransferData(java.awt.datatransfer.DataFlavor f)
+                        throws java.awt.datatransfer.UnsupportedFlavorException {
+                    if (!flavor.equals(f)) throw new java.awt.datatransfer.UnsupportedFlavorException(f);
+                    return data;
+                }
+            };
+        }
+
+        @Override public boolean canImport(TransferHandler.TransferSupport support) {
+            if (!FILTER_STARRED.equals(currentFilter)) return false;
+            if (!support.isDataFlavorSupported(flavor)) return false;
+            if (support.getDropLocation() == null) return false;
+            JTree.DropLocation dl = (JTree.DropLocation) support.getDropLocation();
+            TreePath path = dl.getPath();
+            if (path == null) return false;
+            Object node = path.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) return false;
+            return ((DefaultMutableTreeNode) node).getUserObject() instanceof FolderNode;
+        }
+
+        @Override public boolean importData(TransferHandler.TransferSupport support) {
+            if (!canImport(support)) return false;
+            try {
+                StarredApiNode n = (StarredApiNode) support.getTransferable().getTransferData(flavor);
+                JTree.DropLocation dl = (JTree.DropLocation) support.getDropLocation();
+                DefaultMutableTreeNode targetNode = (DefaultMutableTreeNode) dl.getPath().getLastPathComponent();
+                FolderNode fn = (FolderNode) targetNode.getUserObject();
+                if (n.folderId.equals(fn.folder.getId())) return false; // 同文件夹不处理
+                boolean ok = folderService.moveApi(n.api.uniqueKey(), n.folderId, fn.folder.getId());
+                if (ok) SwingUtilities.invokeLater(ApiTreePanel.this::buildStarredTree);
+                return ok;
+            } catch (java.awt.datatransfer.UnsupportedFlavorException | java.io.IOException ex) {
+                return false;
+            }
+        }
+    }
+
+    private void showStarredPopup(MouseEvent e) {
+        int row = tree.getRowForLocation(e.getX(), e.getY());
+        DefaultActionGroup group = new DefaultActionGroup();
+
+        if (row < 0) {
+            // 空白处：仅「新建文件夹」
+            group.add(starredAction("新建文件夹", AllIcons.Actions.NewFolder, this::starredNewFolder));
+        } else {
+            tree.setSelectionRow(row);
+            TreePath path = tree.getPathForRow(row);
+            DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
+            Object uo = node.getUserObject();
+
+            if (uo instanceof FolderNode) {
+                com.ban.acai.model.StarredFolder f = ((FolderNode) uo).folder;
+                group.add(starredAction("重命名", AllIcons.Actions.Edit, this::starredRenameFolder));
+                if (!com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
+                    group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
+                }
+                group.addSeparator();
+                group.add(starredAction("AI生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
+                group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
+            } else if (uo instanceof StarredApiNode) {
+                group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
+                group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
+                group.add(starredAction("移动到…", AllIcons.Actions.MoveTo2, this::starredMoveTo));
+                group.add(starredAction("复制到…", AllIcons.Actions.Copy, this::starredCopyTo));
+                group.add(starredAction("移除", AllIcons.Actions.GC, this::starredRemoveApi));
+                group.addSeparator();
+                group.add(starredAction("取消警示", AllIcons.Actions.QuickfixBulb, this::starredClearWarning));
+                group.addSeparator();
+                group.add(starredAction("复制URL", AllIcons.Actions.Copy, this::starredCopyUrl));
+            }
+        }
+
+        ActionPopupMenu popup = ActionManager.getInstance().createActionPopupMenu(ActionPlaces.POPUP, group);
+        popup.getComponent().show(tree, e.getX(), e.getY());
+    }
+
+    private static AnAction starredAction(String text, Icon icon, Runnable run) {
+        return new AnAction(text, text, icon) {
+            @Override public void actionPerformed(@NotNull AnActionEvent e) { run.run(); }
+        };
+    }
+
+    // ── 收藏模式操作实现 ──
+
+    private void starredNewFolder() {
+        String name = Messages.showInputDialog(project, "文件夹名称：", "新建文件夹",
+                Messages.getQuestionIcon(), "新文件夹", null);
+        if (name == null || name.isBlank()) return;
+        folderService.createFolder(name.trim());
+        buildStarredTree();
+    }
+
+    private void starredRenameFolder() {
+        com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
+        if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "重命名"); return; }
+        if (com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
+            Messages.showWarningDialog(project, "「未分类」不可重命名", "重命名"); return;
+        }
+        String name = Messages.showInputDialog(project, "新名称：", "重命名文件夹",
+                Messages.getQuestionIcon(), f.getName(), null);
+        if (name == null || name.isBlank()) return;
+        folderService.renameFolder(f.getId(), name.trim());
+        buildStarredTree();
+    }
+
+    private void starredDeleteFolder() {
+        com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
+        if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "删除文件夹"); return; }
+        if (com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
+            Messages.showWarningDialog(project, "「未分类」不可删除", "删除文件夹"); return;
+        }
+        int ret = Messages.showYesNoDialog(project, "删除文件夹「" + f.getName() + "」？\n其内接口将移回「未分类」。",
+                "删除文件夹", Messages.getQuestionIcon());
+        if (ret != Messages.YES) return;
+        folderService.deleteFolder(f.getId());
+        buildStarredTree();
+    }
+
+    /**
+     * 全量视图右键「添加到收藏文件夹…」：弹出文件夹选择对话框，
+     * 用户选目标文件夹后将接口加入（同文件夹内自动去重）。
+     * 已在该文件夹内的会提示跳过。
+     */
+    private void addApiToFolderDialog(ApiDefinition api) {
+        List<com.ban.acai.model.StarredFolder> folders = folderService.loadFolders();
+        if (folders.isEmpty()) {
+            Messages.showInfoMessage(project, "暂无收藏文件夹", "添加到收藏");
+            return;
+        }
+        FolderPicker picker = new FolderPicker(project, folders, api.uniqueKey());
+        if (!picker.showAndGet()) return;
+        List<com.ban.acai.model.StarredFolder> picked = picker.getSelected();
+        if (picked.isEmpty()) return;
+        int added = 0, skipped = 0;
+        for (com.ban.acai.model.StarredFolder f : picked) {
+            if (folderService.addApiToFolder(f.getId(), api.uniqueKey())) added++;
+            else skipped++;
+        }
+        if (added > 0) api.setStarred(true);
+        tree.repaint();
+        String msg = added > 0
+                ? "已添加到 " + added + " 个文件夹" + (skipped > 0 ? "（" + skipped + " 个已存在已跳过）" : "")
+                : "该接口已在所选文件夹中";
+        Messages.showInfoMessage(project, msg, "添加到收藏");
+    }
+
+    /** 添加到收藏文件夹的多选对话框：带搜索、已加入标记，可一次加入多个文件夹。 */
+    private static final class FolderPicker extends com.intellij.openapi.ui.DialogWrapper {
+        private final java.util.List<com.ban.acai.model.StarredFolder> folders;
+        private final String apiKey;
+        private final DefaultListModel<com.ban.acai.model.StarredFolder> model = new DefaultListModel<>();
+        private final JBList<com.ban.acai.model.StarredFolder> list = new JBList<>(model);
+        private final JTextField searchField = new JTextField();
+
+        FolderPicker(Project project, java.util.List<com.ban.acai.model.StarredFolder> folders, String apiKey) {
+            super(project);
+            this.folders = folders;
+            this.apiKey = apiKey;
+            setTitle("添加到收藏文件夹");
+            setOKButtonText("添加到所选文件夹");
+            init();
+            list.setCellRenderer((l, f, idx, sel, focus) -> {
+                boolean in = f.getApiKeys().contains(apiKey);
+                JBLabel label = new JBLabel((in ? "✓ " : "📁 ") + f.getName() + "  (" + f.getApiKeys().size() + ")");
+                label.setOpaque(true);
+                if (sel) {
+                    label.setBackground(UIManager.getColor("Tree.selectionBackground"));
+                    label.setForeground(UIManager.getColor("Tree.selectionForeground"));
+                } else if (in) {
+                    label.setForeground(JBColor.GRAY);
+                }
+                return label;
+            });
+            list.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+            applyFilter("");
+            searchField.getDocument().addDocumentListener(new DocumentAdapter() {
+                @Override protected void textChanged(@NotNull DocumentEvent e) {
+                    applyFilter(searchField.getText());
+                }
+            });
+        }
+
+        private void applyFilter(String text) {
+            model.clear();
+            String t = text == null ? "" : text.trim().toLowerCase();
+            for (com.ban.acai.model.StarredFolder f : folders) {
+                if (t.isEmpty() || f.getName().toLowerCase().contains(t)) model.addElement(f);
+            }
+        }
+
+        @Override
+        protected JComponent createCenterPanel() {
+            JPanel panel = new JPanel(new BorderLayout());
+            panel.setPreferredSize(JBUI.size(480, 360));
+            JPanel top = new JPanel(new BorderLayout(4, 4));
+            top.setBorder(JBUI.Borders.empty(4));
+            top.add(new JBLabel("搜索文件夹："), BorderLayout.WEST);
+            top.add(searchField, BorderLayout.CENTER);
+            panel.add(top, BorderLayout.NORTH);
+            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            JBLabel hint = new JBLabel("可按住 Cmd/Ctrl 多选；标记 ✓ 表示该接口已在此文件夹中（将被跳过）");
+            hint.setForeground(JBColor.GRAY);
+            hint.setBorder(JBUI.Borders.empty(4, 4, 4, 4));
+            panel.add(hint, BorderLayout.SOUTH);
+            return panel;
+        }
+
+        java.util.List<com.ban.acai.model.StarredFolder> getSelected() {
+            return list.getSelectedValuesList();
+        }
+    }
+
+    private void starredRemoveApi() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        folderService.removeApiFromFolder(n.folderId, n.api.uniqueKey());
+        buildStarredTree();
+    }
+
+    private void starredCopyTo() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        List<com.ban.acai.model.StarredFolder> folders = folderService.loadFolders().stream()
+                .filter(f -> !f.getId().equals(n.folderId))
+                .collect(Collectors.toList());
+        if (folders.isEmpty()) return;
+        String[] names = folders.stream().map(com.ban.acai.model.StarredFolder::getName).toArray(String[]::new);
+        Object choice = JOptionPane.showInputDialog(tree, "复制到哪个文件夹？", "复制接口",
+                JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
+        if (choice == null) return;
+        int ret = Arrays.asList(names).indexOf(choice);
+        if (ret < 0 || ret >= folders.size()) return;
+        folderService.addApiToFolder(folders.get(ret).getId(), n.api.uniqueKey());
+        buildStarredTree();
+    }
+
+    private void starredMoveTo() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        List<com.ban.acai.model.StarredFolder> folders = folderService.loadFolders().stream()
+                .filter(f -> !f.getId().equals(n.folderId))
+                .collect(Collectors.toList());
+        if (folders.isEmpty()) return;
+        String[] names = folders.stream().map(com.ban.acai.model.StarredFolder::getName).toArray(String[]::new);
+        Object choice = JOptionPane.showInputDialog(tree, "移动到哪个文件夹？", "移动接口",
+                JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
+        if (choice == null) return;
+        int ret = Arrays.asList(names).indexOf(choice);
+        if (ret < 0 || ret >= folders.size()) return;
+        folderService.moveApi(n.api.uniqueKey(), n.folderId, folders.get(ret).getId());
+        buildStarredTree();
+    }
+
+    private void starredEditParams() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        Map<String, String> existing = folderService.getParams(n.folderId, n.api.uniqueKey());
+        Map<String, String> editable = existing != null ? new LinkedHashMap<>(existing) : new LinkedHashMap<>();
+        if (editable.isEmpty()) {
+            for (com.ban.acai.model.ApiParameter p : n.api.getParameters()) editable.put(p.getName(), "");
+        }
+        // 简单的多行文本编辑：每行 key=value
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> en : editable.entrySet()) {
+            sb.append(en.getKey()).append('=').append(en.getValue() == null ? "" : en.getValue()).append('\n');
+        }
+        // area 提到外部以便取值（匿名 DialogWrapper 内部方法无法从外部直接调用）
+        final javax.swing.JTextArea area = new javax.swing.JTextArea(sb.toString());
+        com.intellij.openapi.ui.DialogWrapper dlg = new com.intellij.openapi.ui.DialogWrapper(project) {
+            {
+                setTitle("编辑测试参数（每行 key=value）");
+                init();
+            }
+            @Override protected JComponent createCenterPanel() {
+                javax.swing.JPanel p = new javax.swing.JPanel(new BorderLayout());
+                p.setPreferredSize(JBUI.size(460, 360));
+                p.add(new javax.swing.JLabel("每行一个参数，格式 key=value："), BorderLayout.NORTH);
+                p.add(new javax.swing.JScrollPane(area), BorderLayout.CENTER);
+                return p;
+            }
+        };
+        if (dlg.showAndGet()) {
+            Map<String, String> result = new LinkedHashMap<>();
+            for (String line : area.getText().split("\n")) {
+                int eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                String k = line.substring(0, eq).trim();
+                String v = line.substring(eq + 1);
+                if (!k.isEmpty()) result.put(k, v);
+            }
+            folderService.setParams(n.folderId, n.api.uniqueKey(), result);
+            statsLabel.setText("已保存参数：" + n.api.getUrl());
+        }
+    }
+
+    private void starredClearWarning() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        folderService.clearWarning(n.folderId, n.api.uniqueKey());
+        buildStarredTree();
+    }
+
+    private void starredCopyUrl() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        java.awt.datatransfer.StringSelection sel = new java.awt.datatransfer.StringSelection(n.api.getUrl());
+        java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
+    }
+
+    private void starredDebugApi() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n != null && onApiSelected != null) onApiSelected.accept(n.api);
+    }
+
+    private void starredBatchAiGen() {
+        refreshStarredApiIndex();
+        com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
+        if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "AI生成参数"); return; }
+        List<ApiDefinition> targets = new ArrayList<>();
+        for (String key : f.getApiKeys()) {
+            ApiDefinition api = starredApiByKey.get(key);
+            if (api != null) targets.add(api);
+        }
+        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹无接口", "AI生成参数"); return; }
+        int ret = Messages.showYesNoDialog(project,
+                "将对「" + f.getName() + "」内 " + targets.size() + " 个接口调用 AI 生成参数，是否继续？",
+                "AI生成参数", Messages.getQuestionIcon());
+        if (ret != Messages.YES) return;
+
+        final String folderId = f.getId();
+        statsLabel.setText("AI 生成参数中（0/" + targets.size() + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            int ok = 0, fail = 0;
+            for (int i = 0; i < targets.size(); i++) {
+                final ApiDefinition api = targets.get(i);
+                final int idx = i + 1;
+                try {
+                    com.ban.acai.ai.AiParameterService.GenerateResult gr = aiService.generateParametersWithRaw(
+                            api, com.ban.acai.ai.AiParameterService.TestScenario.NORMAL);
+                    Map<String, String> params = null;
+                    if (gr != null && gr.getParameters() != null && !gr.getParameters().isEmpty()) {
+                        params = gr.getParameters().get(0);
+                    } else {
+                        params = aiService.generateDefaultParameters(api);
+                    }
+                    folderService.setParams(folderId, api.uniqueKey(), params);
+                    ok++;
+                    final int okNow = ok;
+                    SwingUtilities.invokeLater(() ->
+                            statsLabel.setText("AI 生成参数中（" + idx + "/" + targets.size() + "）… 已成功 " + okNow));
+                } catch (Exception ex) {
+                    fail++;
+                }
+            }
+            final int okF = ok, failF = fail;
+            SwingUtilities.invokeLater(() -> {
+                buildStarredTree();
+                statsLabel.setText("AI 生成完成：成功 " + okF + " · 失败 " + failF);
+            });
+        });
+    }
+
+    private void starredBatchTest() {
+        refreshStarredApiIndex();
+        com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
+        if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "批量测试"); return; }
+        List<ApiDefinition> targets = new ArrayList<>();
+        for (String key : f.getApiKeys()) {
+            ApiDefinition api = starredApiByKey.get(key);
+            if (api != null) targets.add(api);
+        }
+        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹无接口", "批量测试"); return; }
+
+        final String folderId = f.getId();
+        final String baseUrl = AcaiSettingsState.getInstance(project).getBaseUrl();
+        statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            int passed = 0, failed = 0;
+            for (int i = 0; i < targets.size(); i++) {
+                final ApiDefinition api = targets.get(i);
+                Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
+                if (params == null) params = aiService.generateDefaultParameters(api);
+                final int idx = i + 1;
+                com.ban.acai.model.FolderApiStatus status = new com.ban.acai.model.FolderApiStatus();
+                try {
+                    com.ban.acai.model.TestResult tr = httpService.executeRequest(api, baseUrl, params);
+                    status.setPassed(tr.getStatus() == com.ban.acai.model.TestStatus.PASSED);
+                    status.setStatusCode(tr.getStatusCode());
+                    status.setMessage(status.isPassed() ? "通过" : ("未通过 HTTP " + tr.getStatusCode()));
+                } catch (Exception ex) {
+                    status.setPassed(false);
+                    status.setStatusCode(-1);
+                    status.setMessage("请求异常：" + ex.getMessage());
+                }
+                status.setManuallyCleared(false);
+                status.setTestedAt(System.currentTimeMillis());
+                folderService.setStatus(folderId, api.uniqueKey(), status);
+                if (status.isPassed()) passed++; else failed++;
+                final int pNow = passed, fNow = failed;
+                SwingUtilities.invokeLater(() ->
+                        statsLabel.setText("批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow));
+            }
+            final int passedF = passed, failedF = failed;
+            SwingUtilities.invokeLater(() -> {
+                buildStarredTree();
+                statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
+            });
         });
     }
 
@@ -629,10 +1231,65 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * 标记当前扫描时间戳（用于"最新"过滤）
+     * 扫描完成通知：失效「最新」过滤的缓存。
+     * <p>扫描后接口方法体可能变化（调用链、引用类改变），需重新计算关联文件；
+     * 同时 Git 变更文件也可能有新提交，一并失效变更缓存。</p>
      */
     public void markScanTimestamp() {
-        this.lastScanTimestamp = System.currentTimeMillis();
+        latestChangedApis = null;
+        try {
+            ApiChangeDetector.getInstance(project).onScanComplete();
+            ApiChangeDetector.getInstance(project).invalidateChangedFilesCache();
+        } catch (Exception e) {
+            LOG.warn("失效最新过滤缓存失败: " + e.getMessage());
+        }
+        // 若当前正在看「最新」，重新触发计算
+        if (FILTER_LATEST.equals(currentFilter)) {
+            triggerLatestFilter();
+        }
+    }
+
+    /**
+     * 触发「最新」过滤：在后台线程用 {@link ApiChangeDetector} 计算最近 {@link #LATEST_CHANGE_DAYS}
+     * 天有 Git 变更的接口，计算完成后回 EDT 刷新树。
+     * <p>git log 与 PSI 读取耗时，必须放后台线程；用 {@link #latestComputing} 标志避免重复触发。</p>
+     */
+    private void triggerLatestFilter() {
+        // 已有缓存直接用
+        if (latestChangedApis != null) {
+            applyFilters();
+            return;
+        }
+        if (latestComputing) {
+            return; // 正在计算，避免重复触发
+        }
+        latestComputing = true;
+        statsLabel.setText("○ 检测 Git 变更中...");
+        final List<ApiDefinition> snapshot = new ArrayList<>(allApis);
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            List<ApiDefinition> changed;
+            try {
+                changed = ApiChangeDetector.getInstance(project)
+                        .filterChangedApis(snapshot, LATEST_CHANGE_DAYS);
+            } catch (Exception e) {
+                LOG.warn("最新过滤计算失败: " + e.getMessage());
+                changed = Collections.emptyList();
+            }
+            final List<ApiDefinition> result = changed;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                latestChangedApis = result;
+                latestComputing = false;
+                // 仅在用户仍停留在「最新」时刷新，避免切到其他分类后又被覆盖
+                if (FILTER_LATEST.equals(currentFilter)) {
+                    applyFilters();
+                    if (result.isEmpty()) {
+                        statsLabel.setText("○ 最近1个月无 Git 变更接口");
+                    } else {
+                        statsLabel.setText("● 共 " + result.size() + " 个接口近1个月有变更");
+                    }
+                }
+            }, ModalityState.defaultModalityState());
+        });
     }
 
     /**
@@ -842,10 +1499,23 @@ public class ApiTreePanel extends JPanel {
         if (api == null) return;
         if (api.getSourceFilePath().isBlank()) return;
 
-        VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
-        if (virtualFile == null) return;
-        OpenFileDescriptor descriptor = new OpenFileDescriptor(project, virtualFile, api.getSourceLineNumber() - 1, 0);
-        FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+        try {
+            VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
+            if (virtualFile == null) {
+                Messages.showWarningDialog(project, "找不到源文件：\n" + api.getSourceFilePath(), "跳转失败");
+                return;
+            }
+            // 行号从 1 开始；非法行号（<=0）退化为不指定行，避免 OpenFileDescriptor 抛 IllegalArgumentException
+            int line = api.getSourceLineNumber();
+            int offsetLine = line > 0 ? line - 1 : -1;
+            OpenFileDescriptor descriptor = offsetLine >= 0
+                    ? new OpenFileDescriptor(project, virtualFile, offsetLine, 0)
+                    : new OpenFileDescriptor(project, virtualFile);
+            FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+        } catch (Exception ex) {
+            LOG.warn("跳转到源码失败: " + api.getSourceFilePath(), ex);
+            Messages.showErrorDialog(project, "跳转到源码失败：" + ex.getMessage(), "跳转失败");
+        }
     }
 
     /**
@@ -914,6 +1584,20 @@ public class ApiTreePanel extends JPanel {
             if (!(value instanceof DefaultMutableTreeNode)) return this;
             Object userObj = ((DefaultMutableTreeNode) value).getUserObject();
 
+            // ── 收藏文件夹视图节点 ──
+            if (userObj instanceof FolderNode) {
+                com.ban.acai.model.StarredFolder f = ((FolderNode) userObj).folder;
+                setIcon(AllIcons.Nodes.Folder);
+                setText("<html><b>" + escapeHtml(f.getName()) + "</b> <span style='color:#888;font-size:10px;'>("
+                        + f.getApiKeys().size() + ")</span></html>");
+                if (!sel) setForeground(JBColor.foreground());
+                return this;
+            }
+            if (userObj instanceof StarredApiNode) {
+                renderStarredApiNode((StarredApiNode) userObj, sel);
+                return this;
+            }
+
             if (userObj instanceof ApiDefinition) {
                 renderApiNode((ApiDefinition) userObj, sel);
             } else if (userObj instanceof String) {
@@ -921,6 +1605,46 @@ public class ApiTreePanel extends JPanel {
             }
 
             return this;
+        }
+
+        /** 渲染收藏模式下的接口节点：方法徽章 + URL + 测试状态（失败标红/通过标绿） */
+        private void renderStarredApiNode(StarredApiNode node, boolean sel) {
+            ApiDefinition api = node.api;
+            String method = api.getHttpMethod();
+            String url = api.getUrl();
+            Color methodColor = getMethodColor(method);
+            String methodHex = toHex(methodColor);
+
+            com.ban.acai.model.FolderApiStatus st = node.status;
+            boolean red = st != null && st.shouldHighlightRed();
+            boolean green = st != null && st.isPassed() && st.getTestedAt() > 0 && !red;
+
+            String textColor;
+            if (red) textColor = sel ? "#FFCCCC" : "#CC0000";
+            else if (green) textColor = sel ? "#BBF0BB" : "#2E7D32";
+            else textColor = sel ? "#FFFFFF" : toHex(getForeground());
+
+            StringBuilder text = new StringBuilder("<html><span style='background-color:").append(methodHex)
+                    .append("; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>").append(method)
+                    .append("</span>&nbsp;<span style='color:").append(textColor)
+                    .append("; font-size:11px;'>").append(escapeHtml(url)).append("</span>");
+            if (red) {
+                text.append(" <span style='color:#CC0000;font-size:10px;'>✗ ")
+                        .append(escapeHtml(st.getMessage() == null ? "失败" : st.getMessage())).append("</span>");
+            } else if (green) {
+                text.append(" <span style='color:#2E7D32;font-size:10px;'>✓</span>");
+            }
+            // 已配置参数标记（蓝色小标签），让用户直观看到参数已持久化
+            if (node.hasParams) {
+                text.append(" <span style='color:#1565C0;font-size:9px;'>[参数]</span>");
+            }
+            setText(text.append("</html>").toString());
+            setIcon(AllIcons.Nodes.Plugin);
+            if (!sel) {
+                if (red) setForeground(new JBColor(new Color(0xCC, 0x00, 0x00), new Color(0xFF, 0x88, 0x88)));
+                else if (green) setForeground(new JBColor(new Color(0x2E, 0x7D, 0x32), new Color(0x62, 0xBE, 0x62)));
+                else setForeground(JBColor.foreground());
+            }
         }
 
         /**

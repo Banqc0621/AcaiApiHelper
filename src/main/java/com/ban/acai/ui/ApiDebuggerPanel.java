@@ -57,6 +57,8 @@ public class ApiDebuggerPanel extends JPanel {
 
     private final Project project;
     private ApiDefinition currentApi = null;
+    /** 收藏模式下当前接口所属文件夹 ID；为 null 表示处于全量视图（不按文件夹归档实时参数） */
+    private String currentFolderId = null;
     private ApiTreePanel treePanel; // 注入：在 Markdown 导出时获取用户在树中的多选
     private static final com.intellij.openapi.diagnostic.Logger LOG =
             com.intellij.openapi.diagnostic.Logger.getInstance(ApiDebuggerPanel.class);
@@ -969,7 +971,23 @@ public class ApiDebuggerPanel extends JPanel {
     // ================================================================
 
     public void loadApi(ApiDefinition api) {
+        loadApi(api, null);
+    }
+
+    /**
+     * 加载接口到调试面板。
+     *
+     * <p>{@code folderId} 标识当前接口在收藏模式下所属的文件夹：
+     * <ul>
+     *   <li>非空：从 {@link com.ban.acai.scanner.StarredFolderService} 读取该文件夹下此接口
+     *       的实时参数并覆盖到参数表，并在发送请求时回写——保证同一接口在不同文件夹中
+     *       各自归档、互不干扰。</li>
+     *   <li>null：全量视图，仅使用接口默认参数，不回写。</li>
+     * </ul></p>
+     */
+    public void loadApi(ApiDefinition api, String folderId) {
         currentApi = api;
+        currentFolderId = folderId;
         methodCombo.setSelectedItem(api.getHttpMethod());
         urlField.setText(api.getUrl());
 
@@ -1027,9 +1045,27 @@ public class ApiDebuggerPanel extends JPanel {
             });
         }
 
+        // 收藏模式下：覆盖该文件夹下此接口的实时参数（与其它文件夹互不干扰）
+        if (folderId != null) {
+            try {
+                Map<String, String> saved = com.ban.acai.scanner.StarredFolderService.getInstance(project)
+                        .getParams(folderId, api.uniqueKey());
+                if (saved != null && !saved.isEmpty()) {
+                    for (int i = 0; i < paramTableModel.getRowCount(); i++) {
+                        Object name = paramTableModel.getValueAt(i, 0);
+                        if (name instanceof String && saved.containsKey(name)) {
+                            paramTableModel.setValueAt(saved.get(name), i, 3);
+                        }
+                    }
+                }
+            } catch (Exception ignore) {
+                // 读取实时参数失败时退化为默认参数，不阻断加载
+            }
+        }
+
         // 同步附件面板
         updateAttachmentPanel(api);
-        
+
         // 如果没有显式参数，显示默认请求头
         if (paramTableModel.getRowCount() == 0) {
             headerTableModel.setRowCount(0);
@@ -1228,6 +1264,20 @@ public class ApiDebuggerPanel extends JPanel {
                 String n = (String) name;
                 String v = (String) value;
                 if (!v.isBlank()) values.put(n, v);
+            }
+        }
+        return values;
+    }
+
+    /** 收集参数表全部行（含空值），用于收藏模式下回写各文件夹的实时参数快照。 */
+    private Map<String, String> collectAllParameterPairs() {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int i = 0; i < paramTableModel.getRowCount(); i++) {
+            Object name = paramTableModel.getValueAt(i, 0);
+            Object value = paramTableModel.getValueAt(i, 3);
+            if (name instanceof String) {
+                String n = (String) name;
+                if (!n.isBlank()) values.put(n, value instanceof String ? (String) value : "");
             }
         }
         return values;
@@ -1591,9 +1641,9 @@ public class ApiDebuggerPanel extends JPanel {
      */
     private void filterParamsByLocation(String location) {
         if (location == null) {
-            // 显示所有参数，重新加载当前API
+            // 显示所有参数，重新加载当前API（保留收藏文件夹上下文，避免丢失实时参数归档）
             if (currentApi != null) {
-                loadApi(currentApi);
+                loadApi(currentApi, currentFolderId);
             }
             statusLabel.setText("● 显示所有参数");
             return;
@@ -3212,7 +3262,7 @@ public class ApiDebuggerPanel extends JPanel {
                         + "  • 全量接口定义 × " + allApis.size() + " 个\n"
                         + "  • 已测接口测试数据 × " + historyCount + " 条\n"
                         + "  • 测试配置 × " + profileCount + " 个\n"
-                        + "  • 调用统计 / 收藏\n\n"
+                        + "  • 调用统计 / 收藏文件夹及其各自实时参数\n\n"
                         + "导出后，使用同插件用户，可通过「导入接口数据」复用你的接口与测试记录。",
                 "导出接口数据", new String[]{"确定", "取消"}, 0, AllIcons.Actions.Download);
         if (ok != Messages.OK) return;

@@ -37,7 +37,7 @@ import java.util.*;
  * - 模型: doubao-seed-2.0-pro（可在设置中切换）
  */
 @Service(Service.Level.PROJECT)
-public class AiParameterService {
+public final class AiParameterService {
 
     private final Project project;
     private final Logger log = Logger.getInstance(AiParameterService.class);

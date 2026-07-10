@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
  * - 断言支持
  */
 @Service(Service.Level.PROJECT)
-public class HttpExecutorService {
+public final class HttpExecutorService {
 
     private final Project project;
     private final Logger log = Logger.getInstance(HttpExecutorService.class);

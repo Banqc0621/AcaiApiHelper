@@ -10,7 +10,7 @@ plugins {
 // 插件元信息
 // ============================================================
 group = "com.ban"
-version = "1.0.4"
+version = "1.0.5"
 
 // ============================================================
 // Java 编译配置 - Java 17 (匹配 IntelliJ Platform 2022.3+ 运行时)
@@ -67,7 +67,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.ban.acai"
         name = "Acai API Helper"
-        version = "1.0.4"
+        version = "1.0.5"
 
         ideaVersion {
             sinceBuild = "223"
