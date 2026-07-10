@@ -107,7 +107,7 @@ public class AiParameterService {
         // 检查AI服务是否配置（本地模型无需 API Key，仅校验服务器URL）
         if (settings.getAiServerUrl().isBlank()) {
             log.info("[AI生成参数] 跳过(简版)：AI服务器URL未配置，使用默认值生成策略");
-            return List.of(generateDefaultParameters(api));
+            return generateDefaultParameters(api, scenario);
         }
         if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
             log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
@@ -120,7 +120,7 @@ public class AiParameterService {
         } catch (Exception e) {
             log.warn("[AI生成参数] 失败(简版) => API=" + api.getUrl()
                     + ", 异常=" + e.getClass().getSimpleName() + ": " + e.getMessage() + "，降级使用默认值");
-            return List.of(generateDefaultParameters(api));
+            return generateDefaultParameters(api, scenario);
         }
     }
 
@@ -170,7 +170,7 @@ public class AiParameterService {
             log.info("[AI生成参数] 跳过：AI服务器URL未配置，使用本地默认值生成策略");
             return new GenerateResult(
                     "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL以使用AI生成真实参数",
-                    List.of(generateDefaultParameters(api)),
+                    generateDefaultParameters(api, scenario),
                     false,
                     "AI服务器URL未配置，请在「AI配置」中填写服务器URL"
             );
@@ -206,7 +206,7 @@ public class AiParameterService {
                     + "，降级使用默认值");
             return new GenerateResult(
                     "⚠ AI调用失败: " + e.getMessage() + "\n降级使用本地默认值生成",
-                    List.of(generateDefaultParameters(api)),
+                    generateDefaultParameters(api, scenario),
                     false,
                     "AI调用失败: " + e.getClass().getSimpleName() + " - " + e.getMessage()
             );
@@ -357,10 +357,10 @@ public class AiParameterService {
 
         JsonArray messages = new JsonArray();
 
-        // System message
+        // System message —— 在用户 system prompt 基础上追加场景指令，确保 system 层也场景感知
         JsonObject systemMsg = new JsonObject();
         systemMsg.addProperty("role", "system");
-        systemMsg.addProperty("content", settings.getAiSystemPrompt());
+        systemMsg.addProperty("content", buildSystemPrompt(settings.getAiSystemPrompt(), scenario));
         messages.add(systemMsg);
 
         // User message - 包含API详情和生成要求
@@ -378,20 +378,59 @@ public class AiParameterService {
     }
 
     /**
+     * 构建场景感知的 System Prompt。
+     * <p>在用户自定义的 system prompt 基础上追加一条场景指令，使 system 层与 user 层
+     * 对场景的认知一致，避免 system 层「生成真实值」与异常值场景产生矛盾。
+     * 仅追加、不删改用户原文，保证自定义内容不受损。</p>
+     */
+    private String buildSystemPrompt(String baseSystemPrompt, TestScenario scenario) {
+        String directive;
+        switch (scenario) {
+            case NORMAL:
+                directive = "当前为【正常值】场景：只生成符合业务语义的真实正常值，"
+                        + "禁止 0、-1、空串、null 及任何异常/非法值。";
+                break;
+            case BOUNDARY:
+                directive = "当前为【边界值】场景：必须生成边界条件数据"
+                        + "（0、-1、空串、null、最大值、最小值），这是边界测试的正当需求，"
+                        + "优先级高于「生成真实值」的一般要求。";
+                break;
+            case ABNORMAL:
+                directive = "当前为【异常值】场景：必须生成非法/异常数据"
+                        + "（SQL注入、XSS、超长字符串、类型错误、特殊字符等），这是异常测试的正当需求，"
+                        + "优先级高于「生成真实值」的一般要求。";
+                break;
+            case FULL:
+                directive = "当前为【全量覆盖】场景：必须同时返回正常值、边界值、异常值三类数据组成的数组，"
+                        + "并用 scenario 字段标注每组类型。";
+                break;
+            default:
+                directive = "";
+        }
+        return baseSystemPrompt + "\n\n" + directive;
+    }
+
+    /**
      * 构建发送给AI的User Prompt
-     * 基于用户在设置中自定义的提示词模板，通过占位符注入API动态信息。
-     * 支持占位符见 AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE 注释
+     * <p>基于用户在设置中自定义的提示词模板，通过占位符注入API动态信息与场景指令。
+     * 场景相关的规则表、禁止项、返回格式由 {@link #buildScenarioRules} / {@link #buildReturnFormat}
+     * 按场景动态生成，确保正常/边界/异常/全量四种场景各有针对性、互不矛盾。</p>
+     * <p>兼容旧模板：若模板不含 {@code ${SCENARIO_RULES}} / {@code ${RETURN_FORMAT}} 占位符
+     * （老版本自定义模板），则将场景指令追加到 prompt 末尾——末尾内容在 LLM 注意力中权重更高，
+     * 可覆盖模板主体里可能与场景冲突的旧规则。</p>
      */
     private String buildUserPrompt(ApiDefinition api, TestScenario scenario) {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
         String template = settings.getAiUserPromptTemplate();
 
         String description = api.getDescription().isBlank() ? "(无)" : api.getDescription();
-        String fullHint = (scenario == TestScenario.FULL)
-                ? "全量覆盖返回数组: [{\"正常值\": ...}, {\"边界值\": ...}, {\"异常值\": ...}]\n"
-                : "";
+        String scenarioRules = buildScenarioRules(scenario);
+        String returnFormat = buildReturnFormat(scenario);
 
-        return template
+        boolean hasRulesPlaceholder = template.contains("${SCENARIO_RULES}");
+        boolean hasFormatPlaceholder = template.contains("${RETURN_FORMAT}");
+
+        String prompt = template
                 .replace("${API_URL}", String.valueOf(api.getUrl()))
                 .replace("${HTTP_METHOD}", String.valueOf(api.getHttpMethod()))
                 .replace("${API_NAME}", String.valueOf(api.getName()))
@@ -401,7 +440,147 @@ public class AiParameterService {
                 .replace("${PARAMETERS}", buildParametersText(api))
                 .replace("${SCENARIO_NAME}", scenario.getDisplayName())
                 .replace("${SCENARIO_DESC}", scenario.getDescription())
-                .replace("${FULL_HINT}", fullHint);
+                .replace("${SCENARIO_RULES}", scenarioRules)
+                .replace("${RETURN_FORMAT}", returnFormat)
+                .replace("${FULL_HINT}", returnFormat);
+
+        // 旧自定义模板没有新占位符：把场景指令追加到末尾，确保场景生效（末尾优先级高）
+        if (!hasRulesPlaceholder) {
+            prompt = prompt + "\n\n" + scenarioRules;
+        }
+        if (!hasFormatPlaceholder) {
+            prompt = prompt + "\n\n## 返回格式\n" + returnFormat;
+        }
+        return prompt;
+    }
+
+    /**
+     * 按测试场景生成针对性的参数生成规则。
+     * <p>核心设计：每种场景的规则、禁止项、取值方向互不矛盾。
+     * 正常值场景禁止占位符与异常值；边界值/异常值场景则把 0、-1、空串、超长、注入payload 等
+     * 明确列为「应当生成」的正当目标，避免与正常值规则冲突导致 AI 无所适从。</p>
+     */
+    private String buildScenarioRules(TestScenario scenario) {
+        switch (scenario) {
+            case NORMAL:
+                return "## 参数生成规则（正常值场景，严格执行）\n" +
+                        "生成符合业务语义的真实可用正常值，禁止占位符与异常值。\n\n" +
+                        "### 禁止项\n" +
+                        "- 禁止: test_xxx, mock_xxx, example_xxx, xxx_demo, sample_xxx\n" +
+                        "- 禁止: 无意义随机字符(如 asdfgh, qwe123)\n" +
+                        "- 禁止: 明显的模板值(如 your_name, your_email)\n" +
+                        "- 禁止: 0、-1、空字符串、null 等非正常业务值\n\n" +
+                        "### 根据参数名生成对应含义的真实值\n" +
+                        "| 参数名包含 | 正确示例 |\n" +
+                        "|---|---|\n" +
+                        "| name/userName/nickname | 张三、李四、zhangsan |\n" +
+                        "| email/mail | zhangsan@company.com |\n" +
+                        "| phone/mobile/tel | 13800138000、15912345678 |\n" +
+                        "| id/xxxId/xxx_id | 1、100、1001、2024 |\n" +
+                        "| age | 18、25、35 |\n" +
+                        "| password/pwd | Abc@123456、P@ssw0rd |\n" +
+                        "| address/addr | 北京市朝阳区建国路88号 |\n" +
+                        "| price/amount/money | 99.90、199.00、0.01 |\n" +
+                        "| createTime/updateTime | 2024-06-15 10:30:00 |\n" +
+                        "| startTime/endTime | 2024-01-01、2024-12-31 |\n" +
+                        "| status/state | 0、1、ACTIVE、PENDING |\n" +
+                        "| type/category | NORMAL、VIP、default |\n" +
+                        "| title/subject | 项目进度报告、Q2季度总结 |\n" +
+                        "| content/description | 这是一段描述信息、详细说明 |\n" +
+                        "| url/link/website | https://www.example.com |\n" +
+                        "| code/no/number | ORD20240615001、A10001 |\n" +
+                        "| page/pageNum/pageNo | 1 |\n" +
+                        "| size/pageSize/limit | 10、20、50 |\n" +
+                        "| keyword/search/query | 手机、电脑、Java |\n\n" +
+                        "### 类型匹配规则\n" +
+                        "- Integer/int/Long/long: 纯数字，不带引号（如 1、100、1001）\n" +
+                        "- Double/Float/BigDecimal: 小数，不带引号（如 99.90）\n" +
+                        "- Boolean/boolean: true 或 false\n" +
+                        "- String: 带引号的字符串\n" +
+                        "- Date/LocalDate: \"2024-06-15\" 格式\n" +
+                        "- DateTime/LocalDateTime: \"2024-06-15 10:30:00\" 格式\n" +
+                        "- List/Array: [\"item1\", \"item2\"]";
+
+            case BOUNDARY:
+                return "## 参数生成规则（边界值场景，严格执行）\n" +
+                        "本场景的目标是生成边界条件测试数据，必须覆盖最小值、最大值、空值/零值、临界值。\n" +
+                        "【重要】本场景允许且应当使用 0、-1、空字符串 \"\"、null、最大值、最小值等边界值，\n" +
+                        "这是边界测试的正当需求，优先级高于任何「禁止 0/-1/空」的一般规则。\n\n" +
+                        "### 各类型边界值要求（每个参数须覆盖以下多种边界）\n" +
+                        "- 整数(Integer/Long): 0、1、-1、2147483647(最大)、-2147483648(最小)\n" +
+                        "- 浮点数(Double/Float): 0.0、0.01、-0.01、1.7976931348623157E308(最大)、4.9E-324(最小正)\n" +
+                        "- 字符串(String): \"\"(空串)、\" \"(单空格)、\"a\"(单字符)、255字符(常见上限)、1000字符(超长)\n" +
+                        "- Boolean: true、false\n" +
+                        "- 日期(Date): \"1970-01-01\"(最早)、\"2099-12-31\"(最晚)、\"\"(空)\n" +
+                        "- 日期时间(DateTime): \"1970-01-01 00:00:00\"、\"2099-12-31 23:59:59\"\n" +
+                        "- 集合(List/Array): [](空数组)、[单元素]、[多元素]\n" +
+                        "- 必填字段: 同样要测试空值/null 边界，以验证服务端校验是否生效\n\n" +
+                        "### 数量要求\n" +
+                        "整体返回 3-5 组完整参数组合，每组对应一种边界类型（如：全零值组、全最大值组、全空值组、临界值组）。";
+
+            case ABNORMAL:
+                return "## 参数生成规则（异常值场景，严格执行）\n" +
+                        "本场景的目标是生成异常/非法测试数据，验证接口的容错性与校验逻辑。\n" +
+                        "【重要】本场景必须使用非法格式、超长字符串、特殊字符、类型错误、注入payload 等异常值，\n" +
+                        "这是异常测试的正当需求，优先级高于任何「禁止 test_xxx/随机字符/超长」的一般规则。\n\n" +
+                        "### 各类型异常值要求\n" +
+                        "- 字符串(String):\n" +
+                        "  * 超长字符串: 10000个字符的连续 'a'\n" +
+                        "  * 特殊字符: !@#$%^&*()<>?/|{}[]\n" +
+                        "  * SQL注入: ' OR '1'='1、'; DROP TABLE users--\n" +
+                        "  * XSS: <script>alert(1)</script>、<img src=x onerror=alert(1)>\n" +
+                        "  * null、\"\"(空串)、\"   \"(纯空格)\n" +
+                        "- 整数(Integer/Long):\n" +
+                        "  * 类型错误: \"abc\"、\"NaN\"、\"Infinity\"\n" +
+                        "  * 超大数: 99999999999999999999\n" +
+                        "  * 负数(若业务不允许): -1\n" +
+                        "  * 浮点数: 1.5\n" +
+                        "- 浮点数(Double/Float): \"abc\"、Infinity、-1.#IND\n" +
+                        "- Boolean: \"yes\"、\"1\"、null(非标准布尔值)\n" +
+                        "- 日期(Date): \"2024-13-45\"(非法月日)、\"not-a-date\"、\"0000-00-00\"\n" +
+                        "- 集合(List/Array): \"not_an_array\"(字符串代替数组)、[null,null]\n\n" +
+                        "### 数量要求\n" +
+                        "整体返回 3-5 组完整参数组合，每组针对一种异常类型（如：SQL注入组、XSS组、超长字符串组、类型错误组）。";
+
+            case FULL:
+                return "## 参数生成规则（全量覆盖场景，严格执行）\n" +
+                        "本场景需同时生成正常值、边界值、异常值三类测试数据，全面覆盖接口测试场景。\n" +
+                        "【重要】本场景优先级高于任何单一生成规则，必须返回包含三类数据的数组。\n\n" +
+                        "### 三类数据要求\n" +
+                        "- 正常值: 符合业务语义的真实可用值（如 id=1001, name=\"张三\", email=\"zhangsan@company.com\"）\n" +
+                        "- 边界值: 0、-1、空字符串、最大值、最小值等边界条件\n" +
+                        "- 异常值: 非法格式、超长字符串、特殊字符、SQL注入、XSS 等\n\n" +
+                        "### 数量要求\n" +
+                        "至少返回 3 组数据，每组用 \"scenario\" 字段标注类型：\n" +
+                        "  {\"scenario\":\"正常值\", ...}、{\"scenario\":\"边界值\", ...}、{\"scenario\":\"异常值\", ...}";
+
+            default:
+                return buildScenarioRules(TestScenario.NORMAL);
+        }
+    }
+
+    /**
+     * 按测试场景生成返回格式指令。
+     * <p>正常值返回单组 JSON 对象；边界值/异常值/全量返回 JSON 数组（多组），
+     * 确保 AI 不会因「单组」格式约束而只生成一组数据。</p>
+     */
+    private String buildReturnFormat(TestScenario scenario) {
+        switch (scenario) {
+            case NORMAL:
+                return "直接返回纯JSON对象，不要包含 ```json 标记或其他文字。\n" +
+                        "单组: {\"param_name\": \"value\", \"id\": 1001}";
+            case BOUNDARY:
+                return "直接返回纯JSON数组（3-5组边界数据），不要包含 ```json 标记或其他文字。\n" +
+                        "示例: [{\"id\":0,\"name\":\"\"}, {\"id\":1,\"name\":\"a\"}, {\"id\":2147483647,\"name\":\"255字符...\"}]";
+            case ABNORMAL:
+                return "直接返回纯JSON数组（3-5组异常数据），不要包含 ```json 标记或其他文字。\n" +
+                        "示例: [{\"id\":\"abc\",\"name\":\"' OR '1'='1\"}, {\"id\":-1,\"name\":\"<script>alert(1)</script>\"}, {\"id\":99999999999999999999,\"name\":\"10000个a...\"}]";
+            case FULL:
+                return "全量覆盖返回JSON数组，每组用 \"scenario\" 字段标注类型，不要包含 ```json 标记或其他文字。\n" +
+                        "示例: [{\"scenario\":\"正常值\",\"id\":1001,\"name\":\"张三\"}, {\"scenario\":\"边界值\",\"id\":0,\"name\":\"\"}, {\"scenario\":\"异常值\",\"id\":\"abc\",\"name\":\"' OR '1'='1\"}]";
+            default:
+                return buildReturnFormat(TestScenario.NORMAL);
+        }
     }
 
     /**
@@ -543,6 +722,111 @@ public class AiParameterService {
             }
         }
         return params;
+    }
+
+    /**
+     * 场景感知的降级参数生成（AI 不可用时按场景生成对应的默认测试数据）。
+     * <p>确保即使 AI 调用失败，不同场景仍能产出场景相符的数据，而非一律返回正常默认值：
+     * <ul>
+     *   <li>NORMAL: 单组上下文感知的正常值</li>
+     *   <li>BOUNDARY: 多组边界值（零值组、最大值组、空值组）</li>
+     *   <li>ABNORMAL: 多组异常值（SQL注入组、类型错误组、超长字符串组）</li>
+     *   <li>FULL: 正常 + 边界 + 异常 三组</li>
+     * </ul></p>
+     */
+    public List<Map<String, String>> generateDefaultParameters(ApiDefinition api, TestScenario scenario) {
+        switch (scenario) {
+            case BOUNDARY:
+                return buildBoundaryDefaults(api);
+            case ABNORMAL:
+                return buildAbnormalDefaults(api);
+            case FULL:
+                List<Map<String, String>> full = new ArrayList<>();
+                full.add(generateDefaultParameters(api));
+                full.add(buildBoundaryDefaults(api).get(0));
+                full.add(buildAbnormalDefaults(api).get(0));
+                return full;
+            case NORMAL:
+            default:
+                return List.of(generateDefaultParameters(api));
+        }
+    }
+
+    /** 生成边界值默认参数组：零值组、最大值组、空值组 */
+    private List<Map<String, String>> buildBoundaryDefaults(ApiDefinition api) {
+        List<Map<String, String>> groups = new ArrayList<>();
+        groups.add(buildTypedDefaults(api, BoundaryKind.ZERO));
+        groups.add(buildTypedDefaults(api, BoundaryKind.MAX));
+        groups.add(buildTypedDefaults(api, BoundaryKind.EMPTY));
+        return groups;
+    }
+
+    /** 生成异常值默认参数组：SQL注入组、类型错误组、超长字符串组 */
+    private List<Map<String, String>> buildAbnormalDefaults(ApiDefinition api) {
+        List<Map<String, String>> groups = new ArrayList<>();
+        groups.add(buildTypedDefaults(api, BoundaryKind.SQL_INJECT));
+        groups.add(buildTypedDefaults(api, BoundaryKind.TYPE_ERROR));
+        groups.add(buildTypedDefaults(api, BoundaryKind.LONG_STR));
+        return groups;
+    }
+
+    private enum BoundaryKind { ZERO, MAX, EMPTY, SQL_INJECT, TYPE_ERROR, LONG_STR }
+
+    /** 按边界/异常类型为每个参数生成对应的默认值 */
+    private Map<String, String> buildTypedDefaults(ApiDefinition api, BoundaryKind kind) {
+        Map<String, String> params = new LinkedHashMap<>();
+        for (ApiParameter param : api.getParameters()) {
+            params.put(param.getName(), boundaryValueFor(param.getName(), param.getType(), kind));
+        }
+        return params;
+    }
+
+    /** 根据参数 Java 类型与边界/异常类型，返回对应的边界或异常测试值 */
+    private String boundaryValueFor(String paramName, String javaType, BoundaryKind kind) {
+        boolean isInt = "Integer".equals(javaType) || "int".equals(javaType) || "Long".equals(javaType) || "long".equals(javaType);
+        boolean isFloat = "Double".equals(javaType) || "double".equals(javaType)
+                || "Float".equals(javaType) || "float".equals(javaType) || "BigDecimal".equals(javaType);
+        boolean isBool = "Boolean".equals(javaType) || "boolean".equals(javaType);
+        boolean isStr = "String".equals(javaType);
+
+        switch (kind) {
+            case ZERO:
+                if (isInt) return "0";
+                if (isFloat) return "0.0";
+                if (isBool) return "false";
+                if (isStr) return "";
+                return "";
+            case MAX:
+                if (isInt) return "2147483647";
+                if (isFloat) return "1.7976931348623157E308";
+                if (isBool) return "true";
+                if (isStr) return "边界字符串边界字符串边界字符串边界字符串边界字符串边界字符串";
+                return "";
+            case EMPTY:
+                if (isStr) return "";
+                if (isInt) return "0";
+                if (isFloat) return "0.0";
+                if (isBool) return "false";
+                return "";
+            case SQL_INJECT:
+                if (isStr) return "' OR '1'='1";
+                if (isInt) return "1; DROP TABLE users--";
+                return "' OR '1'='1";
+            case TYPE_ERROR:
+                if (isInt) return "abc";
+                if (isFloat) return "NaN";
+                if (isBool) return "yes";
+                if (isStr) return "12345";
+                return "abc";
+            case LONG_STR:
+                StringBuilder sb = new StringBuilder(10000);
+                for (int i = 0; i < 10000; i++) sb.append('a');
+                if (isStr) return sb.toString();
+                if (isInt) return "99999999999999999999";
+                return sb.toString();
+            default:
+                return "";
+        }
     }
 
     /**

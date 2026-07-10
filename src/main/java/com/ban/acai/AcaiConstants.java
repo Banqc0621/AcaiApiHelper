@@ -334,9 +334,16 @@ public final class AcaiConstants {
 
     /**
      * AI 用户提示词默认模板（支持占位符替换）
-     * 占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME}
-     * ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME}
-     * ${SCENARIO_DESC} ${FULL_HINT}
+     * <p>占位符:
+     * <ul>
+     *   <li>接口信息: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME}
+     *       ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS}</li>
+     *   <li>场景信息: ${SCENARIO_NAME} ${SCENARIO_DESC}</li>
+     *   <li>场景规则与返回格式（由 {@code AiParameterService.buildScenarioRules/buildReturnFormat}
+     *       按场景动态注入，确保正常/边界/异常/全量各有针对性指令）:
+     *       ${SCENARIO_RULES} ${RETURN_FORMAT}</li>
+     *   <li>兼容旧模板: ${FULL_HINT}（仅全量场景注入数组提示，已被 ${RETURN_FORMAT} 取代）</li>
+     * </ul></p>
      */
     public static final String AI_DEFAULT_USER_PROMPT_TEMPLATE =
             "请为以下REST API接口生成测试参数数据。\n\n" +
@@ -351,45 +358,9 @@ public final class AcaiConstants {
             "${PARAMETERS}\n\n" +
             "## 测试场景\n" +
             "${SCENARIO_NAME} - ${SCENARIO_DESC}\n\n" +
-            "## 参数生成规则（严格执行）\n\n" +
-            "### 禁止项\n" +
-            "- 禁止: test_xxx, mock_xxx, example_xxx, xxx_demo, sample_xxx\n" +
-            "- 禁止: 无意义随机字符(如 asdfgh, qwe123)\n" +
-            "- 禁止: 明显的模板值(如 your_name, your_email)\n\n" +
-            "### 根据参数名生成对应含义的真实值\n" +
-            "| 参数名包含 | 正确示例 | 错误示例 |\n" +
-            "|---|---|---|\n" +
-            "| name/userName/nickname | 张三、李四、zhangsan | test_name、mock_user |\n" +
-            "| email/mail | zhangsan@company.com | test@test.com |\n" +
-            "| phone/mobile/tel | 13800138000、15912345678 | 12345678901 |\n" +
-            "| id/xxxId/xxx_id | 1、100、1001、2024 | 0、-1、999999999 |\n" +
-            "| age | 18、25、35 | 0、999 |\n" +
-            "| password/pwd | Abc@123456、P@ssw0rd | 123456、password |\n" +
-            "| address/addr | 北京市朝阳区建国路88号 | test address |\n" +
-            "| price/amount/money | 99.90、199.00、0.01 | -1、0 |\n" +
-            "| createTime/updateTime | 2024-06-15 10:30:00 | 2000-01-01 |\n" +
-            "| startTime/endTime | 2024-01-01、2024-12-31 | null |\n" +
-            "| status/state | 0、1、ACTIVE、PENDING | UNKNOWN |\n" +
-            "| type/category | NORMAL、VIP、default | TEST |\n" +
-            "| title/subject | 项目进度报告、Q2季度总结 | test title |\n" +
-            "| content/description | 这是一段描述信息、详细说明 | test content |\n" +
-            "| url/link/website | https://www.example.com | http://test |\n" +
-            "| code/no/number | ORD20240615001、A10001 | CODE001 |\n" +
-            "| page/pageNum/pageNo | 1、1 | 0、-1 |\n" +
-            "| size/pageSize/limit | 10、20、50 | 0、-1、10000 |\n" +
-            "| keyword/search/query | 手机、电脑、Java | test |\n\n" +
-            "### 类型匹配规则\n" +
-            "- Integer/int/Long/long: 纯数字，不带引号（如 1、100、1001）\n" +
-            "- Double/Float/BigDecimal: 小数，不带引号（如 99.90）\n" +
-            "- Boolean/boolean: true 或 false\n" +
-            "- String: 带引号的字符串\n" +
-            "- Date/LocalDate: \"2024-06-15\" 格式\n" +
-            "- DateTime/LocalDateTime: \"2024-06-15 10:30:00\" 格式\n" +
-            "- List/Array: [\"item1\", \"item2\"]\n\n" +
+            "${SCENARIO_RULES}\n\n" +
             "## 返回格式\n" +
-            "直接返回纯JSON，不要包含 ```json 标记或其他文字。\n" +
-            "单组: {\"param_name\": \"value\", \"id\": 1001}\n" +
-            "${FULL_HINT}";
+            "${RETURN_FORMAT}";
 
     /** 可选模型列表 */
     public static final String[] AI_MODEL_OPTIONS = {

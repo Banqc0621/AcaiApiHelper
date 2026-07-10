@@ -1332,8 +1332,35 @@ public class ApiDebuggerPanel extends JPanel {
                     // 跳转到请求体Tab页（index=2），显示格式化JSON内容
                     tabbedPane.setSelectedIndex(2);
 
-                    statusLabel.setText("● 生成完成 (" + (result.isUsedAi() ? "AI" : "默认")
-                            + ", " + filledCount + " 个参数, 已填入请求体)");
+                    // 多组数据（边界/异常/全量场景）：第一组已填入参数表与请求体，
+                    // 其余组写入响应Tab供用户查看与挑选，避免多组结果被静默丢弃。
+                    if (sets.size() > 1) {
+                        com.google.gson.JsonArray allGroups = new com.google.gson.JsonArray();
+                        for (int gi = 0; gi < sets.size(); gi++) {
+                            com.google.gson.JsonObject groupObj = mapToNestedJson(sets.get(gi));
+                            // 标注组序号，便于用户识别
+                            com.google.gson.JsonObject labeled = new com.google.gson.JsonObject();
+                            labeled.addProperty("_组序号", "第" + (gi + 1) + "组/共" + sets.size() + "组");
+                            for (String key : groupObj.keySet()) {
+                                labeled.add(key, groupObj.get(key));
+                            }
+                            allGroups.add(labeled);
+                        }
+                        com.google.gson.Gson pretty = gson.newBuilder().setPrettyPrinting().create();
+                        StringBuilder multiText = new StringBuilder();
+                        multiText.append("╔══════════════════════════════════════════╗\n");
+                        multiText.append("║  共生成 ").append(sets.size()).append(" 组测试数据（已填入第1组到参数表与请求体）║\n");
+                        multiText.append("╚══════════════════════════════════════════╝\n\n");
+                        multiText.append(pretty.toJson(allGroups));
+                        testResultArea.setText(multiText.toString());
+                        testResultArea.setCaretPosition(0);
+
+                        statusLabel.setText("● 生成完成 (" + (result.isUsedAi() ? "AI" : "默认")
+                                + ", 共" + sets.size() + "组/" + filledCount + "个参数, 第1组已填入请求体，全部见响应Tab)");
+                    } else {
+                        statusLabel.setText("● 生成完成 (" + (result.isUsedAi() ? "AI" : "默认")
+                                + ", " + filledCount + " 个参数, 已填入请求体)");
+                    }
 
                     SwingUtilities.invokeLater(() -> {
                         try {
