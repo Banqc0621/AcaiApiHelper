@@ -16,6 +16,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParser;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.fileChooser.FileChooserFactory;
@@ -27,6 +28,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.SystemInfo;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileWrapper;
@@ -2881,10 +2883,23 @@ public class ApiDebuggerPanel extends JPanel {
     // 数据管理对话框：集中存放 保存/导入/导出 测试配置与全量测试数据
     // ================================================================
 
-    /** 弹出「数据管理」对话框，集中管理测试配置与测试数据的保存/导入/导出 */
+    /** 弹出「数据管理」对话框，集中管理测试配置与测试数据的保存/导入/导出。
+     *  <p>对话框只负责让用户选择操作并关闭；真正执行操作在 show() 返回后进行，
+     *  此时已无任何模态对话框，原生文件保存/选择对话框可正常弹出（Windows 兼容）。</p> */
     private void showDataManagerDialog() {
         DataManagerDialog dialog = new DataManagerDialog();
         dialog.show();
+        Runnable pending = dialog.getPendingAction();
+        if (pending != null) {
+            // Windows 上 DataManagerDialog 关闭后，其模态状态（ModalityState）并非同步清除——
+            // show() 返回时 dispose 已触发但底层窗口句柄与模态栈可能尚未完全释放。
+            // 若此时直接执行导出操作，其中调用的原生文件保存对话框（IFileDialog）会因
+            // 残留模态上下文而拒绝弹出（表现：点击无反应）。macOS 的 NSSavePanel 对此
+            // 更宽容，所以 Mac 正常。
+            // 使用 invokeLater + NON_MODAL：将操作排入 EDT 队列，仅在确认无任何模态对话框
+            // 时才执行，彻底避免模态状态残留导致原生文件对话框无法弹出。
+            ApplicationManager.getApplication().invokeLater(pending, ModalityState.NON_MODAL);
+        }
     }
 
     /**
@@ -2893,12 +2908,17 @@ public class ApiDebuggerPanel extends JPanel {
      */
     private class DataManagerDialog extends DialogWrapper {
 
+        /** 用户点击卡片后待执行的操作；点击「关闭」则为 null。show() 返回后由调用方执行。 */
+        private Runnable pendingAction;
+
         DataManagerDialog() {
             super(project);
             setTitle("数据管理");
             setOKButtonText("关闭");
             init();
         }
+
+        Runnable getPendingAction() { return pendingAction; }
 
         @Override
         protected Action @NotNull [] createActions() {
@@ -2977,8 +2997,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         /**
          * 构造一张可点击的操作卡片：图标 + 标题/描述，整行可点击。
-         * <p>hover 时浅色高亮、鼠标变手型，点击触发操作且不关闭对话框，便于连续操作。
-         * 相比「执行」按钮，整行卡片视觉更简洁、操作区更大、更符合成熟产品交互。</p>
+         * <p>hover 时浅色高亮、鼠标变手型。点击时先关闭本弹窗，再执行操作：
+         * 导出/导入会弹出确认框与原生文件对话框，Windows 上若本模态弹窗仍开启，
+         * 原生文件保存对话框无法正常置顶弹出，因此必须先关闭本弹窗。</p>
          */
         private JComponent actionCard(Icon icon, String title, String desc, java.awt.event.ActionListener listener) {
             JPanel card = new JPanel(new BorderLayout(10, 0));
@@ -3012,6 +3033,19 @@ public class ApiDebuggerPanel extends JPanel {
             // hover 高亮 + 点击触发
             card.addMouseListener(new java.awt.event.MouseAdapter() {
                 @Override
+                public void mousePressed(java.awt.event.MouseEvent e) {
+                    // 仅响应鼠标左键；mousePressed 比 mouseClicked 在 Windows 上更可靠
+                    // （mouseClicked 在 press/release 间若有微小位移或组件重排即不触发）。
+                    if (!javax.swing.SwingUtilities.isLeftMouseButton(e)) return;
+                    // 不在此执行操作，只记录待办操作并关闭对话框。
+                    // 真正执行在 show() 返回后进行（此时已无模态对话框），避免 Windows 上
+                    // 模态弹窗关闭过程与原生文件保存对话框争抢窗口句柄导致后者无法弹出。
+                    pendingAction = () -> listener.actionPerformed(
+                            new java.awt.event.ActionEvent(card, 0, "click"));
+                    close(OK_EXIT_CODE);
+                }
+
+                @Override
                 public void mouseEntered(java.awt.event.MouseEvent e) {
                     card.setOpaque(true);
                     card.setBackground(JBColor.PanelBackground.brighter());
@@ -3020,11 +3054,6 @@ public class ApiDebuggerPanel extends JPanel {
                 @Override
                 public void mouseExited(java.awt.event.MouseEvent e) {
                     card.setOpaque(false);
-                }
-
-                @Override
-                public void mouseClicked(java.awt.event.MouseEvent e) {
-                    listener.actionPerformed(new java.awt.event.ActionEvent(card, 0, "click"));
                 }
             });
 
@@ -3066,6 +3095,28 @@ public class ApiDebuggerPanel extends JPanel {
         return oneLine.substring(0, maxLen) + "...";
     }
 
+    /** 选择导出文件保存路径。
+     *  <p>macOS：弹出原生文件保存对话框（NSSavePanel），用户可选择目录与文件名，
+     *  体验最佳。Windows：IntelliJ 模态对话框与 Windows 原生 IFileDialog 存在
+     *  兼容性问题，直接弹原生保存对话框经常无响应（点击无反应）；改为默认保存到
+     *  「项目根目录/data/」下，自动创建该目录，文件名带时间戳，彻底绕开原生对话框。</p>
+     *
+     *  @param suggestName 建议的文件名（已含时间戳与扩展名）
+     *  @return 最终保存路径；用户取消（仅 macOS 可能）返回 null */
+    private String chooseExportPath(String suggestName) {
+        if (SystemInfo.isWindows) {
+            // 默认导出到项目根目录/data/，没有则自动创建
+            String dir = project.getBasePath() + "/data";
+            new File(dir).mkdirs();
+            return dir + "/" + suggestName;
+        }
+        // macOS 及其它平台：弹出原生文件保存对话框，由用户选择保存位置
+        FileSaverDescriptor fd = new FileSaverDescriptor("选择保存位置", "选择保存位置", "json");
+        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
+                .save((VirtualFile) null, suggestName);
+        return wrapper == null ? null : wrapper.getFile().getAbsolutePath();
+    }
+
     /** 导出配置信息（AI 设置 + 环境配置 + 测试 Profile）为 JSON 文件。
      *  <p>数据收集与文件写入在后台线程执行，避免接口/历史数据量大时阻塞 EDT
      *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
@@ -3083,34 +3134,36 @@ public class ApiDebuggerPanel extends JPanel {
                 "导出配置", new String[]{"确定", "取消"}, 0, AllIcons.ToolbarDecorator.Export);
         if (ok != Messages.OK) return;
 
-        // 文件保存对话框必须在 EDT 调用；先选好保存位置，再后台写入
-        String suggestName = TestDataExporter.suggestFileName("acai-config", "json");
-        FileSaverDescriptor fd = new FileSaverDescriptor("保存配置信息", "选择保存位置", "json");
-        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
-                .save((VirtualFile) null, suggestName);
-        if (wrapper == null) return;
-        String outputPath = wrapper.getFile().getAbsolutePath();
-        statusLabel.setText("● 正在导出配置...");
+        // 确认对话框（Messages.showDialog）关闭后，Windows 上其模态状态可能尚未完全清除。
+        // 直接调用原生文件保存对话框会因残留模态上下文而无法弹出。
+        // 使用 invokeLater + NON_MODAL 确保在完全无模态状态时才进行路径选择/导出。
+        // macOS：chooseExportPath 会弹出原生 NSSavePanel；Windows：直接落到项目/data/。
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = chooseExportPath(
+                    TestDataExporter.suggestFileName("acai-config", "json"));
+            if (outputPath == null) return;
+            statusLabel.setText("● 正在导出配置...");
 
-        // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
-        ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出配置", false) {
-            @Override
-            public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
-                indicator.setIndeterminate(true);
-                indicator.setText("正在序列化并写入配置文件...");
-                try {
-                    TestDataExporter.exportTestConfig(settings, project.getName(), outputPath);
-                    ApplicationManager.getApplication().invokeLater(() -> {
-                        Messages.showInfoMessage(project,
-                                "配置信息已导出到:\n" + outputPath, "导出成功");
-                        statusLabel.setText("● 配置已导出: " + outputPath);
-                    });
-                } catch (IOException e) {
-                    ApplicationManager.getApplication().invokeLater(() ->
-                            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+            // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
+            ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出配置", false) {
+                @Override
+                public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
+                    indicator.setIndeterminate(true);
+                    indicator.setText("正在序列化并写入配置文件...");
+                    try {
+                        TestDataExporter.exportTestConfig(settings, project.getName(), outputPath);
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            Messages.showInfoMessage(project,
+                                    "配置信息已导出到:\n" + outputPath, "导出成功");
+                            statusLabel.setText("● 配置已导出: " + outputPath);
+                        });
+                    } catch (IOException e) {
+                        ApplicationManager.getApplication().invokeLater(() ->
+                                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                    }
                 }
-            }
-        });
+            });
+        }, ModalityState.NON_MODAL);
     }
 
     /** 导入他人导出的配置信息 JSON（AI 设置覆盖；环境/Profile 合并） */
@@ -3161,34 +3214,35 @@ public class ApiDebuggerPanel extends JPanel {
                 "导出接口数据", new String[]{"确定", "取消"}, 0, AllIcons.Actions.Download);
         if (ok != Messages.OK) return;
 
-        // 文件保存对话框必须在 EDT 调用；先选好保存位置，再后台写入
-        String suggestName = TestDataExporter.suggestFileName("acai-api-data", "json");
-        FileSaverDescriptor fd = new FileSaverDescriptor("保存接口数据", "选择保存位置", "json");
-        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
-                .save((VirtualFile) null, suggestName);
-        if (wrapper == null) return;
-        String outputPath = wrapper.getFile().getAbsolutePath();
-        statusLabel.setText("● 正在导出接口数据（" + allApis.size() + " 个接口）...");
+        // 确认对话框关闭后，Windows 上模态状态可能尚未完全清除。
+        // 使用 invokeLater + NON_MODAL 确保在无模态上下文时才进行路径选择/导出。
+        // macOS：chooseExportPath 会弹出原生 NSSavePanel；Windows：直接落到项目/data/。
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = chooseExportPath(
+                    TestDataExporter.suggestFileName("acai-api-data", "json"));
+            if (outputPath == null) return;
+            statusLabel.setText("● 正在导出接口数据（" + allApis.size() + " 个接口）...");
 
-        // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
-        ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出接口数据", false) {
-            @Override
-            public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
-                indicator.setIndeterminate(true);
-                indicator.setText("正在序列化 " + allApis.size() + " 个接口与测试数据...");
-                try {
-                    TestDataExporter.exportTestData(settings, allApis, project.getName(), outputPath);
-                    ApplicationManager.getApplication().invokeLater(() -> {
-                        Messages.showInfoMessage(project,
-                                "接口数据已导出到:\n" + outputPath, "导出成功");
-                        statusLabel.setText("● 接口数据已导出: " + outputPath);
-                    });
-                } catch (IOException e) {
-                    ApplicationManager.getApplication().invokeLater(() ->
-                            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+            // 后台任务执行序列化与写盘，带进度提示，避免大数据量阻塞 EDT
+            ProgressManager.getInstance().run(new Task.Backgroundable(project, "正在导出接口数据", false) {
+                @Override
+                public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
+                    indicator.setIndeterminate(true);
+                    indicator.setText("正在序列化 " + allApis.size() + " 个接口与测试数据...");
+                    try {
+                        TestDataExporter.exportTestData(settings, allApis, project.getName(), outputPath);
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            Messages.showInfoMessage(project,
+                                    "接口数据已导出到:\n" + outputPath, "导出成功");
+                            statusLabel.setText("● 接口数据已导出: " + outputPath);
+                        });
+                    } catch (IOException e) {
+                        ApplicationManager.getApplication().invokeLater(() ->
+                                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                    }
                 }
-            }
-        });
+            });
+        }, ModalityState.NON_MODAL);
     }
 
     /** 导入他人导出的接口数据，按接口粒度合并（已有测试数据的接口不覆盖） */
