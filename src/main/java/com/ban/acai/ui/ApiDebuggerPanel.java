@@ -150,7 +150,7 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private void setupUI() {
-        setBorder(JBUI.Borders.empty(8));
+        setBorder(UiStyle.contentBorder());
 
         // 北部容器：工具栏 + 请求栏
         JPanel northPanel = new JPanel(new BorderLayout(0, 4));
@@ -159,7 +159,7 @@ public class ApiDebuggerPanel extends JPanel {
         add(northPanel, BorderLayout.NORTH);
 
         // Tab页（信息组织）- 类似Apipost的清晰分类
-        tabbedPane.setFont(tabbedPane.getFont().deriveFont(Font.PLAIN, 12f));
+        tabbedPane.setFont(tabbedPane.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         tabbedPane.addTab("参数", createParamsTab());
         tabbedPane.addTab("请求头", createHeadersTab());
         tabbedPane.addTab("请求体", createBodyTab());
@@ -172,11 +172,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 底部状态栏
         JPanel bottomPanel = new JPanel(new BorderLayout());
-        bottomPanel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0),
-                JBUI.Borders.emptyTop(6)));
-        statusLabel.setFont(statusLabel.getFont().deriveFont(Font.PLAIN, 11f));
-        statusLabel.setForeground(JBColor.GRAY);
+        bottomPanel.setBorder(UiStyle.topDivider());
+        UiStyle.hint(statusLabel);
+        statusLabel.setText("就绪");
         bottomPanel.add(statusLabel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
     }
@@ -198,6 +196,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
         scanBtn.setToolTipText("重新扫描项目中的所有API接口");
         scanBtn.putClientProperty("JButton.buttonType", "roundRect");
+        scanBtn.setFont(scanBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        scanBtn.setFocusPainted(false);
         scanBtn.addActionListener(e -> {
             ApiScannerService.getInstance(project).scanProjectApisAsync();
             statusLabel.setText("● 正在扫描API...");
@@ -205,7 +205,9 @@ public class ApiDebuggerPanel extends JPanel {
         toolbar1.add(scanBtn);
 
         toolbar1.addSeparator(new Dimension(12, 0));
-        toolbar1.add(new JBLabel("环境: "));
+        JBLabel envLabel = new JBLabel("环境: ");
+        UiStyle.hint(envLabel);
+        toolbar1.add(envLabel);
 
         // 环境选择下拉框
         envCombo = new JComboBox<>();
@@ -250,6 +252,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton envBtn = new JButton("环境管理", AllIcons.General.Settings);
         envBtn.setToolTipText("管理环境配置");
         envBtn.putClientProperty("JButton.buttonType", "roundRect");
+        envBtn.setFont(envBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        envBtn.setFocusPainted(false);
         envBtn.addActionListener(e -> {
             EnvironmentManagerDialog dialog = new EnvironmentManagerDialog(project);
             if (dialog.showAndGet()) {
@@ -271,6 +275,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton dataMgrBtn = new JButton("数据管理", AllIcons.Actions.MenuSaveall);
         dataMgrBtn.setToolTipText("保存 / 导入 / 导出 测试配置与全量测试数据");
         dataMgrBtn.putClientProperty("JButton.buttonType", "roundRect");
+        dataMgrBtn.setFont(dataMgrBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        dataMgrBtn.setFocusPainted(false);
         dataMgrBtn.addActionListener(e -> showDataManagerDialog());
         toolbar1.add(dataMgrBtn);
 
@@ -282,24 +288,32 @@ public class ApiDebuggerPanel extends JPanel {
         JButton importBtn = new JButton("导入", AllIcons.ToolbarDecorator.Import);
         importBtn.setToolTipText("导入cURL或JSON测试用例");
         importBtn.putClientProperty("JButton.buttonType", "roundRect");
+        importBtn.setFont(importBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        importBtn.setFocusPainted(false);
         importBtn.addActionListener(e -> importCurlOrJson());
         toolbar2.add(importBtn);
 
         JButton exportBtn = new JButton("导出cURL", AllIcons.ToolbarDecorator.Export);
         exportBtn.setToolTipText("导出为cURL命令");
         exportBtn.putClientProperty("JButton.buttonType", "roundRect");
+        exportBtn.setFont(exportBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        exportBtn.setFocusPainted(false);
         exportBtn.addActionListener(e -> exportCurl());
         toolbar2.add(exportBtn);
 
         JButton exportDocBtn = new JButton("导出文档", AllIcons.Actions.Download);
         exportDocBtn.setToolTipText("导出API文档(Markdown)");
         exportDocBtn.putClientProperty("JButton.buttonType", "roundRect");
+        exportDocBtn.setFont(exportDocBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        exportDocBtn.setFocusPainted(false);
         exportDocBtn.addActionListener(e -> exportApiDoc());
         toolbar2.add(exportDocBtn);
 
         JButton exportReportBtn = new JButton("导出报告", AllIcons.Actions.Dump);
         exportReportBtn.setToolTipText("导出HTML测试报告");
         exportReportBtn.putClientProperty("JButton.buttonType", "roundRect");
+        exportReportBtn.setFont(exportReportBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        exportReportBtn.setFocusPainted(false);
         exportReportBtn.addActionListener(e -> exportLastReport());
         toolbar2.add(exportReportBtn);
 
@@ -308,6 +322,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton clearCookieBtn = new JButton("清Cookie", AllIcons.Actions.GC);
         clearCookieBtn.setToolTipText("清空Cookie");
         clearCookieBtn.putClientProperty("JButton.buttonType", "roundRect");
+        clearCookieBtn.setFont(clearCookieBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        clearCookieBtn.setFocusPainted(false);
         clearCookieBtn.addActionListener(e -> {
             HttpExecutorService.getInstance(project).clearCookies();
             cookieStatusLabel.setText("Cookie: 已清空");
@@ -391,7 +407,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 单行布局: Base URL + 方法 + URL + 发送
         gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0;
         baseUrlField.setText(AcaiSettingsState.getInstance(project).getBaseUrl());
-        baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, 12f));
+        baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         baseUrlField.setToolTipText("服务基础地址，如 http://localhost:8080");
         baseUrlField.setPreferredSize(new Dimension(200, 28));
         panel.add(baseUrlField, gbc);
@@ -399,7 +415,7 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.gridx = 1; gbc.weightx = 0.0;
         methodCombo.setPreferredSize(new Dimension(110, 28));
         methodCombo.setMinimumSize(new Dimension(110, 28));
-        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, 12f));
+        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         methodCombo.setRenderer(new HttpMethodCellRenderer());
         // 选中方法后联动更新 currentApi 与请求体（POST/PUT/PATCH 生成默认 body，其余清空）
         methodCombo.addItemListener(e -> {
@@ -424,14 +440,15 @@ public class ApiDebuggerPanel extends JPanel {
 
         gbc.gridx = 2; gbc.weightx = 1.0;
         urlField.setEditable(false);
-        urlField.setFont(urlField.getFont().deriveFont(Font.PLAIN, 13f));
+        urlField.setFont(urlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         urlField.setBackground(JBColor.namedColor("TextField.background", Color.WHITE));
         panel.add(urlField, gbc);
 
         gbc.gridx = 3; gbc.weightx = 0.0;
         sendButton.putClientProperty("JButton.buttonType", "default");
-        sendButton.setMargin(new Insets(4, 12, 4, 12));
-        sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, 12f));
+        sendButton.setMargin(new Insets(4, 14, 4, 14));
+        sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        sendButton.setFocusPainted(false);
         sendButton.setToolTipText("发送请求到当前接口");
         panel.add(sendButton, gbc);
 
@@ -442,14 +459,8 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.empty(4));
 
-        paramTable.setRowHeight(28);  // 增加行高，更易点击
-        paramTable.setShowGrid(true);
-        paramTable.setGridColor(JBColor.border());
-        paramTable.setIntercellSpacing(new Dimension(1, 1));
-        paramTable.getTableHeader().setReorderingAllowed(false);
-        paramTable.setFont(paramTable.getFont().deriveFont(Font.PLAIN, 12f));  // 增大字体
-        paramTable.getTableHeader().setFont(paramTable.getTableHeader().getFont().deriveFont(Font.BOLD, 11f));
-        
+        UiStyle.styleTable(paramTable);
+        paramTable.setRowHeight(28);  // 参数表行高略大，更易点击编辑
         // 启用自动调整列宽（根据内容）
         paramTable.setAutoResizeMode(JBTable.AUTO_RESIZE_OFF);  // 手动控制列宽
 
@@ -648,10 +659,7 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.empty(4));
 
-        headerTable.setRowHeight(26);
-        headerTable.setShowGrid(true);
-        headerTable.setGridColor(JBColor.border());
-        headerTable.setIntercellSpacing(new Dimension(1, 1));
+        UiStyle.styleTable(headerTable);
         panel.add(new JBScrollPane(headerTable), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
@@ -680,14 +688,13 @@ public class ApiDebuggerPanel extends JPanel {
         topBar.add(bodyFormatCombo);
 
         cookieStatusLabel = new JBLabel("Cookie: (无)");
-        cookieStatusLabel.setFont(cookieStatusLabel.getFont().deriveFont(Font.PLAIN, 10f));
-        cookieStatusLabel.setForeground(JBColor.GRAY);
+        UiStyle.hint(cookieStatusLabel);
         topBar.add(Box.createHorizontalStrut(20));
         topBar.add(cookieStatusLabel);
 
         panel.add(topBar, BorderLayout.NORTH);
 
-        bodyEditor.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        bodyEditor.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
         bodyEditor.setLineWrap(true);
         bodyEditor.setWrapStyleWord(true);
         panel.add(new JBScrollPane(bodyEditor), BorderLayout.CENTER);
@@ -712,9 +719,9 @@ public class ApiDebuggerPanel extends JPanel {
                 JBUI.Borders.customLine(JBColor.border()),
                 JBUI.Borders.empty(6, 8)));
         statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
-        responseStatusLabel.setFont(responseStatusLabel.getFont().deriveFont(Font.BOLD, 12f));
-        responseTimeLabel.setFont(responseTimeLabel.getFont().deriveFont(Font.PLAIN, 12f));
-        responseSizeLabel.setFont(responseSizeLabel.getFont().deriveFont(Font.PLAIN, 12f));
+        responseStatusLabel.setFont(responseStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        responseTimeLabel.setFont(responseTimeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
+        responseSizeLabel.setFont(responseSizeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         statusPanel.add(responseStatusLabel);
         statusPanel.add(createSeparator());
         statusPanel.add(responseTimeLabel);
@@ -731,7 +738,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         // === 响应内容区域（支持文本/树形切换） ===
         // 文本视图
-        responseArea.setFont(new Font("Menlo", Font.PLAIN, 13));
+        responseArea.setFont(new Font("Menlo", Font.PLAIN, (int) UiStyle.FONT_MONO));
         responseArea.setEditable(false);
         // 长 JSON 不自动换行，避免渲染慢（用户可拖窗口看完整内容）
         responseArea.setLineWrap(false);
@@ -744,7 +751,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 树形视图
         responseJsonTree.setRootVisible(false);
         responseJsonTree.setShowsRootHandles(true);
-        responseJsonTree.setFont(responseJsonTree.getFont().deriveFont(Font.PLAIN, 12f));
+        responseJsonTree.setFont(responseJsonTree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         responseJsonTree.setCellRenderer(new JsonTreeNodeRenderer());
         JScrollPane treeScroll = new JBScrollPane(responseJsonTree);
         treeScroll.setBorder(JBUI.Borders.empty());
@@ -769,7 +776,7 @@ public class ApiDebuggerPanel extends JPanel {
         clearBtn.setToolTipText("🗑️ 清空响应内容");
 
         JBLabel hintLabel = new JBLabel("💡 提示: 切换『树形视图』可折叠展开JSON节点；状态/耗时按级别自动着色");
-        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.ITALIC, 10f));
+        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.ITALIC, UiStyle.FONT_TINY));
         hintLabel.setForeground(JBColor.GRAY);
 
         btnPanel.add(viewToggleBtn);
@@ -827,7 +834,7 @@ public class ApiDebuggerPanel extends JPanel {
         panel.add(testProgressBar, BorderLayout.SOUTH);
 
         // 测试结果区域
-        testResultArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        testResultArea.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
         testResultArea.setEditable(false);
         testResultArea.setLineWrap(true);
         testResultArea.setWrapStyleWord(true);
@@ -867,12 +874,11 @@ public class ApiDebuggerPanel extends JPanel {
                 JBUI.Borders.empty(6, 10)));
 
         JBLabel configStatusLabel = new JBLabel("🤖 AI配置:");
-        configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, 11f));
+        configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
         statusCard.add(configStatusLabel);
 
         JBLabel configInfo = new JBLabel(getAiConfigSummary());
-        configInfo.setFont(configInfo.getFont().deriveFont(Font.PLAIN, 11f));
-        configInfo.setForeground(JBColor.GRAY);
+        UiStyle.hint(configInfo);
         statusCard.add(configInfo);
 
         JButton configBtn = iconButton("⚙️ 配置", AllIcons.General.Settings, e -> showAiConfigDialog());
@@ -888,11 +894,11 @@ public class ApiDebuggerPanel extends JPanel {
         controlPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 50));
 
         JBLabel scenarioLabel = new JBLabel("📊 场景:");
-        scenarioLabel.setFont(scenarioLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        UiStyle.hint(scenarioLabel);
         controlPanel.add(scenarioLabel);
 
         scenarioCombo.setPreferredSize(new Dimension(130, 26));
-        scenarioCombo.setFont(scenarioCombo.getFont().deriveFont(Font.PLAIN, 11f));
+        scenarioCombo.setFont(scenarioCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         scenarioCombo.setToolTipText("选择测试场景：正常/边界/异常/全量");
         controlPanel.add(scenarioCombo);
 
@@ -948,13 +954,8 @@ public class ApiDebuggerPanel extends JPanel {
      * 创建带图标的按钮
      */
     private JButton iconButton(String text, Icon icon, java.awt.event.ActionListener listener) {
-        JButton btn = new JButton(text, icon);
-        btn.putClientProperty("JButton.buttonType", "square");
-        btn.setMargin(new Insets(2, 6, 2, 6));
-        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, 11f));
-        btn.setFocusPainted(false);
-        btn.addActionListener(listener);
-        return btn;
+        // 统一用 roundRect 圆角描边风格，告别「方块中间有字」的生硬观感
+        return UiStyle.button(text, icon, listener);
     }
 
     private void setupActions() {
@@ -2443,7 +2444,7 @@ public class ApiDebuggerPanel extends JPanel {
             public boolean isCellEditable(int row, int column) { return false; }
         };
         assertionTable = new JBTable(assertionTableModel);
-        assertionTable.setRowHeight(24);
+        UiStyle.styleTable(assertionTable);
         panel.add(new JBScrollPane(assertionTable), BorderLayout.CENTER);
 
         // 底部按钮
@@ -2500,14 +2501,17 @@ public class ApiDebuggerPanel extends JPanel {
         historyListModel = new DefaultListModel<>();
         historyList = new JList<>(historyListModel);
         historyList.setCellRenderer(new HistoryCellRenderer());
-        historyList.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        historyList.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_HINT));
+        historyList.setFixedCellHeight(26);
 
         // 加载历史
         for (RequestHistory h : requestHistory) {
             historyListModel.addElement(h);
         }
 
-        panel.add(new JBLabel("请求历史 (最近" + AcaiConstants.MAX_HISTORY_SIZE + "条)，双击重新发送"), BorderLayout.NORTH);
+        JBLabel historyTitle = new JBLabel("请求历史 (最近" + AcaiConstants.MAX_HISTORY_SIZE + "条)，双击重新发送");
+        UiStyle.hint(historyTitle);
+        panel.add(historyTitle, BorderLayout.NORTH);
         panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
@@ -2933,8 +2937,7 @@ public class ApiDebuggerPanel extends JPanel {
 
             // 顶部说明
             JBLabel hint = new JBLabel("选择需要执行的操作，点击卡片即可触发");
-            hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 12f));
-            hint.setForeground(JBColor.GRAY);
+            UiStyle.hint(hint);
             hint.setBorder(JBUI.Borders.empty(0, 2, 0, 0));
             panel.add(hint, BorderLayout.NORTH);
 
@@ -2981,14 +2984,13 @@ public class ApiDebuggerPanel extends JPanel {
             JPanel left = new JPanel(new BorderLayout(0, 0));
             left.setOpaque(false);
             JBLabel titleLabel = new JBLabel(title);
-            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 13f));
+            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_SECTION));
             titleLabel.setForeground(JBColor.foreground());
             left.add(titleLabel, BorderLayout.CENTER);
             header.add(left, BorderLayout.WEST);
 
             JBLabel subLabel = new JBLabel(subtitle);
-            subLabel.setFont(subLabel.getFont().deriveFont(Font.PLAIN, 11f));
-            subLabel.setForeground(JBColor.GRAY);
+            UiStyle.hint(subLabel);
             header.add(subLabel, BorderLayout.EAST);
 
             return header;
@@ -3015,10 +3017,9 @@ public class ApiDebuggerPanel extends JPanel {
             JPanel text = new JPanel(new BorderLayout(0, 3));
             text.setOpaque(false);
             JBLabel titleLabel = new JBLabel(title);
-            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.PLAIN, 13f));
+            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_SECTION));
             JBLabel descLabel = new JBLabel(desc);
-            descLabel.setFont(descLabel.getFont().deriveFont(Font.PLAIN, 11f));
-            descLabel.setForeground(JBColor.GRAY);
+            UiStyle.hint(descLabel);
             text.add(titleLabel, BorderLayout.CENTER);
             text.add(descLabel, BorderLayout.SOUTH);
             card.add(text, BorderLayout.CENTER);
@@ -3047,7 +3048,7 @@ public class ApiDebuggerPanel extends JPanel {
                 @Override
                 public void mouseEntered(java.awt.event.MouseEvent e) {
                     card.setOpaque(true);
-                    card.setBackground(JBColor.PanelBackground.brighter());
+                    card.setBackground(JBColor.namedColor("Table.stripeColor", new Color(245, 246, 247)));
                 }
 
                 @Override

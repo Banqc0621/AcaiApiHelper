@@ -124,7 +124,7 @@ public class ApiTreePanel extends JPanel {
         tree.setShowsRootHandles(true);
         tree.setRowHeight(0);  // 可变行高，适配HTML渲染
         tree.setBorder(JBUI.Borders.emptyLeft(6));
-        tree.setFont(tree.getFont().deriveFont(Font.PLAIN, 12f));
+        tree.setFont(tree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         tree.setBackground(JBColor.namedColor("Tree.background", Color.WHITE));
 
         // 双击事件：跳转到API源码
@@ -322,10 +322,10 @@ public class ApiTreePanel extends JPanel {
         JPanel topContainer = new JPanel(new BorderLayout(0, 3));
         topContainer.setBorder(JBUI.Borders.empty(4, 6));
         topContainer.add(createFilterPanel(), BorderLayout.NORTH);
-        
+
         // 配置搜索框
         searchField.getTextEditor().getEmptyText().setText("搜索接口路径、名称、Controller或描述...");
-        searchField.setFont(searchField.getFont().deriveFont(Font.PLAIN, 11f));
+        searchField.setFont(searchField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         topContainer.add(searchField, BorderLayout.SOUTH);
 
         // 搜索框实时过滤
@@ -349,7 +349,7 @@ public class ApiTreePanel extends JPanel {
         // 底部统计栏
         JPanel bottomPanel = new JPanel(new BorderLayout());
         bottomPanel.setBorder(JBUI.Borders.empty(2, 6));
-        statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, 10f));
+        statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         statsLabel.setForeground(JBColor.GRAY);
         bottomPanel.add(statsLabel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
@@ -381,7 +381,7 @@ public class ApiTreePanel extends JPanel {
         JBLabel hintLabel = new JBLabel("<html><center>点击工具栏 \"扫描API\" 按钮<br/>自动检测项目中的所有接口及参数</center></html>");
         hintLabel.setHorizontalAlignment(SwingConstants.CENTER);
         hintLabel.setForeground(JBColor.GRAY);
-        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         gbc.gridy = 2;
         panel.add(hintLabel, gbc);
 
@@ -424,12 +424,13 @@ public class ApiTreePanel extends JPanel {
      * 设置筛选按钮的紧凑样式
      */
     private void styleFilterButton(JToggleButton btn) {
-        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, 11f));
-        btn.setMargin(new Insets(2, 6, 2, 6));
+        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        btn.setMargin(new Insets(2, 8, 2, 8));
         btn.setFocusPainted(false);
-        btn.putClientProperty("JButton.buttonType", "square");
+        // roundRect 圆角描边，与工具栏按钮风格统一，告别方块感
+        btn.putClientProperty("JButton.buttonType", "roundRect");
         btn.setHorizontalTextPosition(SwingConstants.RIGHT);
-        btn.setIconTextGap(3);
+        btn.setIconTextGap(4);
         
         // 添加悬停提示
         switch (btn.getText()) {
