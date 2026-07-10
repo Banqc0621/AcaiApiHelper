@@ -35,6 +35,9 @@ public class AcaiToolWindowFactory implements ToolWindowFactory {
         // 把 treePanel 注入到 debuggerPanel，使其能获取用户在树中的多选（用于 Markdown 导出）
         debuggerPanel.setTreePanel(treePanel);
 
+        // 注册到持有服务，供编辑器右键 Action 拿到面板实例并精准定位到选中接口
+        AcaiToolWindowHolder.getInstance(project).setPanels(treePanel, debuggerPanel);
+
         JPanel mainPanel = new JPanel(new BorderLayout());
         mainPanel.add(splitter, BorderLayout.CENTER);
 

@@ -2840,7 +2840,7 @@ public class ApiDebuggerPanel extends JPanel {
         final List<ApiDefinition> selectedApis = selected;
 
         // 路径选择：统一用 FileChooser.chooseFile 弹出目录选择框（与导入同一套机制），
-        // 跨平台一致。用 invokeLater + NON_MODAL 确保上方确认对话框模态状态清除后再弹。
+        // 跨平台一致。用 invokeLater + defaultModalityState 确保上方确认对话框模态状态清除后再弹。
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
         String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
         ApplicationManager.getApplication().invokeLater(() -> {
@@ -2852,7 +2852,7 @@ public class ApiDebuggerPanel extends JPanel {
             } catch (IOException e) {
                 Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
             }
-        }, ModalityState.NON_MODAL);
+        }, ModalityState.defaultModalityState());
     }
 
     private void exportLastReport() {
@@ -2899,9 +2899,9 @@ public class ApiDebuggerPanel extends JPanel {
             // 若此时直接执行导出操作，其中调用的原生文件保存对话框（IFileDialog）会因
             // 残留模态上下文而拒绝弹出（表现：点击无反应）。macOS 的 NSSavePanel 对此
             // 更宽容，所以 Mac 正常。
-            // 使用 invokeLater + NON_MODAL：将操作排入 EDT 队列，仅在确认无任何模态对话框
+            // 使用 invokeLater + defaultModalityState：将操作排入 EDT 队列，仅在确认无任何模态对话框
             // 时才执行，彻底避免模态状态残留导致原生文件对话框无法弹出。
-            ApplicationManager.getApplication().invokeLater(pending, ModalityState.NON_MODAL);
+            ApplicationManager.getApplication().invokeLater(pending, ModalityState.defaultModalityState());
         }
     }
 
@@ -3113,7 +3113,7 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         // 确认对话框（Messages.showDialog）关闭后，Windows 上其模态状态可能尚未完全清除。
-        // 用 invokeLater + NON_MODAL 确保在完全无模态状态时才弹目录选择框。
+        // 用 invokeLater + defaultModalityState 确保在完全无模态状态时才弹目录选择框。
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = TestDataExporter.chooseExportPath(
                     project, TestDataExporter.suggestFileName("acai-config", "json"));
@@ -3139,7 +3139,7 @@ public class ApiDebuggerPanel extends JPanel {
                     }
                 }
             });
-        }, ModalityState.NON_MODAL);
+        }, ModalityState.defaultModalityState());
     }
 
     /** 导入他人导出的配置信息 JSON（AI 设置覆盖；环境/Profile 合并） */
@@ -3191,7 +3191,7 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         // 确认对话框关闭后，Windows 上模态状态可能尚未完全清除。
-        // 用 invokeLater + NON_MODAL 确保在无模态上下文时才弹目录选择框。
+        // 用 invokeLater + defaultModalityState 确保在无模态上下文时才弹目录选择框。
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = TestDataExporter.chooseExportPath(
                     project, TestDataExporter.suggestFileName("acai-api-data", "json"));
@@ -3217,7 +3217,7 @@ public class ApiDebuggerPanel extends JPanel {
                     }
                 }
             });
-        }, ModalityState.NON_MODAL);
+        }, ModalityState.defaultModalityState());
     }
 
     /** 导入他人导出的接口数据，按接口粒度合并（已有测试数据的接口不覆盖） */

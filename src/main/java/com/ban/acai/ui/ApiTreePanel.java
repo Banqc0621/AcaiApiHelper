@@ -72,7 +72,7 @@ public class ApiTreePanel extends JPanel {
     private static final String FILTER_ALL = "全量";
     private static final String FILTER_AUTO = "自动";
     private static final String FILTER_MANUAL = "手动";
-    private static final String FILTER_STARRED = "⭐ 收藏";
+    private static final String FILTER_STARRED = "收藏";
     private static final String FILTER_LATEST = "最新";
 
     /** 树形控件 - 展示API分组和端点 */
@@ -227,7 +227,7 @@ public class ApiTreePanel extends JPanel {
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
         boolean isStarred = settings.isApiStarred(api.uniqueKey());
         AnAction starAction = new AnAction(
-                isStarred ? "取消收藏" : "⭐ 收藏",
+                isStarred ? "取消收藏" : "收藏",
                 isStarred ? "从收藏中移除此接口" : "将此接口添加到收藏",
                 isStarred ? AllIcons.Nodes.Favorite : AllIcons.Nodes.Favorite) {
             @Override
@@ -764,7 +764,7 @@ public class ApiTreePanel extends JPanel {
             } catch (Exception ex) {
                 Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
             }
-        }, ModalityState.NON_MODAL);
+        }, ModalityState.defaultModalityState());
     }
 
     private static String escapeHtml(String s) {
@@ -831,7 +831,7 @@ public class ApiTreePanel extends JPanel {
             } catch (Exception ex) {
                 Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
             }
-        }, ModalityState.NON_MODAL);
+        }, ModalityState.defaultModalityState());
     }
 
     /**

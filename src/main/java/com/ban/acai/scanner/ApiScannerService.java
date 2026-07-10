@@ -1761,6 +1761,18 @@ public class ApiScannerService {
                 .collect(Collectors.toList());
     }
 
+    /** 根据源码文件路径 + 方法所在行号精确查找 API（用于右键定位光标所在接口）。
+     *  <p>行号取方法声明起始行，与扫描时写入的 sourceLineNumber 一致。</p> */
+    public ApiDefinition findApiByFileAndLine(String filePath, int lineNumber) {
+        if (filePath == null || filePath.isBlank() || lineNumber <= 0) return null;
+        for (ApiDefinition api : cachedApis) {
+            if (filePath.equals(api.getSourceFilePath()) && lineNumber == api.getSourceLineNumber()) {
+                return api;
+            }
+        }
+        return null;
+    }
+
     /** 根据关键字搜索API */
     public List<ApiDefinition> searchApis(String keyword) {
         if (keyword == null || keyword.isBlank()) return cachedApis;

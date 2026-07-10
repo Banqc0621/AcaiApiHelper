@@ -130,6 +130,9 @@
         <!-- 9. AI参数生成服务 -->
         <projectService serviceImplementation="com.ban.acai.ai.AiParameterService"/>
 
+        <!-- 9b. ToolWindow面板持有服务: 供右键Action拿到树/调试面板，实现精准定位 -->
+        <projectService serviceImplementation="com.ban.acai.ui.AcaiToolWindowHolder"/>
+
         <!-- 10. 通知组: 用于在IDE底部展示操作结果通知 -->
         <notificationGroup id="AcaiApiHelper.Notification"
                            displayType="BALLOON"
