@@ -253,7 +253,8 @@ public class AiParameterService {
                 || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
             log.warn("[AI-HTTP] 失败 => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK API返回状态码: " + response.statusCode() + ", body: " + response.body());
+            throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
+                    + " (URL: " + fullUrl + "), body: " + response.body());
         }
 
         // 提取content字段
@@ -320,7 +321,8 @@ public class AiParameterService {
                 || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
             log.warn("[AI-HTTP] 失败(callArkChatCompletions) => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK API返回状态码: " + response.statusCode() + ", body: " + response.body());
+            throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
+                    + " (URL: " + fullUrl + "), body: " + response.body());
         }
 
         // 解析 Chat Completions 响应

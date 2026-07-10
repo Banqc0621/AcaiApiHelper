@@ -149,9 +149,14 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
     /** AI主模型（兼容方法，等价于arkModelPro） */
     public String getAiModel() { return myState.arkModelPro; }
 
-    /** AI API 路径（如 /chat/completions 或 /chat）；允许为空，留空时由调用方直接用服务器URL根路径 */
+    /** AI API 路径（如 /chat/completions 或 /chat）。
+     *  <p>空值/空白时回退到默认 {@link AcaiConstants#AI_DEFAULT_API_PATH}（即 /chat/completions），
+     *  避免因持久化字段缺失或被清空导致请求只打到服务器根路径而 404。</p> */
     public String getAiApiPath() {
-        return myState.aiApiPath == null ? "" : myState.aiApiPath;
+        if (myState.aiApiPath == null || myState.aiApiPath.isBlank()) {
+            return AcaiConstants.AI_DEFAULT_API_PATH;
+        }
+        return myState.aiApiPath;
     }
 
     /** 设置AI服务器URL并同步到arkApiUrl */

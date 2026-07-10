@@ -902,7 +902,7 @@ public class ApiDebuggerPanel extends JPanel {
         scenarioCombo.setToolTipText("选择测试场景：正常/边界/异常/全量");
         controlPanel.add(scenarioCombo);
 
-        JButton genBtn = iconButton("⚡ 生成参数", AllIcons.Actions.Lightning, e -> {
+        JButton genBtn = iconButton("生成参数", AllIcons.Actions.Lightning, e -> {
             AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
             generateAiParameters(s);
         });
@@ -910,11 +910,11 @@ public class ApiDebuggerPanel extends JPanel {
         genBtn.putClientProperty("JButton.buttonType", "default");
         controlPanel.add(genBtn);
 
-        JButton genMultiBtn = iconButton("🔄 全量生成", AllIcons.Actions.RunAll, e -> {
+        JButton genMultiBtn = iconButton("全量生成", AllIcons.Actions.RunAll, e -> {
             scenarioCombo.setSelectedItem(AiParameterService.TestScenario.FULL);
             generateAiParameters(AiParameterService.TestScenario.FULL);
         });
-        genMultiBtn.setToolTipText("🔄 生成正常+边界+异常多组数据");
+        genMultiBtn.setToolTipText("生成正常+边界+异常多组数据");
         controlPanel.add(genMultiBtn);
 
         panel.add(controlPanel);
