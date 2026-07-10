@@ -149,10 +149,10 @@
                text="Acai API Helper"
                popup="true"
                icon="AllIcons.Toolwindows.ToolWindowPalette">
-            <!-- 将动作组添加到编辑器右键菜单 -->
-            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <!-- 将动作组添加到项目视图右键菜单 -->
-            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <!-- 将动作组添加到编辑器右键菜单（置顶） -->
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            <!-- 将动作组添加到项目视图右键菜单（置顶） -->
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
         </group>
 
         <!-- 动作: 扫描项目API -->
