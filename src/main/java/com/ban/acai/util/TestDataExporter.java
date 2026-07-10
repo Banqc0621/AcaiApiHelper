@@ -8,6 +8,10 @@ import com.ban.acai.model.TestProfile;
 import com.ban.acai.settings.AcaiSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.intellij.openapi.fileChooser.FileChooser;
+import com.intellij.openapi.fileChooser.FileChooserDescriptor;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFile;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -447,5 +451,24 @@ public class TestDataExporter {
     public static String suggestFileName(String prefix, String ext) {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd-HHmmss");
         return prefix + "-" + sdf.format(new Date()) + "." + ext;
+    }
+
+    /** 选择导出文件保存目录，返回完整保存路径。
+     *  <p>使用 {@link FileChooser#chooseFile}（与导入功能完全相同的机制），跨平台一致地
+     *  弹出目录选择框，由用户指定保存位置。不使用 {@code FileSaverDescriptor}/
+     *  {@code createSaveFileDialog}：后者在 Windows 上与 IntelliJ 模态对话框栈存在
+     *  兼容性问题，原生保存对话框经常无法弹出（点击无反应）。导入用的是 chooseFile
+     *  能正常弹出，导出也用 chooseFile 即可保持一致。</p>
+     *
+     *  @param project     当前项目
+     *  @param suggestName 建议的文件名（已含时间戳与扩展名），拼到所选目录后
+     *  @return 完整保存路径；用户取消返回 null */
+    public static String chooseExportPath(Project project, String suggestName) {
+        FileChooserDescriptor fd = new FileChooserDescriptor(false, true, false, false, false, false);
+        fd.setTitle("选择保存目录");
+        fd.setDescription("选择文件保存的目录，文件名：" + suggestName);
+        VirtualFile selected = FileChooser.chooseFile(fd, project, null);
+        if (selected == null) return null;
+        return selected.getPath() + "/" + suggestName;
     }
 }

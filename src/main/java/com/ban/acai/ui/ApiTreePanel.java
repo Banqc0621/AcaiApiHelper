@@ -10,7 +10,7 @@ import com.ban.acai.util.PostmanCollectionExporter;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.fileChooser.FileSaverDescriptor;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
@@ -748,25 +748,22 @@ public class ApiTreePanel extends JPanel {
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
         String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
 
-        FileSaverDescriptor fd = new FileSaverDescriptor("保存 Markdown 文档", "选择保存位置", "md");
-        com.intellij.openapi.vfs.VirtualFileWrapper wrapper =
-                com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
-                        .createSaveFileDialog(fd, project).save((VirtualFile) null, suggestName);
-        if (wrapper == null) return; // 用户取消
-        String outputPath = wrapper.getFile().getAbsolutePath();
-
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
-        List<RequestHistory> history = settings.loadRequestHistory();
-
-        try {
-            // === 严格按选择接口生成（不再传全量 apis） ===
-            ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), outputPath);
-            Messages.showInfoMessage(project,
-                    "已导出 " + selected.size() + " 个接口到:\n" + outputPath,
-                    "导出成功");
-        } catch (Exception ex) {
-            Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
-        }
+        // 用 FileChooser.chooseFile 弹目录选择框（与导入同一套机制），跨平台一致。
+        // 不用 FileSaverDescriptor/createSaveFileDialog：Windows 上原生保存对话框常弹不出。
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = com.ban.acai.util.TestDataExporter.chooseExportPath(project, suggestName);
+            if (outputPath == null) return;
+            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            java.util.List<RequestHistory> history = settings.loadRequestHistory();
+            try {
+                ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), outputPath);
+                Messages.showInfoMessage(project,
+                        "已导出 " + selected.size() + " 个接口到:\n" + outputPath,
+                        "导出成功");
+            } catch (Exception ex) {
+                Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+            }
+        }, ModalityState.NON_MODAL);
     }
 
     private static String escapeHtml(String s) {
@@ -816,26 +813,24 @@ public class ApiTreePanel extends JPanel {
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
         String suggestName = "acai-postman-" + sdf.format(new java.util.Date()) + ".json";
 
-        FileSaverDescriptor fd = new FileSaverDescriptor("保存 Postman JSON", "选择保存位置", "json");
-        com.intellij.openapi.vfs.VirtualFileWrapper wrapper =
-                com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
-                        .createSaveFileDialog(fd, project).save((VirtualFile) null, suggestName);
-        if (wrapper == null) return;
-        String outputPath = wrapper.getFile().getAbsolutePath();
-
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
-        String baseUrl = settings.getBaseUrl();
-        List<RequestHistory> history = settings.loadRequestHistory();
-
-        try {
-            PostmanCollectionExporter.exportToFile(selected, baseUrl, history, outputPath);
-            Messages.showInfoMessage(project,
-                    "已导出 " + selected.size() + " 个接口到:\n" + outputPath
-                            + "\n\n导入方式：Postman/Apifox → Import → File → 选择此 JSON",
-                    "导出成功");
-        } catch (Exception ex) {
-            Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
-        }
+        // 用 FileChooser.chooseFile 弹目录选择框（与导入同一套机制），跨平台一致。
+        // 不用 FileSaverDescriptor/createSaveFileDialog：Windows 上原生保存对话框常弹不出。
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = com.ban.acai.util.TestDataExporter.chooseExportPath(project, suggestName);
+            if (outputPath == null) return;
+            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            String baseUrl = settings.getBaseUrl();
+            List<RequestHistory> history = settings.loadRequestHistory();
+            try {
+                PostmanCollectionExporter.exportToFile(selected, baseUrl, history, outputPath);
+                Messages.showInfoMessage(project,
+                        "已导出 " + selected.size() + " 个接口到:\n" + outputPath
+                                + "\n\n导入方式：Postman/Apifox → Import → File → 选择此 JSON",
+                        "导出成功");
+            } catch (Exception ex) {
+                Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+            }
+        }, ModalityState.NON_MODAL);
     }
 
     /**

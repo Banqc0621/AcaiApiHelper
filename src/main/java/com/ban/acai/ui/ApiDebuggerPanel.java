@@ -19,19 +19,15 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
-import com.intellij.openapi.fileChooser.FileChooserFactory;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
-import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
-import com.intellij.openapi.util.SystemInfo;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.openapi.vfs.VirtualFileWrapper;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.*;
 import com.intellij.ui.table.JBTable;
@@ -2834,22 +2830,25 @@ public class ApiDebuggerPanel extends JPanel {
                 AllIcons.Actions.Help);
         if (ok != 0) return;
 
-        // === 文件名精确到秒：acai-api-20260708-153022.md ===
-        // 路径：项目根/.acai/（沿用原结构，方便 .gitignore 已有规则）
-        String dir = project.getBasePath() + "/.acai";
-        new java.io.File(dir).mkdirs();
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
-        String path = dir + "/acai-api-" + sdf.format(new java.util.Date()) + ".md";
-
         AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
         List<RequestHistory> history = settings.loadRequestHistory();
+        // selected 在上方多次重赋值，非 effectively final，需用 final 副本供 lambda 捕获
+        final List<ApiDefinition> selectedApis = selected;
 
-        try {
-            ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), path);
-            Messages.showInfoMessage(project, "API文档已导出到:\n" + path, "导出成功");
-        } catch (IOException e) {
-            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
-        }
+        // 路径选择：统一用 FileChooser.chooseFile 弹出目录选择框（与导入同一套机制），
+        // 跨平台一致。用 invokeLater + NON_MODAL 确保上方确认对话框模态状态清除后再弹。
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String path = TestDataExporter.chooseExportPath(project, suggestName);
+            if (path == null) return;
+            try {
+                ApiDocExporter.exportSelectedApisWithHistory(selectedApis, history, project.getName(), path);
+                Messages.showInfoMessage(project, "API文档已导出到:\n" + path, "导出成功");
+            } catch (IOException e) {
+                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
+            }
+        }, ModalityState.NON_MODAL);
     }
 
     private void exportLastReport() {
@@ -3095,28 +3094,6 @@ public class ApiDebuggerPanel extends JPanel {
         return oneLine.substring(0, maxLen) + "...";
     }
 
-    /** 选择导出文件保存路径。
-     *  <p>macOS：弹出原生文件保存对话框（NSSavePanel），用户可选择目录与文件名，
-     *  体验最佳。Windows：IntelliJ 模态对话框与 Windows 原生 IFileDialog 存在
-     *  兼容性问题，直接弹原生保存对话框经常无响应（点击无反应）；改为默认保存到
-     *  「项目根目录/data/」下，自动创建该目录，文件名带时间戳，彻底绕开原生对话框。</p>
-     *
-     *  @param suggestName 建议的文件名（已含时间戳与扩展名）
-     *  @return 最终保存路径；用户取消（仅 macOS 可能）返回 null */
-    private String chooseExportPath(String suggestName) {
-        if (SystemInfo.isWindows) {
-            // 默认导出到项目根目录/data/，没有则自动创建
-            String dir = project.getBasePath() + "/data";
-            new File(dir).mkdirs();
-            return dir + "/" + suggestName;
-        }
-        // macOS 及其它平台：弹出原生文件保存对话框，由用户选择保存位置
-        FileSaverDescriptor fd = new FileSaverDescriptor("选择保存位置", "选择保存位置", "json");
-        VirtualFileWrapper wrapper = FileChooserFactory.getInstance().createSaveFileDialog(fd, project)
-                .save((VirtualFile) null, suggestName);
-        return wrapper == null ? null : wrapper.getFile().getAbsolutePath();
-    }
-
     /** 导出配置信息（AI 设置 + 环境配置 + 测试 Profile）为 JSON 文件。
      *  <p>数据收集与文件写入在后台线程执行，避免接口/历史数据量大时阻塞 EDT
      *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
@@ -3135,12 +3112,10 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         // 确认对话框（Messages.showDialog）关闭后，Windows 上其模态状态可能尚未完全清除。
-        // 直接调用原生文件保存对话框会因残留模态上下文而无法弹出。
-        // 使用 invokeLater + NON_MODAL 确保在完全无模态状态时才进行路径选择/导出。
-        // macOS：chooseExportPath 会弹出原生 NSSavePanel；Windows：直接落到项目/data/。
+        // 用 invokeLater + NON_MODAL 确保在完全无模态状态时才弹目录选择框。
         ApplicationManager.getApplication().invokeLater(() -> {
-            String outputPath = chooseExportPath(
-                    TestDataExporter.suggestFileName("acai-config", "json"));
+            String outputPath = TestDataExporter.chooseExportPath(
+                    project, TestDataExporter.suggestFileName("acai-config", "json"));
             if (outputPath == null) return;
             statusLabel.setText("● 正在导出配置...");
 
@@ -3215,11 +3190,10 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         // 确认对话框关闭后，Windows 上模态状态可能尚未完全清除。
-        // 使用 invokeLater + NON_MODAL 确保在无模态上下文时才进行路径选择/导出。
-        // macOS：chooseExportPath 会弹出原生 NSSavePanel；Windows：直接落到项目/data/。
+        // 用 invokeLater + NON_MODAL 确保在无模态上下文时才弹目录选择框。
         ApplicationManager.getApplication().invokeLater(() -> {
-            String outputPath = chooseExportPath(
-                    TestDataExporter.suggestFileName("acai-api-data", "json"));
+            String outputPath = TestDataExporter.chooseExportPath(
+                    project, TestDataExporter.suggestFileName("acai-api-data", "json"));
             if (outputPath == null) return;
             statusLabel.setText("● 正在导出接口数据（" + allApis.size() + " 个接口）...");
 
