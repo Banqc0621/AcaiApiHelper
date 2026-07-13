@@ -86,8 +86,23 @@ public class ApiDebuggerPanel extends JPanel {
             new Object[]{"Header名", "值"}, 0);
     private final JBTable headerTable = new JBTable(headerTableModel);
 
-    private final JBTextArea bodyEditor = new JBTextArea(10, 60);
+    // ── 请求体编辑器（v2.0.0：失焦折叠 / 获焦展开 + Ctrl+Z/Y 撤销重做）──
+    /** body 编辑器折叠时的行数（默认紧凑，给响应区让出垂直空间） */
+    private static final int BODY_ROWS_COLLAPSED = 6;
+    /** body 编辑器获焦展开后的行数 */
+    private static final int BODY_ROWS_EXPANDED = 18;
+    private final JBTextArea bodyEditor = new JBTextArea(BODY_ROWS_COLLAPSED, 60);
+    /** body 编辑器的滚动容器引用：展开 / 折叠时 revalidate + repaint */
+    private JBScrollPane bodyScrollPane;
+    /** body 编辑器撤销管理器（支持 Ctrl+Z / Ctrl+Y） */
+    private final javax.swing.undo.UndoManager bodyUndoManager = new javax.swing.undo.UndoManager();
+
+    // ── 响应区（v2.0.0：JsonSyntaxPane 提供语法高亮 + Ctrl+滚轮缩放 + 右键菜单）──
     private final JBTextArea responseArea = new JBTextArea();
+    /** 响应文本视图：带 JSON 语法高亮 / 缩放 / 右键菜单的高亮面板（responseArea 仅作后台数据兼容） */
+    private final JsonSyntaxPane responsePane = new JsonSyntaxPane();
+    /** 当前响应视图是否为树形（true=树形，false=文本） */
+    private boolean responseViewTree = false;
     private final JTree responseJsonTree = new JTree();
     private final CardLayout responseCardLayout = new CardLayout();
     private final JPanel responseContentPanel = new JPanel(responseCardLayout);
@@ -179,6 +194,82 @@ public class ApiDebuggerPanel extends JPanel {
         statusLabel.setText("就绪");
         bottomPanel.add(statusLabel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
+
+        // ── v2.0.0 交互增强：body 编辑器撤销/折叠 + 响应 Tab 切换重置 ──
+        initBodyEditorInteractions();
+        initResponseTabListener();
+    }
+
+    /**
+     * v2.0.0：请求体编辑器交互增强
+     * <ul>
+     *   <li>Ctrl+Z / Ctrl+Y 撤销 / 重做</li>
+     *   <li>获焦自动展开（BODY_ROWS_EXPANDED），失焦自动折叠（BODY_ROWS_COLLAPSED）</li>
+     * </ul>
+     */
+    private void initBodyEditorInteractions() {
+        // 撤销监听
+        bodyEditor.getDocument().addUndoableEditListener(e -> {
+            if (e.getEdit().isSignificant()) {
+                bodyUndoManager.addEdit(e.getEdit());
+            }
+        });
+        // Ctrl+Z / Ctrl+Y
+        javax.swing.KeyStroke undoKs = javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Z, java.awt.event.InputEvent.CTRL_DOWN_MASK);
+        javax.swing.KeyStroke redoKs = javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Y, java.awt.event.InputEvent.CTRL_DOWN_MASK);
+        String undoId = "body-undo";
+        String redoId = "body-redo";
+        javax.swing.InputMap im = bodyEditor.getInputMap();
+        javax.swing.ActionMap am = bodyEditor.getActionMap();
+        im.put(undoKs, undoId);
+        im.put(redoKs, redoId);
+        am.put(undoId, new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+                if (bodyUndoManager.canUndo()) bodyUndoManager.undo();
+            }
+        });
+        am.put(redoId, new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+                if (bodyUndoManager.canRedo()) bodyUndoManager.redo();
+            }
+        });
+
+        // 获焦展开 / 失焦折叠（避免抢用户正在编辑的内容，仅在行数不同时调整）
+        bodyEditor.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) {
+                if (bodyEditor.getRows() != BODY_ROWS_EXPANDED) {
+                    bodyEditor.setRows(BODY_ROWS_EXPANDED);
+                    if (bodyScrollPane != null) {
+                        bodyScrollPane.revalidate();
+                        bodyScrollPane.repaint();
+                    }
+                }
+            }
+            @Override public void focusLost(java.awt.event.FocusEvent e) {
+                if (bodyEditor.getRows() != BODY_ROWS_COLLAPSED) {
+                    bodyEditor.setRows(BODY_ROWS_COLLAPSED);
+                    if (bodyScrollPane != null) {
+                        bodyScrollPane.revalidate();
+                        bodyScrollPane.repaint();
+                    }
+                }
+            }
+        });
+    }
+
+    /**
+     * v2.0.0：切换到响应 Tab 时若处于树形视图则切回文本视图，保证下次请求展示一致
+     */
+    private void initResponseTabListener() {
+        tabbedPane.addChangeListener(e -> {
+            int idx = tabbedPane.getSelectedIndex();
+            if (idx >= 0 && "响应".equals(tabbedPane.getTitleAt(idx)) && responseViewTree) {
+                responseCardLayout.show(responseContentPanel, "text");
+                responseViewTree = false;
+            }
+        });
     }
 
     /**
@@ -480,9 +571,13 @@ public class ApiDebuggerPanel extends JPanel {
         paramTable.getColumnModel().getColumn(4).setCellEditor(new RequiredComboBoxEditor());
         paramTable.getColumnModel().getColumn(4).setCellRenderer(new RequiredComboBoxRenderer());
         paramTable.getColumnModel().getColumn(2).setCellRenderer(new LocationCellRenderer());
-        
-        // 为值列添加智能编辑器（支持枚举提示）
-        paramTable.getColumnModel().getColumn(3).setCellEditor(new SmartValueEditor());
+
+        // v2.0.0：值列渲染器 - 文件类型参数显示「📎 文件名」（完整路径放 tooltip），长值也用 tooltip 辅助查看
+        paramTable.getColumnModel().getColumn(3).setCellRenderer(new ValueCellRenderer());
+
+        // 为值列添加智能编辑器（v2.0.0：文件选择 + 多行JSON编辑器 + 枚举提示）
+        paramTable.getColumnModel().getColumn(3).setCellEditor(
+                new SmartValueEditor(project, paramTable, attachmentPaths, attachmentPathLabels, gson));
 
         // 整行选择，更易读
         paramTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -588,7 +683,7 @@ public class ApiDebuggerPanel extends JPanel {
             // 中：已选路径
             javax.swing.JLabel pathLabel = new javax.swing.JLabel("（未选择）");
             pathLabel.setForeground(JBColor.gray);
-            pathLabel.setToolTipText("选择本地文件后显示绝对路径");
+            pathLabel.setToolTipText("选择本地文件后显示文件名（悬浮查看完整路径）");
             row.add(pathLabel, BorderLayout.CENTER);
 
             // 右：选择按钮 + 清除按钮
@@ -603,8 +698,9 @@ public class ApiDebuggerPanel extends JPanel {
                 if (vf != null) {
                     String path = vf.getPath();
                     attachmentPaths.put(p.getName(), path);
-                    pathLabel.setText(truncatePath(path));
-                    pathLabel.setForeground(JBColor.foreground());
+                    // v2.0.0：附件区也显示「📎 文件名」，与参数表值列渲染器保持一致
+                    pathLabel.setText("📎 " + fileNameOf(path));
+                    pathLabel.setForeground(UiStyle.JSON_KEY);
                     pathLabel.setToolTipText(path);
                     LOG.info("[附件] 选择文件成功 => 参数=" + p.getName() + ", 路径=" + path);
                     // 同步回参数表里对应行的"值"列，让 collectParameterValues 也能拿到（冗余但兼容）
@@ -616,7 +712,7 @@ public class ApiDebuggerPanel extends JPanel {
                 attachmentPaths.put(p.getName(), "");
                 pathLabel.setText("（未选择）");
                 pathLabel.setForeground(JBColor.gray);
-                pathLabel.setToolTipText("选择本地文件后显示绝对路径");
+                pathLabel.setToolTipText("选择本地文件后显示文件名（悬浮查看完整路径）");
                 syncFilePathToParamTable(p.getName(), "");
             });
             btnBox.add(pickBtn);
@@ -644,11 +740,11 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
 
-    /** 截断过长的路径，中间用 ... 表示 */
-    private String truncatePath(String path) {
-        if (path == null) return "";
-        if (path.length() <= 60) return path;
-        return path.substring(0, 30) + "..." + path.substring(path.length() - 25);
+    /** 从完整路径提取文件名（兼容 / 与 \），用于文件参数的友好展示 */
+    private static String fileNameOf(String path) {
+        if (path == null || path.isEmpty()) return "";
+        int sep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return sep >= 0 ? path.substring(sep + 1) : path;
     }
 
     /** 简单 HTML 转义，避免参数名/类型里的特殊字符破坏 JLabel 渲染 */
@@ -696,10 +792,14 @@ public class ApiDebuggerPanel extends JPanel {
 
         panel.add(topBar, BorderLayout.NORTH);
 
-        bodyEditor.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
-        bodyEditor.setLineWrap(true);
-        bodyEditor.setWrapStyleWord(true);
-        panel.add(new JBScrollPane(bodyEditor), BorderLayout.CENTER);
+        bodyEditor.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
+        // v2.0.0：长 JSON 不自动换行（水平滚动查看），与响应区观感一致
+        bodyEditor.setLineWrap(false);
+        bodyEditor.setWrapStyleWord(false);
+        bodyEditor.setTabSize(2);
+        bodyEditor.setRows(BODY_ROWS_COLLAPSED);
+        bodyScrollPane = new JBScrollPane(bodyEditor);
+        panel.add(bodyScrollPane, BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatJson());
@@ -739,16 +839,19 @@ public class ApiDebuggerPanel extends JPanel {
         panel.add(responseContentPanel, BorderLayout.CENTER);
 
         // === 响应内容区域（支持文本/树形切换） ===
-        // 文本视图
-        responseArea.setFont(new Font("Menlo", Font.PLAIN, (int) UiStyle.FONT_MONO));
-        responseArea.setEditable(false);
-        // 长 JSON 不自动换行，避免渲染慢（用户可拖窗口看完整内容）
-        responseArea.setLineWrap(false);
-        JScrollPane textScroll = new JBScrollPane(responseArea);
+        // v2.0.0：文本视图使用 JsonSyntaxPane（JSON 语法高亮 + Ctrl+滚轮缩放 + 右键菜单）
+        responsePane.setEditable(false);
+        responsePane.setToolTipText("提示：Ctrl+滚轮 或 Ctrl++/- 可缩放字体，右键提供复制/全选/缩放");
+        JScrollPane textScroll = new JBScrollPane(responsePane);
         textScroll.setBorder(JBUI.Borders.empty());
         textScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         textScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
         responseContentPanel.add(textScroll, "text");
+
+        // 保持 responseArea 同步（用于后台数据兼容，不直接显示）
+        responseArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
+        responseArea.setEditable(false);
+        responseArea.setLineWrap(false);
 
         // 树形视图
         responseJsonTree.setRootVisible(false);
@@ -774,7 +877,11 @@ public class ApiDebuggerPanel extends JPanel {
         JButton copyBtn = iconButton("📄 复制", AllIcons.Actions.Copy, e -> copyResponseToClipboard());
         copyBtn.setToolTipText("📄 复制响应内容到剪贴板");
 
-        JButton clearBtn = iconButton("🗑️ 清空", AllIcons.Actions.GC, e -> responseArea.setText(""));
+        JButton clearBtn = iconButton("🗑️ 清空", AllIcons.Actions.GC, e -> {
+            responseArea.setText("");
+            responsePane.setTextAndHighlight("");
+            responseViewTree = false;
+        });
         clearBtn.setToolTipText("🗑️ 清空响应内容");
 
         JBLabel hintLabel = new JBLabel("💡 提示: 切换『树形视图』可折叠展开JSON节点；状态/耗时按级别自动着色");
@@ -809,13 +916,13 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         
         // 批量测试按钮（可切换开始/停止）
-        batchTestBtn = iconButton("▶ 批量测试", AllIcons.Actions.Execute, e -> toggleBatchTest());
+        batchTestBtn = iconButton(" 批量测试", AllIcons.Actions.Execute, e -> toggleBatchTest());
         batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
         batchTestBtn.putClientProperty("JButton.buttonType", "default");
         btnPanel.add(batchTestBtn);
         
         // 单接口测试按钮
-        JButton runCurBtn = iconButton("▶ 测试当前", AllIcons.Actions.Execute, e -> runCurrentTest());
+        JButton runCurBtn = iconButton("测试当前", AllIcons.Actions.Execute, e -> runCurrentTest());
         runCurBtn.setToolTipText("测试当前选中的API接口，结果以JSON格式展示");
         btnPanel.add(runCurBtn);
         
@@ -883,7 +990,7 @@ public class ApiDebuggerPanel extends JPanel {
         UiStyle.hint(configInfo);
         statusCard.add(configInfo);
 
-        JButton configBtn = iconButton("⚙️ 配置", AllIcons.General.Settings, e -> showAiConfigDialog());
+        JButton configBtn = iconButton("配置", AllIcons.General.Settings, e -> showAiConfigDialog());
         configBtn.setToolTipText("⚙️ 配置AI服务器、API Key和模型");
         statusCard.add(configBtn);
 
@@ -1176,9 +1283,14 @@ public class ApiDebuggerPanel extends JPanel {
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>"
                 + formatBytes(size) + "</b> <span style='color:gray'>(" + size + " chars)</span></html>");
 
-        responseArea.setText(result.getResponseBody() == null ? "" : result.getResponseBody());
+        String body = result.getResponseBody() == null ? "" : result.getResponseBody();
+        responseArea.setText(body);
         responseArea.setCaretPosition(0);
+        // v2.0.0：响应文本视图走 JsonSyntaxPane（语法高亮 + 缩放）
+        responsePane.setTextAndHighlight(body);
+        responsePane.setCaretPosition(0);
         responseCardLayout.show(responseContentPanel, "text");
+        responseViewTree = false;
         buildResponseJsonTree(result.getResponseBody());
 
         tabbedPane.setSelectedIndex(3); // 响应tab
@@ -1558,7 +1670,7 @@ public class ApiDebuggerPanel extends JPanel {
                     int completed = i;
                     ApplicationManager.getApplication().invokeLater(() -> {
                         testProgressBar.setVisible(false);
-                        batchTestBtn.setText("▶ 批量测试");
+                        batchTestBtn.setText("批量测试");
                         batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
                         testResultArea.append("\n⏹ 测试已停止 (完成 " + completed + "/" + apis.size() + ")\n");
                         statusLabel.setText("● 批量测试已停止 (" + completed + "/" + apis.size() + ")");
@@ -1736,12 +1848,14 @@ public class ApiDebuggerPanel extends JPanel {
                 }
                 
                 responseCardLayout.show(responseContentPanel, "tree");
+                responseViewTree = true;
                 statusLabel.setText("● 已切换到树形视图");
             } catch (Exception e) {
                 Messages.showWarningDialog(project, "无法解析为JSON: " + e.getMessage(), "非JSON响应");
             }
         } else {
             responseCardLayout.show(responseContentPanel, "text");
+            responseViewTree = false;
             statusLabel.setText("● 已切换到文本视图");
         }
     }
@@ -1808,6 +1922,9 @@ public class ApiDebuggerPanel extends JPanel {
             var elem = JsonParser.parseString(response);
             String formatted = gson.toJson(elem);
             responseArea.setText(formatted);
+            // v2.0.0：同步刷新高亮视图
+            responsePane.setTextAndHighlight(formatted);
+            responsePane.setCaretPosition(0);
             statusLabel.setText("● JSON已格式化");
         } catch (Exception e) {
             // 如果不是JSON，显示原始内容
@@ -2261,6 +2378,56 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
 
+    /**
+     * v2.0.0 值列渲染器。
+     * <ul>
+     *   <li>文件类型参数（File/MultipartFile 或 FILE 位置）：显示「📎 文件名」，完整路径放 tooltip；
+     *       未选择时灰色显示「（未选择）」。</li>
+     *   <li>普通值：原样显示，长值用 tooltip 辅助查看。</li>
+     * </ul>
+     * <p>数据层仍保留完整路径（HttpExecutorService 依赖路径构建 multipart），此处仅做展示层美化。</p>
+     */
+    private static class ValueCellRenderer extends DefaultTableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                        boolean hasFocus, int row, int column) {
+            super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            setHorizontalAlignment(LEFT);
+            setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
+            setIcon(null);
+
+            String paramType = table.getValueAt(row, 1) instanceof String t ? t : "";
+            String paramLoc = table.getValueAt(row, 2) instanceof String l ? l : "";
+            String valStr = value instanceof String s ? s : "";
+
+            if (isFileType(paramType) || "FILE".equals(paramLoc)) {
+                if (valStr.isBlank()) {
+                    setText("（未选择）");
+                    setToolTipText("双击选择文件");
+                    if (!isSelected) setForeground(JBColor.GRAY);
+                } else {
+                    String raw = valStr.startsWith("📎") ? valStr.substring(1).trim() : valStr;
+                    setText("📎 " + fileNameOf(raw));
+                    setToolTipText(raw);
+                    if (!isSelected) setForeground(UiStyle.JSON_KEY);
+                }
+                return this;
+            }
+
+            // 普通值：长值用 tooltip 辅助查看
+            setText(valStr);
+            setToolTipText(valStr.length() > 60 ? valStr : null);
+            if (!isSelected) setForeground(table.getForeground());
+            return this;
+        }
+
+        private static boolean isFileType(String type) {
+            if (type == null) return false;
+            String t = type.toLowerCase();
+            return t.contains("file") || t.contains("multipart");
+        }
+    }
+
     /** 类型下拉框编辑器 */
     private static class TypeComboBoxEditor extends DefaultCellEditor {
         public TypeComboBoxEditor() {
@@ -2300,84 +2467,8 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
     
-    /** 智能值编辑器 - 根据参数名提供枚举提示 */
-    private static class SmartValueEditor extends DefaultCellEditor {
-        private final JComboBox<String> enumCombo = new JComboBox<>();
-        
-        public SmartValueEditor() {
-            super(new JTextField());
-            enumCombo.setEditable(true);
-            enumCombo.setFont(new Font("Dialog", Font.PLAIN, 12));
-        }
-        
-        @Override
-        public Component getTableCellEditorComponent(JTable table, Object value, boolean isSelected, int row, int column) {
-            // 获取参数名（第0列）
-            String paramName = (String) table.getValueAt(row, 0);
-            String paramType = (String) table.getValueAt(row, 1);
-            
-            // 根据参数名提供枚举建议
-            String[] suggestions = getEnumSuggestions(paramName, paramType);
-            
-            if (suggestions.length > 0) {
-                // 有枚举建议，使用下拉框
-                enumCombo.removeAllItems();
-                for (String s : suggestions) {
-                    enumCombo.addItem(s);
-                }
-                if (value != null) {
-                    enumCombo.setSelectedItem(value);
-                }
-                return enumCombo;
-            } else {
-                // 无枚举建议，使用普通文本框
-                JTextField field = (JTextField) super.getTableCellEditorComponent(table, value, isSelected, row, column);
-                field.setFont(new Font("Monospaced", Font.PLAIN, 12));
-                return field;
-            }
-        }
-        
-        /**
-         * 根据参数名和类型提供枚举建议
-         */
-        private String[] getEnumSuggestions(String paramName, String paramType) {
-            if (paramName == null || paramType == null) return new String[0];
-            
-            String lowerName = paramName.toLowerCase();
-            
-            // 状态字段
-            if (lowerName.contains("status") || lowerName.contains("state")) {
-                return new String[]{"1", "0", "-1", "true", "false"};
-            }
-            // 性别字段
-            if (lowerName.contains("gender") || lowerName.contains("sex")) {
-                return new String[]{"male", "female", "other"};
-            }
-            // 类型字段
-            if (lowerName.contains("type") || lowerName.contains("category")) {
-                return new String[]{"default", "premium", "vip", "admin", "user"};
-            }
-            // 排序字段
-            if (lowerName.contains("sort") || lowerName.contains("order")) {
-                return new String[]{"asc", "desc", "1", "-1"};
-            }
-            // 布尔字段
-            if ("Boolean".equalsIgnoreCase(paramType) || lowerName.contains("enabled") || lowerName.contains("active")) {
-                return new String[]{"true", "false"};
-            }
-            // 支付方式
-            if (lowerName.contains("payment") || lowerName.contains("pay")) {
-                return new String[]{"alipay", "wechat", "credit_card", "paypal"};
-            }
-            // 时间范围
-            if (lowerName.contains("range") || lowerName.contains("period")) {
-                return new String[]{"today", "week", "month", "year"};
-            }
-            
-            return new String[0];
-        }
-    }
-    
+    // SmartValueEditor 已抽取为独立文件 SmartValueEditor.java（v2.0.0：文件选择 + 多行JSON编辑器 + 枚举提示）
+
     /** JSON树节点渲染器 - 按值类型上色 + 类型徽章 */
     private class JsonTreeNodeRenderer extends javax.swing.tree.DefaultTreeCellRenderer {
         @Override

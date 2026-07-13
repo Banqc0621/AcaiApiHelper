@@ -2,7 +2,6 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
     id("java")
-    id("org.jetbrains.changelog")
     id("org.jetbrains.intellij.platform")
 }
 
@@ -10,7 +9,7 @@ plugins {
 // 插件元信息
 // ============================================================
 group = "com.ban"
-version = "1.0.5"
+version = "2.0.0"
 
 // ============================================================
 // Java 编译配置 - Java 17 (匹配 IntelliJ Platform 2022.3+ 运行时)
@@ -67,7 +66,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.ban.acai"
         name = "Acai API Helper"
-        version = "1.0.5"
+        version = "2.0.0"
 
         ideaVersion {
             sinceBuild = "223"

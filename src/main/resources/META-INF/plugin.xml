@@ -8,7 +8,7 @@
     <!-- 插件显示名称 -->
     <name>Acai API Helper</name>
 
-    <version>1.0.5</version>
+    <version>2.0.0</version>
 
     <!-- 供应商信息 -->
     <vendor email="1332039050@qq.com" url="https://blog.banqc.com.cn/">Banqc</vendor>
@@ -45,6 +45,20 @@
 
     <!-- 变更日志 -->
     <change-notes><![CDATA[
+        <h3>v2.0.0 UI 体验大升级版（2026-07-13）</h3>
+        <ul>
+            <li><b>🎨 响应区 JSON 语法高亮</b>：新增 <code>JsonSyntaxPane</code>，对键名 / 字符串 / 数字 / 布尔 / null / 标点按语义着色，明暗主题自适应</li>
+            <li><b>🔍 响应区字体缩放</b>：支持 <code>Ctrl+滚轮</code> / <code>Ctrl++/-</code> / <code>Ctrl+0</code> 缩放（10–24px），右键菜单提供「放大 / 缩小 / 重置」</li>
+            <li><b>📋 响应区右键菜单</b>：复制选中 / 复制全部 / 全选 / 字体缩放，一键操作无需记忆快捷键</li>
+            <li><b>📝 参数智能编辑器</b>：抽取为独立 <code>SmartValueEditor</code>，支持文件选择、多行 JSON 编辑器、枚举智能提示（status/gender/sort/pay 等场景化建议）</li>
+            <li><b>📎 文件上传参数</b>：File / Multipart 类型或 FILE 位置参数显示「选择文件」按钮，选中后回写路径并同步附件标签</li>
+            <li><b>📐 多行 JSON 编辑器</b>：BODY 位置或疑似 JSON 值显示「展开」按钮，弹窗支持一键格式化 / 编辑 / 确定</li>
+            <li><b>⌨️ 请求体撤销 / 重做</b>：请求体编辑器支持 <code>Ctrl+Z</code> / <code>Ctrl+Y</code> 撤销重做</li>
+            <li><b>📏 请求体折叠展开</b>：失焦自动折叠为 6 行（给响应区让出空间），获焦自动展开为 18 行；长 JSON 不自动换行，水平滚动查看</li>
+            <li><b>🔄 响应视图切换增强</b>：切换到响应 Tab 时若处于树形视图自动切回文本视图，保证下次请求展示一致</li>
+            <li><b>🧹 清空响应联动</b>：清空按钮同时清空响应文本区、高亮视图，并重置视图状态</li>
+            <li><b>🎨 UI 语义色板</b>：<code>UiStyle</code> 新增 JSON 语义色板（KEY / STRING / NUMBER / BOOLEAN / NULL / PUNCTUATION）与 <code>ghostButton</code> 透明按钮样式</li>
+        </ul>
         <h3>v1.0.5 收藏文件夹与异常加固版（2026-07-10）</h3>
         <ul>
             <li><b>⭐ 收藏文件夹管理</b>：新增「收藏」分类视图，支持自定义文件夹分组收藏接口；文件夹内接口支持重命名/删除/拖拽移动，同文件夹自动去重</li>

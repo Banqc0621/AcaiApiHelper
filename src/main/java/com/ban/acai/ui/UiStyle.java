@@ -36,6 +36,43 @@ public final class UiStyle {
     /** 等宽代码字号 */
     public static final float FONT_MONO = 12f;
 
+    // ── 语义色板（v2.0.0：明暗主题双值）──
+    /** 主色（链接 / 键名 / 主操作） */
+    public static final JBColor COLOR_PRIMARY = new JBColor(
+            new Color(0x15, 0x65, 0xC0),
+            new Color(0x42, 0xA5, 0xF5)
+    );
+    /** JSON 键名色 */
+    public static final JBColor JSON_KEY = new JBColor(
+            new Color(0x15, 0x65, 0xC0),
+            new Color(0x7E, 0xB8, 0xFF)
+    );
+    /** JSON 字符串值色 */
+    public static final JBColor JSON_STRING = new JBColor(
+            new Color(0x2E, 0x7D, 0x32),
+            new Color(0xA5, 0xD6, 0xA7)
+    );
+    /** JSON 数字色 */
+    public static final JBColor JSON_NUMBER = new JBColor(
+            new Color(0xED, 0x6C, 0x02),
+            new Color(0xFF, 0xCC, 0x80)
+    );
+    /** JSON 布尔色 */
+    public static final JBColor JSON_BOOLEAN = new JBColor(
+            new Color(0x6B, 0x21, 0xA8),
+            new Color(0xCE, 0x93, 0xD8)
+    );
+    /** JSON null 色彩 */
+    public static final JBColor JSON_NULL = new JBColor(
+            new Color(0x75, 0x75, 0x75),
+            new Color(0xBD, 0xBD, 0xBD)
+    );
+    /** JSON 标点（括号 / 冒号 / 逗号）色 */
+    public static final JBColor JSON_PUNCTUATION = new JBColor(
+            new Color(0x55, 0x55, 0x55),
+            new Color(0xB0, 0xBE, 0xC5)
+    );
+
     // ── 按钮 ──
 
     /**
@@ -62,6 +99,24 @@ public final class UiStyle {
         JButton btn = button(text, icon, listener);
         btn.putClientProperty("JButton.buttonType", "default");
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
+        return btn;
+    }
+
+    /**
+     * 幽灵按钮（无边框无填充），用于工具栏次级操作，悬停时仅靠底色反馈。
+     */
+    public static JButton ghostButton(String text, Icon icon, ActionListener listener) {
+        JButton btn = new JButton(text, icon);
+        btn.putClientProperty("JButton.buttonType", "borderless");
+        btn.setMargin(new Insets(2, 6, 2, 6));
+        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, FONT_HINT));
+        btn.setFocusPainted(false);
+        btn.setBorderPainted(false);
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setIconTextGap(4);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        if (listener != null) btn.addActionListener(listener);
         return btn;
     }
 
