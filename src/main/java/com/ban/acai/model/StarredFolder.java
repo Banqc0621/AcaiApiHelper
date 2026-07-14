@@ -15,7 +15,7 @@ import java.util.List;
  */
 public class StarredFolder {
 
-    /** 未分类文件夹的固定 id（不可删除/重命名），用于收纳未归入任何文件夹的收藏接口 */
+    /** 未分类文件夹的固定 id（v2.0.0 起可删除/重命名，删除后按需自动重建），用于收纳未归入任何文件夹的收藏接口 */
     public static final String UNCATEGORIZED_ID = "__uncategorized__";
 
     /** 未分类文件夹的显示名 */

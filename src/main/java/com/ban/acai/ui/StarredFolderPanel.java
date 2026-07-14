@@ -212,10 +212,7 @@ public class StarredFolderPanel extends JPanel {
     private void doDeleteFolder() {
         StarredFolder f = selectedFolderContext();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "删除文件夹"); return; }
-        if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可删除", "删除文件夹"); return;
-        }
-        int ret = Messages.showYesNoDialog(project, "删除文件夹「" + f.getName() + "」？\n其内接口将移回「未分类」。",
+        int ret = Messages.showYesNoDialog(project, "删除「" + f.getName() + "」？",
                 "删除文件夹", Messages.getQuestionIcon());
         if (ret != Messages.YES) return;
         folderService.deleteFolder(f.getId());
@@ -225,9 +222,6 @@ public class StarredFolderPanel extends JPanel {
     private void doRenameFolder() {
         StarredFolder f = selectedFolderContext();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "重命名"); return; }
-        if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可重命名", "重命名"); return;
-        }
         String name = Messages.showInputDialog(project, "新名称：", "重命名文件夹",
                 Messages.getQuestionIcon(), f.getName(), null);
         if (name == null || name.isBlank()) return;
@@ -441,9 +435,8 @@ public class StarredFolderPanel extends JPanel {
                 FolderUserObject fuo = (FolderUserObject) uo;
                 group.add(action("新建文件夹", AllIcons.Actions.NewFolder, StarredFolderPanel.this::doNewFolder));
                 group.add(action("重命名", AllIcons.Actions.Edit, StarredFolderPanel.this::doRenameFolder));
-                if (!StarredFolder.UNCATEGORIZED_ID.equals(fuo.folder.getId())) {
-                    group.add(action("删除文件夹", AllIcons.Actions.Cancel, StarredFolderPanel.this::doDeleteFolder));
-                }
+                // v2.0.0：未分类也支持删除（与其他文件夹功能无差别）
+                group.add(action("删除文件夹", AllIcons.Actions.Cancel, StarredFolderPanel.this::doDeleteFolder));
                 group.addSeparator();
                 group.add(action("添加接口", AllIcons.General.Add, StarredFolderPanel.this::doAddApi));
                 group.addSeparator();

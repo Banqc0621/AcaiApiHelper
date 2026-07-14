@@ -266,37 +266,46 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(debugAction);
 
-        // 收藏：已收藏则提供「取消收藏」+「添加到其它文件夹…」；未收藏则「添加到收藏文件夹…」
+        // 收藏：已收藏则提供「取消收藏」；未收藏则「收藏」（单选/多选均可，统一走批量逻辑）
         com.ban.acai.scanner.StarredFolderService folderSvc =
                 com.ban.acai.scanner.StarredFolderService.getInstance(project);
         boolean isStarred = folderSvc.isStarred(api.uniqueKey());
         if (isStarred) {
-            AnAction unstarAction = new AnAction("取消收藏", "从所有收藏文件夹中移除此接口", AllIcons.Nodes.Favorite) {
+            AnAction unstarAction = new AnAction("取消收藏", "从所有收藏文件夹中移除", AllIcons.Nodes.Favorite) {
                 @Override
                 public void actionPerformed(@NotNull AnActionEvent e) {
-                    ApiDefinition selectedApi = getSelectedApi();
-                    if (selectedApi == null) return;
+                    java.util.List<ApiDefinition> selected = getSelectedApis();
+                    if (selected.isEmpty()) {
+                        ApiDefinition single = getSelectedApi();
+                        if (single != null) selected = java.util.Collections.singletonList(single);
+                    }
+                    if (selected.isEmpty()) return;
                     com.ban.acai.scanner.StarredFolderService svc =
                             com.ban.acai.scanner.StarredFolderService.getInstance(project);
-                    svc.unstarApi(selectedApi.uniqueKey());
-                    selectedApi.setStarred(false);
+                    for (ApiDefinition a : selected) {
+                        svc.unstarApi(a.uniqueKey());
+                        a.setStarred(false);
+                    }
                     tree.repaint();
                 }
             };
             group.add(unstarAction);
         }
-        AnAction addToFolderAction = new AnAction(
-                isStarred ? "添加到其它文件夹…" : "添加到收藏文件夹…",
-                "选择目标收藏文件夹，将此接口加入（同文件夹内自动去重）",
-                AllIcons.General.Add) {
+
+        // 「收藏」按钮：单选/多选统一走批量收藏对话框
+        AnAction starAction = new AnAction("收藏", "加入收藏文件夹", AllIcons.Nodes.Favorite) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
-                ApiDefinition selectedApi = getSelectedApi();
-                if (selectedApi == null) return;
-                addApiToFolderDialog(selectedApi);
+                java.util.List<ApiDefinition> selected = getSelectedApis();
+                if (selected.isEmpty()) {
+                    ApiDefinition single = getSelectedApi();
+                    if (single != null) selected = java.util.Collections.singletonList(single);
+                }
+                if (selected.isEmpty()) return;
+                addApisToFolderDialog(selected);
             }
         };
-        group.add(addToFolderAction);
+        group.add(starAction);
 
         // 复制URL
         group.addSeparator();
@@ -725,7 +734,10 @@ public class ApiTreePanel extends JPanel {
 
     /** 构建收藏文件夹视图树 */
     private void buildStarredTree() {
-        ApplicationManager.getApplication().invokeLater(() -> {
+        // 调用方可能在后台线程（如扫描完成回调 onScanComplete），需切到 EDT 操作树；
+        // 但展开逻辑必须与 setRoot 同步执行，避免 invokeLater 嵌套导致 setRoot 与 expandPath 时序错位
+        // （时序错位会表现为文件夹折叠后打不开、初始未展开等交互问题）
+        Runnable build = () -> {
             DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
             String keyword = searchField.getText().trim().toLowerCase();
 
@@ -754,14 +766,20 @@ public class ApiTreePanel extends JPanel {
                 folderCount++;
             }
             treeModel.setRoot(root);
-            treeModel.reload();
+            // setRoot 已触发结构重载，无需再 reload()（reload 会再次清空 expandedState，让紧随的 expandPath 失效）
+            // 同步展开所有文件夹节点：紧随 setRoot 之后，路径基于新 root 构造，有效
             for (int i = 0; i < root.getChildCount(); i++) {
                 TreeNode n = root.getChildAt(i);
                 tree.expandPath(new TreePath(((DefaultMutableTreeNode) n).getPath()));
             }
             statsLabel.setText(String.format("● 文件夹 %d · 接口 %d · 失败标红 %d",
                     folderCount, apiCount, failedCount));
-        });
+        };
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            build.run();
+        } else {
+            ApplicationManager.getApplication().invokeLater(build);
+        }
     }
 
     /** 获取收藏模式下选中的文件夹节点 */
@@ -859,9 +877,8 @@ public class ApiTreePanel extends JPanel {
             if (uo instanceof FolderNode) {
                 com.ban.acai.model.StarredFolder f = ((FolderNode) uo).folder;
                 group.add(starredAction("重命名", AllIcons.Actions.Edit, this::starredRenameFolder));
-                if (!com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-                    group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
-                }
+                // v2.0.0：未分类也支持删除（与其他文件夹功能无差别）
+                group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
                 group.addSeparator();
                 group.add(starredAction("AI生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
@@ -901,9 +918,6 @@ public class ApiTreePanel extends JPanel {
     private void starredRenameFolder() {
         com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "重命名"); return; }
-        if (com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可重命名", "重命名"); return;
-        }
         String name = Messages.showInputDialog(project, "新名称：", "重命名文件夹",
                 Messages.getQuestionIcon(), f.getName(), null);
         if (name == null || name.isBlank()) return;
@@ -914,10 +928,7 @@ public class ApiTreePanel extends JPanel {
     private void starredDeleteFolder() {
         com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "删除文件夹"); return; }
-        if (com.ban.acai.model.StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可删除", "删除文件夹"); return;
-        }
-        int ret = Messages.showYesNoDialog(project, "删除文件夹「" + f.getName() + "」？\n其内接口将移回「未分类」。",
+        int ret = Messages.showYesNoDialog(project, "删除「" + f.getName() + "」？",
                 "删除文件夹", Messages.getQuestionIcon());
         if (ret != Messages.YES) return;
         folderService.deleteFolder(f.getId());
@@ -925,51 +936,64 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * 全量视图右键「添加到收藏文件夹…」：弹出文件夹选择对话框，
-     * 用户选目标文件夹后将接口加入（同文件夹内自动去重）。
-     * 已在该文件夹内的会提示跳过。
+     * 批量收藏：把多个选中接口一次性加入目标文件夹。
+     * 对话框显示每个文件夹的已含数量（如 2/5），全部已加入时标 ✓；同文件夹内自动去重。
      */
-    private void addApiToFolderDialog(ApiDefinition api) {
+    private void addApisToFolderDialog(java.util.List<ApiDefinition> apis) {
+        if (apis == null || apis.isEmpty()) return;
         List<com.ban.acai.model.StarredFolder> folders = folderService.loadFolders();
         if (folders.isEmpty()) {
-            Messages.showInfoMessage(project, "暂无收藏文件夹", "添加到收藏");
+            Messages.showInfoMessage(project, "暂无收藏文件夹", "收藏");
             return;
         }
-        FolderPicker picker = new FolderPicker(project, folders, api.uniqueKey());
+        java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+        for (ApiDefinition a : apis) keys.add(a.uniqueKey());
+        FolderPicker picker = new FolderPicker(project, folders, keys.iterator().next(), keys);
         if (!picker.showAndGet()) return;
         List<com.ban.acai.model.StarredFolder> picked = picker.getSelected();
         if (picked.isEmpty()) return;
-        int added = 0, skipped = 0;
         for (com.ban.acai.model.StarredFolder f : picked) {
-            if (folderService.addApiToFolder(f.getId(), api.uniqueKey())) added++;
-            else skipped++;
+            for (String key : keys) folderService.addApiToFolder(f.getId(), key);
         }
-        if (added > 0) api.setStarred(true);
+        for (ApiDefinition a : apis) a.setStarred(true);
         tree.repaint();
-        String msg = added > 0
-                ? "已添加到 " + added + " 个文件夹" + (skipped > 0 ? "（" + skipped + " 个已存在已跳过）" : "")
-                : "该接口已在所选文件夹中";
-        Messages.showInfoMessage(project, msg, "添加到收藏");
     }
 
     /** 添加到收藏文件夹的多选对话框：带搜索、已加入标记，可一次加入多个文件夹。 */
     private static final class FolderPicker extends com.intellij.openapi.ui.DialogWrapper {
         private final java.util.List<com.ban.acai.model.StarredFolder> folders;
         private final String apiKey;
+        /** v2.0.0 批量收藏：多接口场景下的 key 集合（单接口时为 null，走 apiKey 分支） */
+        private final java.util.Set<String> apiKeySet;
         private final DefaultListModel<com.ban.acai.model.StarredFolder> model = new DefaultListModel<>();
         private final JBList<com.ban.acai.model.StarredFolder> list = new JBList<>(model);
         private final JTextField searchField = new JTextField();
 
+        /** 单接口构造（向后兼容） */
         FolderPicker(Project project, java.util.List<com.ban.acai.model.StarredFolder> folders, String apiKey) {
+            this(project, folders, apiKey, null);
+        }
+
+        /**
+         * v2.0.0 批量收藏构造。
+         * @param apiKeySet 多接口的 uniqueKey 集合；非 null 时按"全部已加入"判断 ✓ 标记
+         */
+        FolderPicker(Project project, java.util.List<com.ban.acai.model.StarredFolder> folders,
+                     String apiKey, java.util.Set<String> apiKeySet) {
             super(project);
             this.folders = folders;
             this.apiKey = apiKey;
+            this.apiKeySet = apiKeySet;
             setTitle("添加到收藏文件夹");
             setOKButtonText("添加到所选文件夹");
             init();
             list.setCellRenderer((l, f, idx, sel, focus) -> {
-                boolean in = f.getApiKeys().contains(apiKey);
-                JBLabel label = new JBLabel((in ? "✓ " : "📁 ") + f.getName() + "  (" + f.getApiKeys().size() + ")");
+                boolean in = isAllInFolder(f);
+                String prefix = in ? "✓ " : "📁 ";
+                String suffix = apiKeySet != null
+                        ? "  (" + countInFolder(f) + "/" + apiKeySet.size() + ")"
+                        : "  (" + f.getApiKeys().size() + ")";
+                JBLabel label = new JBLabel(prefix + f.getName() + suffix);
                 label.setOpaque(true);
                 if (sel) {
                     label.setBackground(UIManager.getColor("Tree.selectionBackground"));
@@ -986,6 +1010,20 @@ public class ApiTreePanel extends JPanel {
                     applyFilter(searchField.getText());
                 }
             });
+        }
+
+        /** 单接口：apiKey 在文件夹内；多接口：所有 apiKey 都在文件夹内 */
+        private boolean isAllInFolder(com.ban.acai.model.StarredFolder f) {
+            if (apiKeySet != null) return f.getApiKeys().containsAll(apiKeySet);
+            return f.getApiKeys().contains(apiKey);
+        }
+
+        /** 多接口场景：该文件夹已包含多少个待加接口 */
+        private int countInFolder(com.ban.acai.model.StarredFolder f) {
+            if (apiKeySet == null) return f.getApiKeys().contains(apiKey) ? 1 : 0;
+            int c = 0;
+            for (String k : apiKeySet) if (f.getApiKeys().contains(k)) c++;
+            return c;
         }
 
         private void applyFilter(String text) {

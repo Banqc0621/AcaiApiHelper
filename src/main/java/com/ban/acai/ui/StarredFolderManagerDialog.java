@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
  *
  * <p>以两级树呈现：根（隐藏）→ 文件夹 → 接口。提供：</p>
  * <ul>
- *   <li>文件夹新建/删除/更名（「未分类」固定不可删改）</li>
+ *   <li>文件夹新建/删除/更名（v2.0.0 起「未分类」与其他文件夹功能无差别）</li>
  *   <li>接口拖拽到文件夹、文件夹间移动（拖拽=移动）；「复制到」实现同接口多文件夹</li>
  *   <li>同文件夹内接口唯一，不同文件夹可重复</li>
  *   <li>文件夹内一键批量 AI 生成测试参数（持久化、可手动编辑）</li>
@@ -251,10 +251,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
     private void doDeleteFolder() {
         StarredFolder f = selectedFolderContext();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "删除文件夹"); return; }
-        if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可删除", "删除文件夹"); return;
-        }
-        int ret = Messages.showYesNoDialog(project, "删除文件夹「" + f.getName() + "」？\n其内接口将移回「未分类」。",
+        int ret = Messages.showYesNoDialog(project, "删除「" + f.getName() + "」？",
                 "删除文件夹", Messages.getQuestionIcon());
         if (ret != Messages.YES) return;
         folderService.deleteFolder(f.getId());
@@ -264,9 +261,6 @@ public class StarredFolderManagerDialog extends DialogWrapper {
     private void doRenameFolder() {
         StarredFolder f = selectedFolderContext();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "重命名"); return; }
-        if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) {
-            Messages.showWarningDialog(project, "「未分类」不可重命名", "重命名"); return;
-        }
         String name = Messages.showInputDialog(project, "新名称：", "重命名文件夹",
                 Messages.getQuestionIcon(), f.getName(), null);
         if (name == null || name.isBlank()) return;
@@ -490,9 +484,8 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 FolderUserObject fuo = (FolderUserObject) uo;
                 menu.add("新建文件夹").addActionListener(a -> doNewFolder());
                 menu.add("重命名").addActionListener(a -> doRenameFolder());
-                if (!StarredFolder.UNCATEGORIZED_ID.equals(fuo.folder.getId())) {
-                    menu.add("删除文件夹").addActionListener(a -> doDeleteFolder());
-                }
+                // v2.0.0：未分类也支持删除（与其他文件夹功能无差别）
+                menu.add("删除文件夹").addActionListener(a -> doDeleteFolder());
                 menu.addSeparator();
                 menu.add("添加接口").addActionListener(a -> doAddApi());
                 menu.addSeparator();

@@ -22,7 +22,7 @@ import java.util.*;
  * <ul>
  *   <li>同一接口可存在于多个文件夹（不同文件夹可重复）</li>
  *   <li>同一文件夹内接口唯一（按 {@link ApiDefinition#uniqueKey()} 去重）</li>
- *   <li>「未分类」文件夹（{@link StarredFolder#UNCATEGORIZED_ID}）不可删除/改名</li>
+ *   <li>「未分类」文件夹与其他文件夹功能等价：可重命名、可删除（v2.0.0 起统一）</li>
  * </ul>
  */
 @Service(Service.Level.PROJECT)
@@ -61,9 +61,8 @@ public final class StarredFolderService {
         return folder.getId();
     }
 
-    /** 重命名文件夹（未分类不可改名） */
+    /** 重命名文件夹（v2.0.0 起「未分类」也可重命名） */
     public boolean renameFolder(String folderId, String newName) {
-        if (StarredFolder.UNCATEGORIZED_ID.equals(folderId)) return false;
         if (newName == null || newName.isBlank()) return false;
         List<StarredFolder> folders = loadFolders();
         for (StarredFolder f : folders) {
@@ -76,9 +75,11 @@ public final class StarredFolderService {
         return false;
     }
 
-    /** 删除文件夹（未分类不可删）；文件夹内接口回到「未分类」 */
+    /**
+     * 删除文件夹（「未分类」与其他文件夹等价，均可删除；不自动重建任何文件夹）。
+     * <p>删除文件夹 = 文件夹内接口取消收藏 + 文件夹消失。接口不迁回任何容器。</p>
+     */
     public boolean deleteFolder(String folderId) {
-        if (StarredFolder.UNCATEGORIZED_ID.equals(folderId)) return false;
         List<StarredFolder> folders = loadFolders();
         StarredFolder target = null;
         for (StarredFolder f : folders) {
@@ -86,22 +87,23 @@ public final class StarredFolderService {
         }
         if (target == null) return false;
         folders.remove(target);
-        // 文件夹内接口迁回未分类（去重）
-        StarredFolder uncat = ensureUncategorized(folders);
-        for (String key : target.getApiKeys()) {
-            if (!uncat.getApiKeys().contains(key)) uncat.getApiKeys().add(key);
-        }
-        // 清理被删文件夹的参数/状态缓存
         removeParamsAndStatusForFolder(folderId);
         settings().saveStarredFolders(folders);
         syncStarredSet(folders);
         return true;
     }
 
-    private StarredFolder ensureUncategorized(List<StarredFolder> folders) {
+    /** 查找已存在的「未分类」文件夹，不创建（删除场景不自动重建） */
+    private StarredFolder findUncategorized(List<StarredFolder> folders) {
         for (StarredFolder f : folders) {
             if (StarredFolder.UNCATEGORIZED_ID.equals(f.getId())) return f;
         }
+        return null;
+    }
+
+    private StarredFolder ensureUncategorized(List<StarredFolder> folders) {
+        StarredFolder existing = findUncategorized(folders);
+        if (existing != null) return existing;
         StarredFolder uncat = new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME);
         folders.add(0, uncat);
         return uncat;
