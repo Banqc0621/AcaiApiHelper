@@ -990,9 +990,8 @@ public class ApiTreePanel extends JPanel {
             list.setCellRenderer((l, f, idx, sel, focus) -> {
                 boolean in = isAllInFolder(f);
                 String prefix = in ? "✓ " : "📁 ";
-                String suffix = apiKeySet != null
-                        ? "  (" + countInFolder(f) + "/" + apiKeySet.size() + ")"
-                        : "  (" + f.getApiKeys().size() + ")";
+                int total = f.getApiKeys() == null ? 0 : f.getApiKeys().size();
+                String suffix = "  (" + total + " 个)";
                 JBLabel label = new JBLabel(prefix + f.getName() + suffix);
                 label.setOpaque(true);
                 if (sel) {
