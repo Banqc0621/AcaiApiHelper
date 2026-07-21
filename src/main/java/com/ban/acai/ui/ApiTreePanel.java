@@ -1740,9 +1740,6 @@ public class ApiTreePanel extends JPanel {
                     + escapeHtml(url) + "</span>";
             if (isStarred) text += " <span style='color:#FFA000;'>⭐</span>";
             if (AcaiConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;font-size:10px;'>● 新增</span>";
-            if (api.getCallCount() > 0) {
-                text += " <span style='color:#999;font-size:9px;'>" + api.getCallCount() + "次</span>";
-            }
             if (description != null && !description.isBlank()) {
                 text += "&nbsp;<span style='color:" + textColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
             }
