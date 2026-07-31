@@ -60,6 +60,11 @@ public class TestReport {
         return (int) results.stream().filter(r -> r.getStatus() == TestStatus.ERROR).count();
     }
 
+    /** 跳过的测试数（依赖接口失败导致跳过） */
+    public int getSkippedCount() {
+        return (int) results.stream().filter(r -> r.getStatus() == TestStatus.SKIPPED).count();
+    }
+
     /** 总耗时（毫秒） */
     public long getTotalDuration() {
         return endTime - startTime;
@@ -87,7 +92,11 @@ public class TestReport {
         sb.append("总计: ").append(results.size()).append(" 个接口\n");
         sb.append("通过: ").append(getPassedCount())
           .append(" | 失败: ").append(getFailedCount())
-          .append(" | 异常: ").append(getErrorCount()).append("\n");
+          .append(" | 异常: ").append(getErrorCount());
+        if (getSkippedCount() > 0) {
+            sb.append(" | 跳过: ").append(getSkippedCount());
+        }
+        sb.append("\n");
         sb.append(String.format("通过率: %.1f%%\n", getPassRate()));
         sb.append("总耗时: ").append(getTotalDuration()).append("ms\n");
         sb.append("───────────────────────────────────────\n");

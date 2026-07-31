@@ -139,6 +139,8 @@ public class ApiDebuggerPanel extends JPanel {
 
     private final JTabbedPane tabbedPane = new JTabbedPane();
     private final JBLabel statusLabel = new JBLabel("就绪");
+    /** AI 配置摘要标签，保存配置后需刷新此标签文本 */
+    private JBLabel aiConfigInfoLabel;
 
     /**
      * 注入左侧接口树。Markdown 导出按钮会从这里取用户在树中的多选。
@@ -986,9 +988,9 @@ public class ApiDebuggerPanel extends JPanel {
         configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
         statusCard.add(configStatusLabel);
 
-        JBLabel configInfo = new JBLabel(getAiConfigSummary());
-        UiStyle.hint(configInfo);
-        statusCard.add(configInfo);
+        aiConfigInfoLabel = new JBLabel(getAiConfigSummary());
+        UiStyle.hint(aiConfigInfoLabel);
+        statusCard.add(aiConfigInfoLabel);
 
         JButton configBtn = iconButton("配置", AllIcons.General.Settings, e -> showAiConfigDialog());
         configBtn.setToolTipText("⚙️ 配置AI服务器、API Key和模型");
@@ -2284,6 +2286,8 @@ public class ApiDebuggerPanel extends JPanel {
             okPressed[0] = true;
             dialog.dispose();
 
+            // 刷新 AI 配置摘要标签，使面板上显示的 URL/模型 与刚保存的配置一致
+            aiConfigInfoLabel.setText(getAiConfigSummary());
             statusLabel.setText("● AI配置已更新");
 
             Messages.showInfoMessage(project,

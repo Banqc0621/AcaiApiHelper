@@ -361,6 +361,26 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(exportPostmanAction);
 
+        // 依赖链操作
+        group.addSeparator();
+        AnAction chainTestAction = new AnAction("🔗 依赖链批量测试（多选）",
+                "自动检测接口依赖，按依赖顺序批量测试并传递响应值", AllIcons.Actions.Execute) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                runChainBatchTest();
+            }
+        };
+        group.add(chainTestAction);
+
+        AnAction chainAiGenAction = new AnAction("🔗 依赖链AI生成参数（多选）",
+                "为选中接口生成参数并标注依赖自动填充项", AllIcons.Actions.Lightning) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                runChainAiGen();
+            }
+        };
+        group.add(chainAiGenAction);
+
         // 跳转到源码
         group.addSeparator();
         AnAction gotoSourceAction = new AnAction("跳转到源码", "在编辑器中打开此接口所在位置", AllIcons.Actions.EditSource) {
@@ -882,6 +902,7 @@ public class ApiTreePanel extends JPanel {
                 group.addSeparator();
                 group.add(starredAction("AI生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
+                group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::starredChainBatchTest));
             } else if (uo instanceof StarredApiNode) {
                 group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
                 group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
@@ -1249,6 +1270,217 @@ public class ApiTreePanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
                 statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
+            });
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 依赖链批量测试
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 依赖链批量测试 - 普通模式多选入口
+     * 1. 获取选中的 API 列表
+     * 2. 自动检测依赖关系
+     * 3. 弹对话框让用户确认/编辑
+     * 4. 生成默认参数
+     * 5. 按依赖链执行测试
+     */
+    private void runChainBatchTest() {
+        java.util.List<ApiDefinition> selected = getSelectedApis();
+        if (selected.isEmpty()) {
+            ApiDefinition single = getSelectedApi();
+            if (single != null) selected = java.util.Collections.singletonList(single);
+        }
+        if (selected.size() < 2) {
+            Messages.showInfoMessage(project, "依赖链测试需要至少选择 2 个接口", "提示");
+            return;
+        }
+
+        // 检测依赖
+        java.util.List<com.ban.acai.chain.ApiDependency> deps =
+                com.ban.acai.chain.DependencyDetector.detect(selected);
+
+        // 弹对话框确认
+        DependencyGraphDialog dialog = new DependencyGraphDialog(project, selected, deps);
+        if (!dialog.showAndGet()) return;
+        deps = dialog.getDependencies();
+
+        // 构建测试配置
+        com.ban.acai.settings.AcaiSettingsState settings = com.ban.acai.settings.AcaiSettingsState.getInstance(project);
+        final String baseUrl = settings.getBaseUrl();
+        final com.ban.acai.model.Environment env = settings.getActiveEnvironmentObj();
+        final com.ban.acai.model.TestProfile profile = new com.ban.acai.model.TestProfile("依赖链测试", baseUrl);
+
+        // 生成默认参数
+        for (ApiDefinition api : selected) {
+            Map<String, String> params = aiService.generateDefaultParameters(api);
+            profile.setParams(api.uniqueKey(), params);
+        }
+
+        final java.util.List<ApiDefinition> apis = selected;
+        final java.util.List<com.ban.acai.chain.ApiDependency> finalDeps = deps;
+        final int total = apis.size();
+
+        statsLabel.setText("依赖链测试中（0/" + total + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            com.ban.acai.chain.ChainTestExecutor chain =
+                    com.ban.acai.chain.ChainTestExecutor.getInstance(project);
+            com.ban.acai.model.TestReport report = chain.execute(apis, finalDeps, profile, env,
+                    (result, cur, t) -> {
+                        String icon = result.getStatus() == com.ban.acai.model.TestStatus.PASSED ? "✅"
+                                : result.getStatus() == com.ban.acai.model.TestStatus.SKIPPED ? "⊘"
+                                : result.getStatus() == com.ban.acai.model.TestStatus.ERROR ? "⚠" : "❌";
+                        SwingUtilities.invokeLater(() ->
+                                statsLabel.setText("依赖链测试中（" + cur + "/" + t + "）… " + icon + " " +
+                                        result.getApiDefinition().displayLabel()));
+                    });
+
+            final int passed = report.getPassedCount();
+            final int failed = report.getFailedCount();
+            final int skipped = report.getSkippedCount();
+            SwingUtilities.invokeLater(() -> {
+                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed + " · 跳过 " + skipped);
+                String summary = report.generateSummary();
+                Messages.showInfoMessage(project, summary, "依赖链测试报告");
+            });
+        });
+    }
+
+    /**
+     * 依赖链AI生成参数 - 为选中接口生成参数并显示依赖映射
+     */
+    private void runChainAiGen() {
+        java.util.List<ApiDefinition> selected = getSelectedApis();
+        if (selected.isEmpty()) {
+            ApiDefinition single = getSelectedApi();
+            if (single != null) selected = java.util.Collections.singletonList(single);
+        }
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project, "请先选择接口", "提示");
+            return;
+        }
+
+        // 检测依赖
+        java.util.List<com.ban.acai.chain.ApiDependency> deps =
+                com.ban.acai.chain.DependencyDetector.detect(selected);
+
+        // 弹对话框确认
+        DependencyGraphDialog dialog = new DependencyGraphDialog(project, selected, deps);
+        if (!dialog.showAndGet()) return;
+        deps = dialog.getDependencies();
+
+        // 统计自动填充参数数
+        int autoFilledCount = 0;
+        for (com.ban.acai.chain.ApiDependency dep : deps) {
+            autoFilledCount += dep.getMappings().size();
+        }
+
+        final java.util.List<ApiDefinition> apis = selected;
+        final int depCount = deps.size();
+        final int filledCount = autoFilledCount;
+        final java.util.List<com.ban.acai.chain.ApiDependency> finalDeps = deps;
+
+        statsLabel.setText("AI 生成参数中（0/" + apis.size() + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            int ok = 0, fail = 0;
+            for (int i = 0; i < apis.size(); i++) {
+                final ApiDefinition api = apis.get(i);
+                final int idx = i + 1;
+                try {
+                    com.ban.acai.ai.AiParameterService.GenerateResult gr = aiService.generateParametersWithRaw(
+                            api, com.ban.acai.ai.AiParameterService.TestScenario.NORMAL);
+                    if (gr != null && gr.getParameters() != null && !gr.getParameters().isEmpty()) {
+                        ok++;
+                    } else {
+                        aiService.generateDefaultParameters(api);
+                        ok++;
+                    }
+                } catch (Exception ex) {
+                    fail++;
+                }
+                final int okNow = ok;
+                SwingUtilities.invokeLater(() ->
+                        statsLabel.setText("AI 生成参数中（" + idx + "/" + apis.size() + "）… 已成功 " + okNow));
+            }
+
+            final int okF = ok, failF = fail;
+            SwingUtilities.invokeLater(() -> {
+                statsLabel.setText("AI 生成完成: 成功 " + okF + " · 失败 " + failF);
+                String msg = "AI 生成参数完成: 成功 " + okF + " · 失败 " + failF
+                        + "\n检测到 " + depCount + " 条依赖关系"
+                        + "\n" + filledCount + " 个参数将在依赖链测试时自动从上游填充";
+                Messages.showInfoMessage(project, msg, "依赖链AI生成参数");
+            });
+        });
+    }
+
+    /**
+     * 依赖链批量测试 - 收藏文件夹入口
+     * 从收藏文件夹加载 API 和已保存的参数，检测依赖后执行
+     */
+    private void starredChainBatchTest() {
+        refreshStarredApiIndex();
+        com.ban.acai.model.StarredFolder f = getSelectedStarredFolder();
+        if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "依赖链批量测试"); return; }
+        java.util.List<ApiDefinition> targets = new ArrayList<>();
+        for (String key : f.getApiKeys()) {
+            ApiDefinition api = starredApiByKey.get(key);
+            if (api != null) targets.add(api);
+        }
+        if (targets.size() < 2) {
+            Messages.showInfoMessage(project, "依赖链测试需要至少 2 个接口", "提示");
+            return;
+        }
+
+        // 检测依赖
+        java.util.List<com.ban.acai.chain.ApiDependency> deps =
+                com.ban.acai.chain.DependencyDetector.detect(targets);
+
+        // 弹对话框确认
+        DependencyGraphDialog dialog = new DependencyGraphDialog(project, targets, deps);
+        if (!dialog.showAndGet()) return;
+        deps = dialog.getDependencies();
+
+        final String folderId = f.getId();
+        final String baseUrl = com.ban.acai.settings.AcaiSettingsState.getInstance(project).getBaseUrl();
+        final com.ban.acai.model.Environment env =
+                com.ban.acai.settings.AcaiSettingsState.getInstance(project).getActiveEnvironmentObj();
+        final com.ban.acai.model.TestProfile profile = new com.ban.acai.model.TestProfile("依赖链测试", baseUrl);
+
+        // 从文件夹加载已保存的参数，没有则生成默认值
+        for (ApiDefinition api : targets) {
+            Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
+            if (params == null || params.isEmpty()) {
+                params = aiService.generateDefaultParameters(api);
+            }
+            profile.setParams(api.uniqueKey(), params);
+        }
+
+        final java.util.List<ApiDefinition> apis = targets;
+        final java.util.List<com.ban.acai.chain.ApiDependency> finalDeps = deps;
+        final int total = apis.size();
+
+        statsLabel.setText("依赖链测试中（0/" + total + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            com.ban.acai.chain.ChainTestExecutor chain =
+                    com.ban.acai.chain.ChainTestExecutor.getInstance(project);
+            com.ban.acai.model.TestReport report = chain.execute(apis, finalDeps, profile, env,
+                    (result, cur, t) -> {
+                        String icon = result.getStatus() == com.ban.acai.model.TestStatus.PASSED ? "✅"
+                                : result.getStatus() == com.ban.acai.model.TestStatus.SKIPPED ? "⊘"
+                                : result.getStatus() == com.ban.acai.model.TestStatus.ERROR ? "⚠" : "❌";
+                        SwingUtilities.invokeLater(() ->
+                                statsLabel.setText("依赖链测试中（" + cur + "/" + t + "）… " + icon + " " +
+                                        result.getApiDefinition().displayLabel()));
+                    });
+
+            final int passed = report.getPassedCount();
+            final int failed = report.getFailedCount();
+            final int skipped = report.getSkippedCount();
+            SwingUtilities.invokeLater(() -> {
+                buildStarredTree();
+                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed + " · 跳过 " + skipped);
             });
         });
     }
