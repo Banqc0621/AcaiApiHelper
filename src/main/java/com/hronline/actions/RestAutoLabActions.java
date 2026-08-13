@@ -2,7 +2,6 @@ package com.hronline.actions;
 
 import com.hronline.RestAutoLabConstants;
 import com.hronline.http.HttpExecutorService;
-import com.ban.acai.model.*;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.TestProfile;
 import com.hronline.model.TestReport;

@@ -1,7 +1,6 @@
 package com.hronline.http;
 
 import com.hronline.RestAutoLabConstants;
-import com.ban.acai.model.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParser;

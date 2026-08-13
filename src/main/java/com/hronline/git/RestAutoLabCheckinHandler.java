@@ -1,7 +1,6 @@
 package com.hronline.git;
 
 import com.hronline.http.HttpExecutorService;
-import com.ban.acai.model.*;
 import com.hronline.model.*;
 import com.hronline.scanner.ApiScannerService;
 import com.hronline.settings.RestAutoLabSettingsState;

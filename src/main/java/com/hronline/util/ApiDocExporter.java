@@ -210,7 +210,7 @@ public class ApiDocExporter {
         }
 
         // 标准 Result<T> 包装（只在外层是 Result<...> 时才包，领域对象不要再包第二层）
-        if (low.startsWith("result<") || low.startsWith("com.ban.acai.")) {
+        if (low.startsWith("result<") || low.startsWith("com.hronline.")) {
             String inner = extractGenericInner(t);
             String innerExample = synthesizeExampleForType(inner);
             return "{\n  \"code\": 0,\n  \"message\": \"success\",\n  \"data\": " + innerExample + "\n}";
