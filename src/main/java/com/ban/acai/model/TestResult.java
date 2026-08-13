@@ -139,8 +139,8 @@ public class TestResult {
      * 2xx状态码视为通过，其他视为失败
      */
     public static TestResult fromHttpCode(ApiDefinition api, int code, String body, long duration) {
-        TestStatus status = (code >= com.ban.acai.AcaiConstants.HTTP_SUCCESS_MIN
-                && code <= com.ban.acai.AcaiConstants.HTTP_SUCCESS_MAX)
+        TestStatus status = (code >= com.ban.acai.RestAutoLabConstants.HTTP_SUCCESS_MIN
+                && code <= com.ban.acai.RestAutoLabConstants.HTTP_SUCCESS_MAX)
                 ? TestStatus.PASSED : TestStatus.FAILED;
         TestResult result = new TestResult(api);
         result.setStatus(status);

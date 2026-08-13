@@ -10,50 +10,50 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * AcaiConstants 单元测试
+ * RestAutoLabConstants 单元测试
  * 验证常量无双别名、颜色完整性、HTTP方法覆盖
  */
-public class AcaiConstantsTest {
+public class RestAutoLabConstantsTest {
 
     @Test
     public void testColorForMethod_5MainMethods() {
         // 5种彩色HTTP方法徽章（需求5）
-        assertNotNull(AcaiConstants.colorForMethod("GET"), "GET should have color");
-        assertNotNull(AcaiConstants.colorForMethod("POST"), "POST should have color");
-        assertNotNull(AcaiConstants.colorForMethod("PUT"), "PUT should have color");
-        assertNotNull(AcaiConstants.colorForMethod("DELETE"), "DELETE should have color");
-        assertNotNull(AcaiConstants.colorForMethod("PATCH"), "PATCH should have color");
+        assertNotNull(RestAutoLabConstants.colorForMethod("GET"), "GET should have color");
+        assertNotNull(RestAutoLabConstants.colorForMethod("POST"), "POST should have color");
+        assertNotNull(RestAutoLabConstants.colorForMethod("PUT"), "PUT should have color");
+        assertNotNull(RestAutoLabConstants.colorForMethod("DELETE"), "DELETE should have color");
+        assertNotNull(RestAutoLabConstants.colorForMethod("PATCH"), "PATCH should have color");
 
         // 5种方法颜色互不相同
         Set<Color> colors = new HashSet<>();
-        colors.add(AcaiConstants.colorForMethod("GET"));
-        colors.add(AcaiConstants.colorForMethod("POST"));
-        colors.add(AcaiConstants.colorForMethod("PUT"));
-        colors.add(AcaiConstants.colorForMethod("DELETE"));
-        colors.add(AcaiConstants.colorForMethod("PATCH"));
+        colors.add(RestAutoLabConstants.colorForMethod("GET"));
+        colors.add(RestAutoLabConstants.colorForMethod("POST"));
+        colors.add(RestAutoLabConstants.colorForMethod("PUT"));
+        colors.add(RestAutoLabConstants.colorForMethod("DELETE"));
+        colors.add(RestAutoLabConstants.colorForMethod("PATCH"));
         assertEquals(5, colors.size(), "5 HTTP methods should have distinct colors");
     }
 
     @Test
     public void testAllHttpMethodsSupported() {
-        String[] methods = AcaiConstants.HTTP_METHOD_NAMES;
+        String[] methods = RestAutoLabConstants.HTTP_METHOD_NAMES;
         assertTrue(methods.length >= 7, "Should support at least 7 HTTP methods");
 
         // 所有方法均能返回颜色
         for (String method : methods) {
-            assertNotNull(AcaiConstants.colorForMethod(method),
+            assertNotNull(RestAutoLabConstants.colorForMethod(method),
                     "Method " + method + " should have a color");
         }
     }
 
     @Test
     public void testConstantFieldCount() {
-        // AcaiGlobalSettings 恰好9个字段（需求6）
+        // RestAutoLabGlobalSettings 恰好9个字段（需求6）
         Class<?> globalSettingsClass = null;
         try {
-            globalSettingsClass = Class.forName("com.ban.acai.settings.AcaiGlobalSettings");
+            globalSettingsClass = Class.forName("com.ban.acai.settings.RestAutoLabGlobalSettings");
         } catch (ClassNotFoundException e) {
-            fail("AcaiGlobalSettings class should exist");
+            fail("RestAutoLabGlobalSettings class should exist");
         }
 
         Class<?> stateClass = null;
@@ -63,7 +63,7 @@ public class AcaiConstantsTest {
                 break;
             }
         }
-        assertNotNull(stateClass, "AcaiGlobalSettings.State should exist");
+        assertNotNull(stateClass, "RestAutoLabGlobalSettings.State should exist");
 
         int fieldCount = 0;
         for (Field f : stateClass.getDeclaredFields()) {
@@ -71,7 +71,7 @@ public class AcaiConstantsTest {
                 fieldCount++;
             }
         }
-        assertEquals(9, fieldCount, "AcaiGlobalSettings.State should have exactly 9 fields");
+        assertEquals(9, fieldCount, "RestAutoLabGlobalSettings.State should have exactly 9 fields");
     }
 
     @Test
@@ -79,7 +79,7 @@ public class AcaiConstantsTest {
         // 验证无双别名：所有public static final String字段的值不重复
         Set<Object> values = new HashSet<>();
         Set<String> names = new HashSet<>();
-        Field[] fields = AcaiConstants.class.getDeclaredFields();
+        Field[] fields = RestAutoLabConstants.class.getDeclaredFields();
 
         for (Field f : fields) {
             int mod = f.getModifiers();
@@ -106,19 +106,19 @@ public class AcaiConstantsTest {
     @Test
     public void testJbColorUsedForAllColors() {
         // 所有颜色均使用JBColor保证主题感知（需求5）
-        assertTrue(AcaiConstants.COLOR_GET instanceof com.intellij.ui.JBColor);
-        assertTrue(AcaiConstants.COLOR_POST instanceof com.intellij.ui.JBColor);
-        assertTrue(AcaiConstants.COLOR_PUT instanceof com.intellij.ui.JBColor);
-        assertTrue(AcaiConstants.COLOR_DELETE instanceof com.intellij.ui.JBColor);
-        assertTrue(AcaiConstants.COLOR_PATCH instanceof com.intellij.ui.JBColor);
+        assertTrue(RestAutoLabConstants.COLOR_GET instanceof com.intellij.ui.JBColor);
+        assertTrue(RestAutoLabConstants.COLOR_POST instanceof com.intellij.ui.JBColor);
+        assertTrue(RestAutoLabConstants.COLOR_PUT instanceof com.intellij.ui.JBColor);
+        assertTrue(RestAutoLabConstants.COLOR_DELETE instanceof com.intellij.ui.JBColor);
+        assertTrue(RestAutoLabConstants.COLOR_PATCH instanceof com.intellij.ui.JBColor);
     }
 
     @Test
     public void testDefaultValues() {
-        assertEquals("application/json", AcaiConstants.DEFAULT_CONTENT_TYPE);
-        assertEquals(10, AcaiConstants.HTTP_CONNECT_TIMEOUT_SECONDS);
-        assertEquals(30, AcaiConstants.HTTP_REQUEST_TIMEOUT_SECONDS);
-        assertEquals("http://localhost:8080", AcaiConstants.DEFAULT_BASE_URL);
-        assertEquals("200", AcaiConstants.DEFAULT_ALLOWED_STATUS_CODES);
+        assertEquals("application/json", RestAutoLabConstants.DEFAULT_CONTENT_TYPE);
+        assertEquals(10, RestAutoLabConstants.HTTP_CONNECT_TIMEOUT_SECONDS);
+        assertEquals(30, RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS);
+        assertEquals("http://localhost:8080", RestAutoLabConstants.DEFAULT_BASE_URL);
+        assertEquals("200", RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES);
     }
 }

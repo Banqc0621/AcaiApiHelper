@@ -65,7 +65,7 @@ dependencies {
 intellijPlatform {
     pluginConfiguration {
         id = "com.ban.acai"
-        name = "Acai API Helper"
+        name = "RestAutoLab"
         version = "2.0.0"
 
         ideaVersion {

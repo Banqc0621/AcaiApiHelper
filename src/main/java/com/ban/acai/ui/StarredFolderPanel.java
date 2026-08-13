@@ -9,7 +9,7 @@ import com.ban.acai.model.StarredFolder;
 import com.ban.acai.model.TestResult;
 import com.ban.acai.scanner.ApiScannerService;
 import com.ban.acai.scanner.StarredFolderService;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
 import com.intellij.openapi.application.ApplicationManager;
@@ -55,7 +55,7 @@ public class StarredFolderPanel extends JPanel {
     private final StarredFolderService folderService;
     private final AiParameterService aiService;
     private final HttpExecutorService httpService;
-    private final AcaiSettingsState settings;
+    private final RestAutoLabSettingsState settings;
 
     private final Tree tree;
     private final DefaultTreeModel treeModel;
@@ -71,7 +71,7 @@ public class StarredFolderPanel extends JPanel {
         this.folderService = StarredFolderService.getInstance(project);
         this.aiService = AiParameterService.getInstance(project);
         this.httpService = HttpExecutorService.getInstance(project);
-        this.settings = AcaiSettingsState.getInstance(project);
+        this.settings = RestAutoLabSettingsState.getInstance(project);
 
         root = new DefaultMutableTreeNode("root");
         treeModel = new DefaultTreeModel(root);

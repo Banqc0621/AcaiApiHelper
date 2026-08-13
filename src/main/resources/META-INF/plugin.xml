@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Plugin Configuration File - Acai API 调试与测试插件 -->
+<!-- Plugin Configuration File - RestAutoLab 调试与测试插件 -->
 <!-- 参考文档: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <!-- 插件唯一标识（FQN格式），版本间不可更改 -->
     <id>com.ban.acai</id>
 
     <!-- 插件显示名称 -->
-    <name>Acai API Helper</name>
+    <name>RestAutoLab</name>
 
     <version>2.0.0</version>
 
     <!-- 供应商信息 -->
-    <vendor email="1332039050@qq.com" url="https://blog.banqc.com.cn/">Banqc</vendor>
+    <vendor>RestAutoLab</vendor>
 
     <!-- 插件描述 - 在插件市场和IDE插件管理器中展示 -->
     <description><![CDATA[
-        Acai API Helper is an enterprise-grade API debugging and automated testing plugin for IntelliJ IDEA. It provides built-in HTTP debugging, API scanning, AI parameter generation, test case management, and Git pre-commit checks.
-        <h2>Acai API Helper - 企业级API调试与自动化测试插件</h2>
+        RestAutoLab is an enterprise-grade API debugging and automated testing plugin for IntelliJ IDEA. It provides built-in HTTP debugging, API scanning, AI parameter generation, test case management, and Git pre-commit checks.
+        <h2>RestAutoLab - 企业级API调试与自动化测试插件</h2>
         <p>功能全面的IDEA内置API调试工具，类似Apipost-Helper-2.0，专为内部企业环境定制：</p>
         <ul>
             <li><b>API自动扫描</b>：自动识别Spring MVC / REST控制器中的接口定义</li>
@@ -119,27 +119,27 @@
     <extensions defaultExtensionNs="com.intellij">
 
         <!-- 1. ToolWindow: 在IDE右侧显示API调试面板 -->
-        <toolWindow id="AcaiApiHelper"
-                    factoryClass="com.ban.acai.ui.AcaiToolWindowFactory"
+        <toolWindow id="RestAutoLab"
+                    factoryClass="com.ban.acai.ui.RestAutoLabToolWindowFactory"
                     anchor="right"
                     icon="AllIcons.Toolwindows.ToolWindowPalette"
                     secondary="false"/>
 
         <!-- 2. Application级全局配置: IDE级别共享配置 -->
-        <applicationService serviceImplementation="com.ban.acai.settings.AcaiGlobalSettings"/>
+        <applicationService serviceImplementation="com.ban.acai.settings.RestAutoLabGlobalSettings"/>
 
         <!-- 2b. Project级持久化服务: 存储项目级配置（AI服务器地址、Token等） -->
-        <projectService serviceImplementation="com.ban.acai.settings.AcaiSettingsState"/>
+        <projectService serviceImplementation="com.ban.acai.settings.RestAutoLabSettingsState"/>
 
         <!-- 3. 设置页面: 在IDE Settings中注册插件配置页 -->
         <projectConfigurable
                 parentId="tools"
-                instance="com.ban.acai.settings.AcaiSettingsConfigurable"
+                instance="com.ban.acai.settings.RestAutoLabSettingsConfigurable"
                 id="com.ban.acai.settings"
-                displayName="Acai API Helper"/>
+                displayName="RestAutoLab"/>
 
         <!-- 5. Git预提交检查处理器: 接口测试未通过时阻断提交 -->
-        <checkinHandlerFactory implementation="com.ban.acai.git.AcaiCheckinHandlerFactory"/>
+        <checkinHandlerFactory implementation="com.ban.acai.git.RestAutoLabCheckinHandlerFactory"/>
 
         <!-- 6. 编辑器Gutter图标提供器: 在Controller方法旁显示API调试图标 -->
         <codeInsight.lineMarkerProvider
@@ -156,10 +156,10 @@
         <projectService serviceImplementation="com.ban.acai.ai.AiParameterService"/>
 
         <!-- 9b. ToolWindow面板持有服务: 供右键Action拿到树/调试面板，实现精准定位 -->
-        <projectService serviceImplementation="com.ban.acai.ui.AcaiToolWindowHolder"/>
+        <projectService serviceImplementation="com.ban.acai.ui.RestAutoLabToolWindowHolder"/>
 
         <!-- 10. 通知组: 用于在IDE底部展示操作结果通知 -->
-        <notificationGroup id="AcaiApiHelper.Notification"
+        <notificationGroup id="RestAutoLab.Notification"
                            displayType="BALLOON"
                            bundle="messages.MyMessageBundle"
                            key="notification.group.name"/>
@@ -170,8 +170,8 @@
     <!-- ================================================================ -->
     <actions>
         <!-- 动作组: 注册到编辑器右键菜单 -->
-        <group id="AcaiApiHelper.ActionGroup"
-               text="Acai API Helper"
+        <group id="RestAutoLab.ActionGroup"
+               text="RestAutoLab"
                popup="true"
                icon="AllIcons.Toolwindows.ToolWindowPalette">
             <!-- 将动作组添加到编辑器右键菜单（置顶） -->
@@ -181,30 +181,30 @@
         </group>
 
         <!-- 动作: 扫描项目API -->
-        <action id="AcaiApiHelper.ScanApis"
+        <action id="RestAutoLab.ScanApis"
                 class="com.ban.acai.actions.ScanApisAction"
                 text="扫描项目API"
                 description="扫描当前项目中的所有REST/Spring MVC接口"
                 icon="AllIcons.Actions.Refresh">
-            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="first"/>
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="first"/>
         </action>
 
         <!-- 动作: 调试当前接口 -->
-        <action id="AcaiApiHelper.DebugApi"
+        <action id="RestAutoLab.DebugApi"
                 class="com.ban.acai.actions.DebugApiAction"
                 text="调试当前接口"
-                description="在Acai面板中打开当前接口的调试界面"
+                description="在RestAutoLab面板中打开当前接口的调试界面"
                 icon="AllIcons.Actions.Execute">
-            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="after" relative-to-action="AcaiApiHelper.ScanApis"/>
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.ScanApis"/>
         </action>
 
         <!-- 动作: 运行全部API测试 -->
-        <action id="AcaiApiHelper.RunAllTests"
+        <action id="RestAutoLab.RunAllTests"
                 class="com.ban.acai.actions.RunAllTestsAction"
                 text="运行全部接口测试"
                 description="执行所有已配置的接口自动化测试"
                 icon="AllIcons.RunConfigurations.Junit">
-            <add-to-group group-id="AcaiApiHelper.ActionGroup" anchor="after" relative-to-action="AcaiApiHelper.DebugApi"/>
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.DebugApi"/>
         </action>
     </actions>
 </idea-plugin>

@@ -1,8 +1,8 @@
 package com.ban.acai.ai;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.*;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -45,7 +45,7 @@ public final class AiParameterService {
 
     /** HTTP客户端（AI服务调用专用） */
     private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(AcaiConstants.AI_CONNECT_TIMEOUT_SECONDS))
+            .connectTimeout(Duration.ofSeconds(RestAutoLabConstants.AI_CONNECT_TIMEOUT_SECONDS))
             .build();
 
     public AiParameterService(Project project) {
@@ -62,10 +62,10 @@ public final class AiParameterService {
      * </ul>
      */
     private String buildAuthHeader(String token) {
-        if (AcaiConstants.isLocalModelToken(token)) {
-            return AcaiConstants.BEARER_PREFIX + AcaiConstants.AI_LOCAL_BEARER_TOKEN;
+        if (RestAutoLabConstants.isLocalModelToken(token)) {
+            return RestAutoLabConstants.BEARER_PREFIX + RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN;
         }
-        return AcaiConstants.BEARER_PREFIX + token;
+        return RestAutoLabConstants.BEARER_PREFIX + token;
     }
 
     /**
@@ -100,7 +100,7 @@ public final class AiParameterService {
      * @return 参数名到生成值的映射列表（全量模式可能返回多组）
      */
     public List<Map<String, String>> generateParameters(ApiDefinition api, TestScenario scenario) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         log.info("[AI生成参数] 开始(简版) => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 场景=" + scenario + ", 参数个数=" + api.getParameters().size());
 
@@ -109,7 +109,7 @@ public final class AiParameterService {
             log.info("[AI生成参数] 跳过(简版)：AI服务器URL未配置，使用默认值生成策略");
             return generateDefaultParameters(api, scenario);
         }
-        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
             log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
@@ -161,7 +161,7 @@ public final class AiParameterService {
      * 生成参数并返回原始AI响应（供UI展示完整流程）
      */
     public GenerateResult generateParametersWithRaw(ApiDefinition api, TestScenario scenario) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         log.info("[AI生成参数] 开始 => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 控制器=" + api.getControllerName() + ", 场景=" + scenario
                 + ", 参数个数=" + api.getParameters().size());
@@ -175,7 +175,7 @@ public final class AiParameterService {
                     "AI服务器URL未配置，请在「AI配置」中填写服务器URL"
             );
         }
-        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
             log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
@@ -217,7 +217,7 @@ public final class AiParameterService {
      * 调用ARK并返回原始响应内容（不解析）
      */
     private String callArkChatCompletionsRaw(ApiDefinition api, TestScenario scenario,
-                                               AcaiSettingsState settings) throws Exception {
+                                               RestAutoLabSettingsState settings) throws Exception {
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
@@ -235,9 +235,9 @@ public final class AiParameterService {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
-                .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
+                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
+                .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -249,8 +249,8 @@ public final class AiParameterService {
                 + ", 耗时=" + httpDuration + "ms"
                 + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
-        if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
-                || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+        if (response.statusCode() < RestAutoLabConstants.HTTP_SUCCESS_MIN
+                || response.statusCode() > RestAutoLabConstants.HTTP_SUCCESS_MAX) {
             log.warn("[AI-HTTP] 失败 => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
             throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
@@ -283,7 +283,7 @@ public final class AiParameterService {
      * 调用火山引擎ARK Chat Completions API（OpenAI兼容协议）
      */
     private List<Map<String, String>> callArkChatCompletions(ApiDefinition api, TestScenario scenario,
-                                                              AcaiSettingsState settings) throws Exception {
+                                                              RestAutoLabSettingsState settings) throws Exception {
         // 构建 Chat Completions 请求体
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
 
@@ -303,9 +303,9 @@ public final class AiParameterService {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
-                .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
+                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
+                .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -317,8 +317,8 @@ public final class AiParameterService {
                 + ", 耗时=" + httpDuration + "ms"
                 + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
-        if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
-                || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+        if (response.statusCode() < RestAutoLabConstants.HTTP_SUCCESS_MIN
+                || response.statusCode() > RestAutoLabConstants.HTTP_SUCCESS_MAX) {
             log.warn("[AI-HTTP] 失败(callArkChatCompletions) => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
             throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
@@ -351,7 +351,7 @@ public final class AiParameterService {
      * - 认证通过 HTTP Header Authorization: Bearer {token} 传递（在调用方设置）
      */
     private JsonObject buildChatCompletionRequest(ApiDefinition api, TestScenario scenario,
-                                                   AcaiSettingsState settings) {
+                                                   RestAutoLabSettingsState settings) {
         JsonObject root = new JsonObject();
         root.addProperty("model", settings.getAiModel());
 
@@ -420,7 +420,7 @@ public final class AiParameterService {
      * 可覆盖模板主体里可能与场景冲突的旧规则。</p>
      */
     private String buildUserPrompt(ApiDefinition api, TestScenario scenario) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         String template = settings.getAiUserPromptTemplate();
 
         String description = api.getDescription().isBlank() ? "(无)" : api.getDescription();
@@ -981,7 +981,7 @@ public final class AiParameterService {
             if (requestBody != null) {
                 JsonObject content = requestBody.getAsJsonObject("content");
                 if (content != null) {
-                    JsonObject jsonContent = content.getAsJsonObject(AcaiConstants.DEFAULT_CONTENT_TYPE);
+                    JsonObject jsonContent = content.getAsJsonObject(RestAutoLabConstants.DEFAULT_CONTENT_TYPE);
                     if (jsonContent != null) {
                         JsonElement example = jsonContent.get("example");
                         if (example != null) {
@@ -1016,7 +1016,7 @@ public final class AiParameterService {
      * AI生成响应断言规则
      */
     public List<ResponseAssertion> generateAssertions(ApiDefinition api) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         log.info("[AI生成断言] 开始 => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 返回类型=" + api.getResponseBodyType());
 
@@ -1024,7 +1024,7 @@ public final class AiParameterService {
             log.info("[AI生成断言] 跳过：AI服务器URL未配置，生成默认断言");
             return generateDefaultAssertions(api);
         }
-        if (AcaiConstants.isLocalModelToken(settings.getAiToken())) {
+        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
             log.info("[AI生成断言] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
         }
 
@@ -1045,9 +1045,9 @@ public final class AiParameterService {
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(fullUrl))
-                    .timeout(Duration.ofSeconds(AcaiConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                    .header(AcaiConstants.HEADER_CONTENT_TYPE, AcaiConstants.DEFAULT_CONTENT_TYPE)
-                    .header(AcaiConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                    .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
+                    .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
+                    .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
                     .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                     .build();
 
@@ -1058,8 +1058,8 @@ public final class AiParameterService {
                     + ", 耗时=" + httpDuration + "ms"
                     + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
-            if (response.statusCode() < AcaiConstants.HTTP_SUCCESS_MIN
-                    || response.statusCode() > AcaiConstants.HTTP_SUCCESS_MAX) {
+            if (response.statusCode() < RestAutoLabConstants.HTTP_SUCCESS_MIN
+                    || response.statusCode() > RestAutoLabConstants.HTTP_SUCCESS_MAX) {
                 log.warn("[AI生成断言] HTTP失败 => 状态码=" + response.statusCode()
                         + ", 响应体=" + truncate(response.body(), 2000));
                 throw new RuntimeException("AI API返回: " + response.statusCode());
@@ -1088,14 +1088,14 @@ public final class AiParameterService {
         }
     }
 
-    private JsonObject buildAssertionRequest(ApiDefinition api, AcaiSettingsState settings) {
+    private JsonObject buildAssertionRequest(ApiDefinition api, RestAutoLabSettingsState settings) {
         JsonObject root = new JsonObject();
         root.addProperty("model", settings.getAiModel());
 
         JsonArray messages = new JsonArray();
         JsonObject systemMsg = new JsonObject();
         systemMsg.addProperty("role", "system");
-        systemMsg.addProperty("content", AcaiConstants.AI_ASSERTION_SYSTEM_PROMPT);
+        systemMsg.addProperty("content", RestAutoLabConstants.AI_ASSERTION_SYSTEM_PROMPT);
         messages.add(systemMsg);
 
         JsonObject userMsg = new JsonObject();

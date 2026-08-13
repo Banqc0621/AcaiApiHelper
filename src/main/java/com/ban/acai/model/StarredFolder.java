@@ -9,7 +9,7 @@ import java.util.List;
  * <p>收藏语义：一个接口可被收入多个文件夹（不同文件夹可出现相同接口），
  * 但同一文件夹内接口唯一（按 {@link ApiDefinition#uniqueKey()} 去重）。</p>
  *
- * <p>本类为可持久化的纯数据结构，由 {@link com.ban.acai.settings.AcaiSettingsState}
+ * <p>本类为可持久化的纯数据结构，由 {@link com.ban.acai.settings.RestAutoLabSettingsState}
  * 序列化为 JSON 存储。{@code id} 为稳定标识（重命名不变），{@code apiKeys} 为有序列表，
  * 决定文件夹内的显示顺序。</p>
  */

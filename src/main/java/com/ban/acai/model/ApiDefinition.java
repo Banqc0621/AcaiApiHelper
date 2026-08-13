@@ -34,9 +34,9 @@ public class ApiDefinition {
     /** 自定义请求头列表 */
     private Map<String, String> headers = new HashMap<>();
     /** 请求Content-Type（如 application/json） */
-    private String consumes = com.ban.acai.AcaiConstants.DEFAULT_CONTENT_TYPE;
+    private String consumes = com.ban.acai.RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     /** 响应Content-Type（如 application/json） */
-    private String produces = com.ban.acai.AcaiConstants.DEFAULT_CONTENT_TYPE;
+    private String produces = com.ban.acai.RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     /** 接口源码文件绝对路径（用于代码跳转） */
     private String sourceFilePath = "";
     /** 接口方法所在行号（用于精确定位） */
@@ -54,7 +54,7 @@ public class ApiDefinition {
     /** 接口是否已标记为@Deprecated */
     private boolean isDeprecated = false;
     /** 接口来源：AUTO（自动扫描）/ MANUAL（手动添加） */
-    private String source = com.ban.acai.AcaiConstants.API_SOURCE_AUTO;
+    private String source = com.ban.acai.RestAutoLabConstants.API_SOURCE_AUTO;
     /** 扫描/创建时间戳（毫秒） */
     private long scanTimestamp = System.currentTimeMillis();
     /** 预期HTTP状态码集合（为空时默认2xx通过） */
@@ -66,7 +66,7 @@ public class ApiDefinition {
     /** 最后调用时间戳 */
     private long lastCalledAt = 0;
     /** 变更标记（用于API变更检测） */
-    private String changeMarker = com.ban.acai.AcaiConstants.CHANGE_NONE;
+    private String changeMarker = com.ban.acai.RestAutoLabConstants.CHANGE_NONE;
     /** 接口标签列表（用于自定义分组） */
     private java.util.List<String> tags = new java.util.ArrayList<>();
 
@@ -144,21 +144,21 @@ public class ApiDefinition {
     public void setLastCalledAt(long t) { this.lastCalledAt = t; }
 
     public String getChangeMarker() { return changeMarker; }
-    public void setChangeMarker(String marker) { this.changeMarker = marker != null ? marker : com.ban.acai.AcaiConstants.CHANGE_NONE; }
+    public void setChangeMarker(String marker) { this.changeMarker = marker != null ? marker : com.ban.acai.RestAutoLabConstants.CHANGE_NONE; }
 
     public java.util.List<String> getTags() { return tags; }
     public void setTags(java.util.List<String> tags) { this.tags = tags != null ? tags : new java.util.ArrayList<>(); }
 
     /** 判断是否为自动扫描的接口 */
     public boolean isAutoDetected() {
-        return com.ban.acai.AcaiConstants.API_SOURCE_AUTO.equals(source);
+        return com.ban.acai.RestAutoLabConstants.API_SOURCE_AUTO.equals(source);
     }
 
     /** 判断状态码是否符合预期（用于测试断言） */
     public boolean isStatusCodeExpected(int code) {
         if (expectedStatusCodes == null || expectedStatusCodes.isEmpty()) {
-            return code >= com.ban.acai.AcaiConstants.HTTP_SUCCESS_MIN
-                    && code <= com.ban.acai.AcaiConstants.HTTP_SUCCESS_MAX;
+            return code >= com.ban.acai.RestAutoLabConstants.HTTP_SUCCESS_MIN
+                    && code <= com.ban.acai.RestAutoLabConstants.HTTP_SUCCESS_MAX;
         }
         return expectedStatusCodes.contains(code);
     }

@@ -8,7 +8,7 @@ import com.ban.acai.model.StarredFolder;
 import com.ban.acai.model.TestResult;
 import com.ban.acai.scanner.ApiScannerService;
 import com.ban.acai.scanner.StarredFolderService;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
@@ -57,7 +57,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
     private final StarredFolderService folderService;
     private final AiParameterService aiService;
     private final HttpExecutorService httpService;
-    private final AcaiSettingsState settings;
+    private final RestAutoLabSettingsState settings;
 
     private Tree tree;
     private DefaultTreeModel treeModel;
@@ -73,7 +73,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
         this.folderService = StarredFolderService.getInstance(project);
         this.aiService = AiParameterService.getInstance(project);
         this.httpService = HttpExecutorService.getInstance(project);
-        this.settings = AcaiSettingsState.getInstance(project);
+        this.settings = RestAutoLabSettingsState.getInstance(project);
         setTitle("收藏管理");
         setModal(false);
         init();

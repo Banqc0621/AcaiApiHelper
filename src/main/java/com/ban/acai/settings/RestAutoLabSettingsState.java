@@ -1,6 +1,6 @@
 package com.ban.acai.settings;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -19,40 +19,40 @@ import java.util.*;
  * Project级持久化设置
  */
 @State(
-        name = "AcaiApiHelperSettings",
-        storages = @Storage("acai-api-helper.xml")
+        name = "RestAutoLabSettings",
+        storages = @Storage("restautolab.xml")
 )
-public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsState.State> {
+public class RestAutoLabSettingsState implements PersistentStateComponent<RestAutoLabSettingsState.State> {
 
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public static class State {
-        public String baseUrl = AcaiConstants.DEFAULT_BASE_URL;
+        public String baseUrl = RestAutoLabConstants.DEFAULT_BASE_URL;
         /** 火山引擎方舟 API Key */
         public String arkApiKey = "";
         /** 方舟API地址 */
-        public String arkApiUrl = AcaiConstants.ARK_API_BASE_URL;
+        public String arkApiUrl = RestAutoLabConstants.ARK_API_BASE_URL;
         /** AI API 路径（如 /chat/completions 或 /chat），可配置以适配不同模型网关 */
-        public String aiApiPath = AcaiConstants.AI_DEFAULT_API_PATH;
+        public String aiApiPath = RestAutoLabConstants.AI_DEFAULT_API_PATH;
         /** 主模型 */
-        public String arkModelPro = AcaiConstants.ARK_MODEL_PRO;
+        public String arkModelPro = RestAutoLabConstants.ARK_MODEL_PRO;
         /** 轻量模型 */
-        public String arkModelCode = AcaiConstants.ARK_MODEL_CODE;
+        public String arkModelCode = RestAutoLabConstants.ARK_MODEL_CODE;
         /** 启用AI功能 */
         public boolean aiEnabled = true;
         public boolean gitCheckEnabled = true;
-        public String gitAllowedStatusCodes = AcaiConstants.DEFAULT_ALLOWED_STATUS_CODES;
-        public int requestTimeout = AcaiConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
+        public String gitAllowedStatusCodes = RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES;
+        public int requestTimeout = RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
         public String globalHeadersJson = "{}";
         public boolean autoScanOnStartup = true;
         public String testReportDir = ".acai/reports";
         public String lastTestProfile = "";
         /** 单次扫描最大AI调用次数 */
         public int maxAiCallsPerScan = 50;
-        /** 自定义系统提示词（为空时使用 AcaiConstants.AI_SYSTEM_PROMPT） */
-        public String aiSystemPrompt = AcaiConstants.AI_SYSTEM_PROMPT;
-        /** 自定义用户提示词模板（为空时使用 AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE） */
-        public String aiUserPromptTemplate = AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE;
+        /** 自定义系统提示词（为空时使用 RestAutoLabConstants.AI_SYSTEM_PROMPT） */
+        public String aiSystemPrompt = RestAutoLabConstants.AI_SYSTEM_PROMPT;
+        /** 自定义用户提示词模板（为空时使用 RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE） */
+        public String aiUserPromptTemplate = RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE;
         /** 环境配置JSON */
         public String environmentsJson = "";
         /** 当前激活环境名 */
@@ -156,11 +156,11 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
     public String getAiModel() { return myState.arkModelPro; }
 
     /** AI API 路径（如 /chat/completions 或 /chat）。
-     *  <p>空值/空白时回退到默认 {@link AcaiConstants#AI_DEFAULT_API_PATH}（即 /chat/completions），
+     *  <p>空值/空白时回退到默认 {@link RestAutoLabConstants#AI_DEFAULT_API_PATH}（即 /chat/completions），
      *  避免因持久化字段缺失或被清空导致请求只打到服务器根路径而 404。</p> */
     public String getAiApiPath() {
         if (myState.aiApiPath == null || myState.aiApiPath.isBlank()) {
-            return AcaiConstants.AI_DEFAULT_API_PATH;
+            return RestAutoLabConstants.AI_DEFAULT_API_PATH;
         }
         return myState.aiApiPath;
     }
@@ -180,14 +180,14 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
     /** 自定义系统提示词（空值回退到默认常量） */
     public String getAiSystemPrompt() {
         return (myState.aiSystemPrompt == null || myState.aiSystemPrompt.isBlank())
-                ? AcaiConstants.AI_SYSTEM_PROMPT : myState.aiSystemPrompt;
+                ? RestAutoLabConstants.AI_SYSTEM_PROMPT : myState.aiSystemPrompt;
     }
     public void setAiSystemPrompt(String v) { myState.aiSystemPrompt = v; }
 
     /** 自定义用户提示词模板（空值回退到默认模板） */
     public String getAiUserPromptTemplate() {
         return (myState.aiUserPromptTemplate == null || myState.aiUserPromptTemplate.isBlank())
-                ? AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE : myState.aiUserPromptTemplate;
+                ? RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE : myState.aiUserPromptTemplate;
     }
     public void setAiUserPromptTemplate(String v) { myState.aiUserPromptTemplate = v; }
 
@@ -397,7 +397,7 @@ public class AcaiSettingsState implements PersistentStateComponent<AcaiSettingsS
         return myState.lastScanApiSignatures != null ? myState.lastScanApiSignatures : new ArrayList<>();
     }
 
-    public static AcaiSettingsState getInstance(@NotNull Project project) {
-        return project.getService(AcaiSettingsState.class);
+    public static RestAutoLabSettingsState getInstance(@NotNull Project project) {
+        return project.getService(RestAutoLabSettingsState.class);
     }
 }

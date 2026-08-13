@@ -1,7 +1,7 @@
 package com.ban.acai.ui;
 
 import com.ban.acai.model.Environment;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
@@ -27,7 +27,7 @@ import java.util.List;
 public class EnvironmentManagerDialog extends DialogWrapper {
 
     private final Project project;
-    private final AcaiSettingsState settings;
+    private final RestAutoLabSettingsState settings;
     private List<Environment> environments;
     private Environment selectedEnvironment;
 
@@ -44,7 +44,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     public EnvironmentManagerDialog(Project project) {
         super(project);
         this.project = project;
-        this.settings = AcaiSettingsState.getInstance(project);
+        this.settings = RestAutoLabSettingsState.getInstance(project);
         this.environments = settings.loadEnvironments();
         this.selectedEnvironment = null;
         String activeName = settings.getActiveEnvironment();

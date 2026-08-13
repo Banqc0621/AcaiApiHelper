@@ -3,7 +3,7 @@ package com.ban.acai.git;
 import com.ban.acai.http.HttpExecutorService;
 import com.ban.acai.model.*;
 import com.ban.acai.scanner.ApiScannerService;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
@@ -25,25 +25,25 @@ import java.util.List;
 /**
  * Git预提交检查处理器工厂
  */
-class AcaiCheckinHandlerFactory extends CheckinHandlerFactory {
+class RestAutoLabCheckinHandlerFactory extends CheckinHandlerFactory {
     @Override
     @NotNull
     public CheckinHandler createHandler(@NotNull CheckinProjectPanel panel, @NotNull CommitContext context) {
-        return new AcaiCheckinHandler(panel.getProject(), panel);
+        return new RestAutoLabCheckinHandler(panel.getProject(), panel);
     }
 }
 
-class AcaiCheckinHandler extends CheckinHandler {
-    private static final Logger LOG = Logger.getInstance(AcaiCheckinHandler.class);
+class RestAutoLabCheckinHandler extends CheckinHandler {
+    private static final Logger LOG = Logger.getInstance(RestAutoLabCheckinHandler.class);
     private final Project project;
     private final CheckinProjectPanel panel;
-    private final AcaiSettingsState settings;
+    private final RestAutoLabSettingsState settings;
     private boolean skipCheck = false;
 
-    AcaiCheckinHandler(Project project, CheckinProjectPanel panel) {
+    RestAutoLabCheckinHandler(Project project, CheckinProjectPanel panel) {
         this.project = project;
         this.panel = panel;
-        this.settings = AcaiSettingsState.getInstance(project);
+        this.settings = RestAutoLabSettingsState.getInstance(project);
     }
 
     @Nullable
@@ -52,7 +52,7 @@ class AcaiCheckinHandler extends CheckinHandler {
         if (!settings.isGitCheckEnabled()) return null;
 
         JPanel panel = new JPanel(new BorderLayout());
-        JCheckBox checkBox = new JCheckBox("执行 Acai API 接口检查", true);
+        JCheckBox checkBox = new JCheckBox("执行 RestAutoLab 接口检查", true);
         panel.add(checkBox, BorderLayout.WEST);
         return new RefreshableOnComponent() {
             @Override
@@ -123,7 +123,7 @@ class AcaiCheckinHandler extends CheckinHandler {
 
     private ReturnResult showFailureDialog(TestReport report, List<TestResult> failed, Set<Integer> allowedCodes) {
         StringBuilder msg = new StringBuilder();
-        msg.append("⚠ Acai API 预提交检查未通过\n");
+        msg.append("⚠ RestAutoLab 预提交检查未通过\n");
         msg.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         msg.append("检测到 ").append(failed.size()).append(" 个接口测试失败（允许状态码: ").append(allowedCodes).append("）\n\n");
         for (TestResult r : failed) {
@@ -137,7 +137,7 @@ class AcaiCheckinHandler extends CheckinHandler {
         ApplicationManager.getApplication().invokeAndWait(() -> {
             int choice = Messages.showYesNoDialog(
                     project, msg.toString(),
-                    "Acai API 预提交检查失败",
+                    "RestAutoLab 预提交检查失败",
                     "取消提交", "忽略并继续提交",
                     Messages.getWarningIcon()
             );

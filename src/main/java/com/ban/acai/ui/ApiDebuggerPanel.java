@@ -1,11 +1,11 @@
 package com.ban.acai.ui;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.ai.AiParameterService;
 import com.ban.acai.http.HttpExecutorService;
 import com.ban.acai.model.*;
 import com.ban.acai.scanner.ApiScannerService;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.ban.acai.util.ApiDocExporter;
 import com.ban.acai.util.CurlUtil;
 import com.ban.acai.util.ReportExporter;
@@ -65,7 +65,7 @@ public class ApiDebuggerPanel extends JPanel {
     private final Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     // ── UI控件 ──
-    private final ComboBox<String> methodCombo = new ComboBox<>(AcaiConstants.HTTP_METHOD_NAMES);
+    private final ComboBox<String> methodCombo = new ComboBox<>(RestAutoLabConstants.HTTP_METHOD_NAMES);
     private final JBTextField urlField = new JBTextField();
     private final JButton sendButton = new JButton("发送", AllIcons.Actions.Execute);
     private final JBTextField baseUrlField = new JBTextField();
@@ -120,7 +120,7 @@ public class ApiDebuggerPanel extends JPanel {
 
     private final ComboBox<AiParameterService.TestScenario> scenarioCombo = new ComboBox<>(
             AiParameterService.TestScenario.values());
-    private final JComboBox<String> modelCombo = new JComboBox<>(AcaiConstants.AI_MODEL_OPTIONS);
+    private final JComboBox<String> modelCombo = new JComboBox<>(RestAutoLabConstants.AI_MODEL_OPTIONS);
 
     // v3 新增字段
     private JComboBox<String> bodyFormatCombo;
@@ -153,7 +153,7 @@ public class ApiDebuggerPanel extends JPanel {
         super(new BorderLayout());
         this.project = project;
         // v3: 加载历史记录
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         requestHistory = settings.loadRequestHistory();
 
         setupUI();
@@ -335,7 +335,7 @@ public class ApiDebuggerPanel extends JPanel {
             if (suppressEnvComboAction) return;
             Environment selected = (Environment) envCombo.getSelectedItem();
             if (selected != null) {
-                AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+                RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
                 settings.setActiveEnvironment(selected.getName());
                 settings.setBaseUrl(selected.getBaseUrl());
                 applyEnvironmentToPanel(selected);
@@ -354,7 +354,7 @@ public class ApiDebuggerPanel extends JPanel {
             if (dialog.showAndGet()) {
                 refreshEnvCombo();
                 // 对话框内可能激活了其他环境，回显到主面板
-                Environment active = AcaiSettingsState.getInstance(project).getActiveEnvironmentObj();
+                Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
                 if (active != null) {
                     applyEnvironmentToPanel(active);
                     statusLabel.setText("● 已切换到环境: " + active.getName());
@@ -440,7 +440,7 @@ public class ApiDebuggerPanel extends JPanel {
     /** 刷新环境下拉框 */
     private void refreshEnvCombo() {
         if (envCombo == null) return;
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         // 重建期间抑制 ActionListener，避免 removeAllItems/setSelectedItem 触发误切换
         suppressEnvComboAction = true;
         try {
@@ -501,7 +501,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 单行布局: Base URL + 方法 + URL + 发送
         gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0;
-        baseUrlField.setText(AcaiSettingsState.getInstance(project).getBaseUrl());
+        baseUrlField.setText(RestAutoLabSettingsState.getInstance(project).getBaseUrl());
         baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         baseUrlField.setToolTipText("服务基础地址，如 http://localhost:8080");
         baseUrlField.setPreferredSize(new Dimension(200, 28));
@@ -1048,7 +1048,7 @@ public class ApiDebuggerPanel extends JPanel {
      * 获取AI配置摘要显示
      */
     private String getAiConfigSummary() {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         String url = settings.getAiServerUrl();
         String model = settings.getAiModel();
         
@@ -1072,7 +1072,7 @@ public class ApiDebuggerPanel extends JPanel {
     private void setupActions() {
         sendButton.addActionListener(e -> sendRequest());
         baseUrlField.addActionListener(e ->
-                AcaiSettingsState.getInstance(project).setBaseUrl(baseUrlField.getText().trim()));
+                RestAutoLabSettingsState.getInstance(project).setBaseUrl(baseUrlField.getText().trim()));
     }
 
     // ================================================================
@@ -1178,8 +1178,8 @@ public class ApiDebuggerPanel extends JPanel {
         // 如果没有显式参数，显示默认请求头
         if (paramTableModel.getRowCount() == 0) {
             headerTableModel.setRowCount(0);
-            headerTableModel.addRow(new Object[]{AcaiConstants.HEADER_CONTENT_TYPE, api.getConsumes()});
-            headerTableModel.addRow(new Object[]{AcaiConstants.HEADER_ACCEPT, api.getProduces()});
+            headerTableModel.addRow(new Object[]{RestAutoLabConstants.HEADER_CONTENT_TYPE, api.getConsumes()});
+            headerTableModel.addRow(new Object[]{RestAutoLabConstants.HEADER_ACCEPT, api.getProduces()});
             api.getHeaders().forEach((k, v) -> headerTableModel.addRow(new Object[]{k, v}));
         }
 
@@ -1997,7 +1997,7 @@ public class ApiDebuggerPanel extends JPanel {
      * 显示AI配置对话框
      */
     private void showAiConfigDialog() {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         
         JBTextField urlField = new JBTextField(settings.getAiServerUrl(), 35);
         urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
@@ -2032,24 +2032,24 @@ public class ApiDebuggerPanel extends JPanel {
         JBTextField apiPathField = new JBTextField(settings.getAiApiPath(), 20);
         apiPathField.setToolTipText("<html>OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat。<br>留空则请求直接打到服务器URL根路径。</html>");
 
-        JComboBox<String> modelField = new JComboBox<>(AcaiConstants.AI_MODEL_OPTIONS);
+        JComboBox<String> modelField = new JComboBox<>(RestAutoLabConstants.AI_MODEL_OPTIONS);
         modelField.setEditable(true);
         modelField.setSelectedItem(settings.getAiModel());
         modelField.setToolTipText("选择或输入模型名称，如 Qwen3.5-35B-A3B");
         
         JCheckBox localModelCheck = new JCheckBox("本地模型（API Key 自动填为 Bearer 占位）");
         // 判定本地模型：token 为空，或 token 为字面量 "Bearer"
-        localModelCheck.setSelected(AcaiConstants.isLocalModelToken(settings.getAiToken()));
+        localModelCheck.setSelected(RestAutoLabConstants.isLocalModelToken(settings.getAiToken()));
         localModelCheck.setToolTipText("<html>勾选后 API Key 字段自动填入字面量 <b>Bearer</b> 并禁用编辑。<br>"
                 + "调用时发送 <code>Authorization: Bearer Bearer</code>，满足 vLLM/Qwen 等网关要求。<br>"
                 + "云端模型请取消勾选，并填入真实的 API Key 值。</html>");
         // 勾选时自动填 "Bearer" 并禁用；取消勾选时清空让用户填真实 token
         if (localModelCheck.isSelected()) {
-            keyField.setText(AcaiConstants.AI_LOCAL_BEARER_TOKEN);
+            keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
         }
         localModelCheck.addActionListener(e -> {
             if (localModelCheck.isSelected()) {
-                keyField.setText(AcaiConstants.AI_LOCAL_BEARER_TOKEN);
+                keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
                 keyField.setEnabled(false);
                 toggleKeyBtn.setEnabled(false);
             } else {
@@ -2081,8 +2081,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton resetPromptBtn = new JButton("恢复默认提示词");
         resetPromptBtn.setToolTipText("将系统/用户提示词还原为内置默认值");
         resetPromptBtn.addActionListener(e -> {
-            systemPromptArea.setText(AcaiConstants.AI_SYSTEM_PROMPT);
-            userPromptArea.setText(AcaiConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
+            systemPromptArea.setText(RestAutoLabConstants.AI_SYSTEM_PROMPT);
+            userPromptArea.setText(RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
         });
 
         // 使用自定义 ScrollableGridBagPanel：实现 Scrollable 并令
@@ -2277,7 +2277,7 @@ public class ApiDebuggerPanel extends JPanel {
             // 校验通过，保存配置
             settings.setAiServerUrl(serverUrl);
             settings.setAiToken(localModelCheck.isSelected()
-                    ? AcaiConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
+                    ? RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
             settings.setAiApiPath(apiPath);
             settings.setAiModel(model);
             settings.setAiSystemPrompt(systemPromptArea.getText());
@@ -2371,10 +2371,10 @@ public class ApiDebuggerPanel extends JPanel {
             setHorizontalAlignment(CENTER);
             if (!isSelected && value instanceof String) {
                 switch ((String) value) {
-                    case "PATH": setForeground(AcaiConstants.COLOR_PUT); break;
-                    case "QUERY": setForeground(AcaiConstants.COLOR_GET); break;
-                    case "BODY": setForeground(AcaiConstants.COLOR_POST); break;
-                    case "HEADER": setForeground(AcaiConstants.COLOR_PATCH); break;
+                    case "PATH": setForeground(RestAutoLabConstants.COLOR_PUT); break;
+                    case "QUERY": setForeground(RestAutoLabConstants.COLOR_GET); break;
+                    case "BODY": setForeground(RestAutoLabConstants.COLOR_POST); break;
+                    case "HEADER": setForeground(RestAutoLabConstants.COLOR_PATCH); break;
                     default: setForeground(table.getForeground());
                 }
             }
@@ -2465,7 +2465,7 @@ public class ApiDebuggerPanel extends JPanel {
             super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
             setHorizontalAlignment(CENTER);
             if (!isSelected && "是".equals(String.valueOf(value))) {
-                setForeground(AcaiConstants.COLOR_GET);
+                setForeground(RestAutoLabConstants.COLOR_GET);
             }
             return this;
         }
@@ -2681,7 +2681,7 @@ public class ApiDebuggerPanel extends JPanel {
             historyListModel.addElement(h);
         }
 
-        JBLabel historyTitle = new JBLabel("请求历史 (最近" + AcaiConstants.MAX_HISTORY_SIZE + "条)，双击重新发送");
+        JBLabel historyTitle = new JBLabel("请求历史 (最近" + RestAutoLabConstants.MAX_HISTORY_SIZE + "条)，双击重新发送");
         UiStyle.hint(historyTitle);
         panel.add(historyTitle, BorderLayout.NORTH);
         panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
@@ -2749,7 +2749,7 @@ public class ApiDebuggerPanel extends JPanel {
         );
         requestHistory.add(0, h);
         // 限制历史记录数量
-        while (requestHistory.size() > AcaiConstants.MAX_HISTORY_SIZE) {
+        while (requestHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {
             requestHistory.remove(requestHistory.size() - 1);
         }
         // 更新列表
@@ -2770,7 +2770,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 更新API调用统计
         if (currentApi != null && result.getApiDefinition().uniqueKey().equals(currentApi.uniqueKey())) {
             currentApi.incrementCallCount();
-            AcaiSettingsState.getInstance(project).recordApiCall(currentApi.uniqueKey());
+            RestAutoLabSettingsState.getInstance(project).recordApiCall(currentApi.uniqueKey());
         }
 
         lastResult = result;
@@ -2780,7 +2780,7 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private void persistHistory() {
-        AcaiSettingsState.getInstance(project).saveRequestHistory(requestHistory);
+        RestAutoLabSettingsState.getInstance(project).saveRequestHistory(requestHistory);
     }
 
     private void resendHistory() {
@@ -2942,7 +2942,7 @@ public class ApiDebuggerPanel extends JPanel {
         String body = bodyEditor.getText();
         String format = bodyFormatCombo != null ? (String) bodyFormatCombo.getSelectedItem() : "JSON";
         String contentType = "x-www-form-urlencoded".equals(format) ?
-                AcaiConstants.CONTENT_TYPE_FORM_URLENCODED : currentApi.getConsumes();
+                RestAutoLabConstants.CONTENT_TYPE_FORM_URLENCODED : currentApi.getConsumes();
         headers.put("Content-Type", contentType);
 
         String curl = CurlUtil.generateCurl((String) methodCombo.getSelectedItem(),
@@ -3006,7 +3006,7 @@ public class ApiDebuggerPanel extends JPanel {
                 AllIcons.Actions.Help);
         if (ok != 0) return;
 
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         List<RequestHistory> history = settings.loadRequestHistory();
         // selected 在上方多次重赋值，非 effectively final，需用 final 副本供 lambda 捕获
         final List<ApiDefinition> selectedApis = selected;
@@ -3032,7 +3032,7 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showWarningDialog(project, "尚无测试结果，请先执行测试", "提示");
             return;
         }
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         String dir = project.getBasePath() + "/" + settings.getTestReportDir();
 
         // Build a quick report from last batch or current result
@@ -3239,7 +3239,7 @@ public class ApiDebuggerPanel extends JPanel {
 
     /** 构建 AI 配置实时摘要文本，用于导出前核对当前生效配置（与 AI 配置对话框显示口径一致）。
      *  列出全部 AI 字段，便于导出前一眼发现“不是实时配置”的问题。 */
-    private static String buildAiConfigSummary(AcaiSettingsState settings) {
+    private static String buildAiConfigSummary(RestAutoLabSettingsState settings) {
         String url = nullToEmpty(settings.getAiServerUrl());
         String path = settings.getAiApiPath();
         String model = nullToEmpty(settings.getAiModel());
@@ -3271,7 +3271,7 @@ public class ApiDebuggerPanel extends JPanel {
      *  <p>数据收集与文件写入在后台线程执行，避免接口/历史数据量大时阻塞 EDT
      *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
     private void exportTestConfigAction() {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         int profileCount = settings.getSavedProfileNames().size();
         int envCount = settings.loadEnvironments().size();
         int ok = Messages.showDialog(project,
@@ -3334,7 +3334,7 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         try {
-            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             String result = TestDataExporter.importTestConfig(settings, inputPath);
             Messages.showInfoMessage(project, result, "导入成功");
             statusLabel.setText("● 配置已导入");
@@ -3347,7 +3347,7 @@ public class ApiDebuggerPanel extends JPanel {
      *  <p>序列化与写盘在后台线程执行，避免接口数据量大时阻塞 EDT
      *  导致文件保存对话框无法弹出（Windows 大数据量场景下的卡顿问题）。</p> */
     private void exportTestDataAction() {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         ApiScannerService scanner = ApiScannerService.getInstance(project);
         List<ApiDefinition> allApis = scanner.getCachedApis();
         int historyCount = settings.loadRequestHistory().size();
@@ -3413,7 +3413,7 @@ public class ApiDebuggerPanel extends JPanel {
         if (ok != Messages.OK) return;
 
         try {
-            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             ApiScannerService scanner = ApiScannerService.getInstance(project);
             String result = TestDataExporter.importTestData(settings, scanner, inputPath);
             // 刷新历史列表 UI

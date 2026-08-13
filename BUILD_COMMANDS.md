@@ -1,6 +1,6 @@
 # 构建与运行命令汇总
 
-> 本文档汇总了 Acai API Helper 插件的所有常用构建、运行、发布命令。
+> 本文档汇总了 RestAutoLab 插件的所有常用构建、运行、发布命令。
 > 项目基于 Gradle (Kotlin DSL) + IntelliJ Platform Plugin Gradle 插件构建。
 
 ## 📋 环境要求

@@ -4,7 +4,7 @@ import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.ApiParameter;
 import com.ban.acai.model.ParameterLocation;
 import com.ban.acai.model.RequestHistory;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -50,10 +50,10 @@ public class PostmanCollectionExporter {
         // info
         JsonObject info = new JsonObject();
         info.addProperty("_postman_id", UUID.randomUUID().toString());
-        info.addProperty("name", "Acai API Export");
+        info.addProperty("name", "RestAutoLab Export");
         info.addProperty("schema", SCHEMA_URL);
         JsonObject desc = new JsonObject();
-        desc.addProperty("content", "Exported by Acai API Helper at " + System.currentTimeMillis());
+        desc.addProperty("content", "Exported by RestAutoLab at " + System.currentTimeMillis());
         desc.addProperty("type", "text/plain");
         info.add("description", desc);
         root.add("info", info);

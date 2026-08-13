@@ -1,4 +1,4 @@
-# Acai API Helper - IDEA插件 v2.0.0
+# RestAutoLab - IDEA插件 v2.0.0
 
 企业级API调试与自动化测试插件，在IDEA内完成接口调试、AI参数生成、自动化测试。
 
@@ -129,7 +129,7 @@
 ## 🚀 使用说明
 
 ### 快速开始
-1. 右侧工具栏点击「AcaiApiHelper」打开面板
+1. 右侧工具栏点击「RestAutoLab」打开面板
 2. 点击「扫描API」自动识别项目中的Spring MVC接口
 3. 左侧树选择接口，右侧填写参数后点击「发送」
 
@@ -184,7 +184,7 @@
 
 ## 📁 数据存储位置
 
-- 插件配置：`.idea/acai-api-helper.xml`（项目级）
+- 插件配置：`.idea/restautolab.xml`（项目级）
 - 测试报告：`.acai/reports/`
 - 导出文档：`.acai/api-doc.md`
 

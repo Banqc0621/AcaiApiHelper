@@ -1,11 +1,11 @@
 package com.ban.acai.actions;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.http.HttpExecutorService;
 import com.ban.acai.model.*;
 import com.ban.acai.scanner.ApiScannerService;
-import com.ban.acai.settings.AcaiSettingsState;
-import com.ban.acai.ui.AcaiToolWindowHolder;
+import com.ban.acai.settings.RestAutoLabSettingsState;
+import com.ban.acai.ui.RestAutoLabToolWindowHolder;
 import com.ban.acai.ui.ApiDebuggerPanel;
 import com.ban.acai.ui.ApiTreePanel;
 import com.intellij.notification.NotificationGroupManager;
@@ -83,7 +83,7 @@ class ScanApisAction extends AnAction {
 
     /** 在树中选中接口 + 调试面板加载该接口（不重新激活窗口，调用方已激活） */
     private static void locateApi(Project project, ApiDefinition api) {
-        AcaiToolWindowHolder holder = AcaiToolWindowHolder.getInstance(project);
+        RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
         ApiTreePanel treePanel = holder.getTreePanel();
         ApiDebuggerPanel debuggerPanel = holder.getDebuggerPanel();
         if (treePanel != null) treePanel.selectApi(api);
@@ -91,7 +91,7 @@ class ScanApisAction extends AnAction {
     }
 
     private static void activateToolWindow(Project project) {
-        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(AcaiConstants.TOOLWINDOW_ID);
+        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
         if (tw != null) tw.activate(null);
     }
 
@@ -117,10 +117,10 @@ class ScanApisAction extends AnAction {
 
     /** 判断方法是否带 HTTP 映射注解（Spring *Mapping 或 JAX-RS @GET/@POST 等） */
     private boolean isMappingMethod(PsiMethod method) {
-        for (String fqn : AcaiConstants.SPRING_MAPPING_ANNOTATIONS) {
+        for (String fqn : RestAutoLabConstants.SPRING_MAPPING_ANNOTATIONS) {
             if (method.getAnnotation(fqn) != null) return true;
         }
-        for (String fqn : AcaiConstants.JAXRS_METHOD_ANNOTATIONS) {
+        for (String fqn : RestAutoLabConstants.JAXRS_METHOD_ANNOTATIONS) {
             if (method.getAnnotation(fqn) != null) return true;
         }
         return false;
@@ -210,7 +210,7 @@ class DebugApiAction extends AnAction {
     /** 激活 ToolWindow 并在树中选中 + 调试面板加载指定接口 */
     private static void activateAndLocate(Project project, ApiDefinition api) {
         activateToolWindow(project);
-        AcaiToolWindowHolder holder = AcaiToolWindowHolder.getInstance(project);
+        RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
         ApiTreePanel treePanel = holder.getTreePanel();
         ApiDebuggerPanel debuggerPanel = holder.getDebuggerPanel();
         if (treePanel != null) treePanel.selectApi(api);
@@ -218,7 +218,7 @@ class DebugApiAction extends AnAction {
     }
 
     private static void activateToolWindow(Project project) {
-        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(AcaiConstants.TOOLWINDOW_ID);
+        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
         if (tw != null) tw.activate(null);
     }
 
@@ -242,7 +242,7 @@ class RunAllTestsAction extends AnAction {
             Messages.showWarningDialog(project, "暂无已扫描的API，请先执行「扫描项目API」", "提示");
             return;
         }
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             HttpExecutorService httpService = HttpExecutorService.getInstance(project);
             TestProfile profile = new TestProfile();
@@ -256,13 +256,13 @@ class RunAllTestsAction extends AnAction {
     private void showReport(Project project, TestReport report) {
         String summary = report.generateSummary();
         if (report.isAllPassed()) {
-            Messages.showInfoMessage(project, summary, "Acai API 测试报告 - 全部通过");
+            Messages.showInfoMessage(project, summary, "RestAutoLab 测试报告 - 全部通过");
         } else {
-            Messages.showWarningDialog(project, summary, "Acai API 测试报告 - 存在失败");
+            Messages.showWarningDialog(project, summary, "RestAutoLab 测试报告 - 存在失败");
         }
         try {
             NotificationType type = report.isAllPassed() ? NotificationType.INFORMATION : NotificationType.WARNING;
-            NotificationGroupManager.getInstance().getNotificationGroup(AcaiConstants.NOTIFICATION_GROUP)
+            NotificationGroupManager.getInstance().getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
                     .createNotification(
                             "测试完成: " + report.getPassedCount() + "/" + report.getResults().size() + " 通过",
                             String.format("通过率: %.1f%% | 总耗时: %dms", report.getPassRate(), report.getTotalDuration()),

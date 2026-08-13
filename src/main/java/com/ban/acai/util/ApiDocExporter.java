@@ -30,7 +30,7 @@ public class ApiDocExporter {
     public static String exportControllerDoc(String controllerName, List<ApiDefinition> apis, String outputFile) throws IOException {
         StringBuilder md = new StringBuilder();
         md.append("# ").append(controllerName).append("\n\n");
-        md.append("> 自动生成 by Acai API Helper v1.0.3  \n");
+        md.append("> 自动生成 by RestAutoLab v1.0.3  \n");
         md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
         md.append("---\n\n");
 
@@ -61,7 +61,7 @@ public class ApiDocExporter {
 
         StringBuilder md = new StringBuilder();
         md.append("# API 接口文档\n\n");
-        md.append("> 自动生成 by Acai API Helper v1.0.3  \n");
+        md.append("> 自动生成 by RestAutoLab v1.0.3  \n");
         md.append("> 接口总数: **").append(apis.size()).append("** 个  \n");
         md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
 
@@ -934,7 +934,7 @@ public class ApiDocExporter {
                 current = parseApiHeading(line);
                 if (current != null) {
                     current.setControllerName(currentController);
-                    current.setSource(com.ban.acai.AcaiConstants.API_SOURCE_MANUAL);
+                    current.setSource(com.ban.acai.RestAutoLabConstants.API_SOURCE_MANUAL);
                     current.setScanTimestamp(System.currentTimeMillis());
                 }
                 section = null;

@@ -18,7 +18,7 @@ public class TestProfile {
     /** 测试配置描述 */
     private String description = "";
     /** 基础URL（如 http://localhost:8080） */
-    private String baseUrl = com.ban.acai.AcaiConstants.DEFAULT_BASE_URL;
+    private String baseUrl = com.ban.acai.RestAutoLabConstants.DEFAULT_BASE_URL;
     /** 各接口的参数配置映射（接口uniqueKey -> 参数名到值的映射） */
     private Map<String, Map<String, String>> entries = new HashMap<>();
     /** 全局请求头（如 Authorization、Content-Type） */
@@ -32,7 +32,7 @@ public class TestProfile {
 
     public TestProfile(String name, String baseUrl) {
         this.name = name != null ? name : "默认测试配置";
-        this.baseUrl = baseUrl != null ? baseUrl : com.ban.acai.AcaiConstants.DEFAULT_BASE_URL;
+        this.baseUrl = baseUrl != null ? baseUrl : com.ban.acai.RestAutoLabConstants.DEFAULT_BASE_URL;
     }
 
     // ================================================================

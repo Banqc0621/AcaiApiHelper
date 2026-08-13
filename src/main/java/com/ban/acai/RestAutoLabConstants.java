@@ -9,7 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Acai API Helper 常量类 - 集中管理所有硬编码常量
+ * RestAutoLab 常量类 - 集中管理所有硬编码常量
  *
  * 所有硬编码字面量（URL、注解全限定名、超时值、颜色、尺寸等）统一在此管理，
  * 避免魔法值散落在代码各处。
@@ -17,9 +17,9 @@ import java.util.Set;
  * 每个常量仅有一个唯一名，无双别名，便于统一维护。
  * 使用 JBColor 保证亮色/暗色主题自动适配。
  */
-public final class AcaiConstants {
+public final class RestAutoLabConstants {
 
-    private AcaiConstants() {
+    private RestAutoLabConstants() {
         // 工具类禁止实例化
     }
 
@@ -31,16 +31,16 @@ public final class AcaiConstants {
     public static final String PLUGIN_ID = "com.ban.acai";
 
     /** 插件名称 */
-    public static final String PLUGIN_NAME = "Acai API Helper";
+    public static final String PLUGIN_NAME = "RestAutoLab";
 
     /** 插件版本 */
     public static final String PLUGIN_VERSION = "1.0.3";
 
     /** ToolWindow ID */
-    public static final String TOOLWINDOW_ID = "AcaiApiHelper";
+    public static final String TOOLWINDOW_ID = "RestAutoLab";
 
     /** 通知组ID */
-    public static final String NOTIFICATION_GROUP = "AcaiApiHelper.Notification";
+    public static final String NOTIFICATION_GROUP = "RestAutoLab.Notification";
 
     // ═══════════════════════════════════════════════════════════
     // API 来源标记
@@ -378,7 +378,7 @@ public final class AcaiConstants {
     // ═══════════════════════════════════════════════════════════
 
     /** Git检查配置名 */
-    public static final String GIT_CHECKIN_CHECKBOX = "执行 Acai API 接口检查";
+    public static final String GIT_CHECKIN_CHECKBOX = "执行 RestAutoLab 接口检查";
 
     /** 大合并阈值文件数 */
     public static final int LARGE_MERGE_THRESHOLD = 100;

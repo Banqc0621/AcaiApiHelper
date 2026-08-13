@@ -1,11 +1,11 @@
 package com.ban.acai.ui;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.git.ApiChangeDetector;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.RequestHistory;
 import com.ban.acai.scanner.ApiScannerService;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.ban.acai.util.ApiDocExporter;
 import com.ban.acai.util.PostmanCollectionExporter;
 import com.intellij.icons.AllIcons;
@@ -327,7 +327,7 @@ public class ApiTreePanel extends JPanel {
             public void actionPerformed(@NotNull AnActionEvent e) {
                 ApiDefinition selectedApi = getSelectedApi();
                 if (selectedApi == null) return;
-                AcaiSettingsState s = AcaiSettingsState.getInstance(project);
+                RestAutoLabSettingsState s = RestAutoLabSettingsState.getInstance(project);
                 String url = s.getBaseUrl() + selectedApi.getUrl();
                 StringBuilder curl = new StringBuilder("curl -X ").append(selectedApi.getHttpMethod())
                         .append(" '").append(url).append("'");
@@ -620,7 +620,7 @@ public class ApiTreePanel extends JPanel {
      * 根据当前选中的分类标签过滤API列表
      */
     private List<ApiDefinition> applyCategoryFilter(List<ApiDefinition> apis) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         switch (currentFilter) {
             case FILTER_LATEST:
                 // 「最新」使用后台预计算的结果（最近 N 天 Git 变更涉及的接口）。
@@ -638,7 +638,7 @@ public class ApiTreePanel extends JPanel {
      * 更新统计标签
      */
     private void updateStats(List<ApiDefinition> filtered) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         long starredCount = allApis.stream()
                 .filter(api -> settings.isApiStarred(api.uniqueKey()) || api.isStarred()).count();
         long latestCount = latestChangedApis != null ? latestChangedApis.size() : 0;
@@ -1238,7 +1238,7 @@ public class ApiTreePanel extends JPanel {
         if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹无接口", "批量测试"); return; }
 
         final String folderId = f.getId();
-        final String baseUrl = AcaiSettingsState.getInstance(project).getBaseUrl();
+        final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
         statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             int passed = 0, failed = 0;
@@ -1307,7 +1307,7 @@ public class ApiTreePanel extends JPanel {
         deps = dialog.getDependencies();
 
         // 构建测试配置
-        com.ban.acai.settings.AcaiSettingsState settings = com.ban.acai.settings.AcaiSettingsState.getInstance(project);
+        com.ban.acai.settings.RestAutoLabSettingsState settings = com.ban.acai.settings.RestAutoLabSettingsState.getInstance(project);
         final String baseUrl = settings.getBaseUrl();
         final com.ban.acai.model.Environment env = settings.getActiveEnvironmentObj();
         final com.ban.acai.model.TestProfile profile = new com.ban.acai.model.TestProfile("依赖链测试", baseUrl);
@@ -1443,9 +1443,9 @@ public class ApiTreePanel extends JPanel {
         deps = dialog.getDependencies();
 
         final String folderId = f.getId();
-        final String baseUrl = com.ban.acai.settings.AcaiSettingsState.getInstance(project).getBaseUrl();
+        final String baseUrl = com.ban.acai.settings.RestAutoLabSettingsState.getInstance(project).getBaseUrl();
         final com.ban.acai.model.Environment env =
-                com.ban.acai.settings.AcaiSettingsState.getInstance(project).getActiveEnvironmentObj();
+                com.ban.acai.settings.RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
         final com.ban.acai.model.TestProfile profile = new com.ban.acai.model.TestProfile("依赖链测试", baseUrl);
 
         // 从文件夹加载已保存的参数，没有则生成默认值
@@ -1680,7 +1680,7 @@ public class ApiTreePanel extends JPanel {
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = com.ban.acai.util.TestDataExporter.chooseExportPath(project, suggestName);
             if (outputPath == null) return;
-            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             java.util.List<RequestHistory> history = settings.loadRequestHistory();
             try {
                 ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), outputPath);
@@ -1745,7 +1745,7 @@ public class ApiTreePanel extends JPanel {
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = com.ban.acai.util.TestDataExporter.chooseExportPath(project, suggestName);
             if (outputPath == null) return;
-            AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             String baseUrl = settings.getBaseUrl();
             List<RequestHistory> history = settings.loadRequestHistory();
             try {
@@ -1819,7 +1819,7 @@ public class ApiTreePanel extends JPanel {
      * 支持7种HTTP方法: GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS
      */
     static Color getMethodColor(String method) {
-        return AcaiConstants.colorForMethod(method);
+        return RestAutoLabConstants.colorForMethod(method);
     }
 
     /**
@@ -1931,7 +1931,7 @@ public class ApiTreePanel extends JPanel {
 
             // 废弃 API：strikethrough + 红色
             if (api.isDeprecated()) {
-                String depColor = sel ? "#FFAAAA" : toHex(AcaiConstants.COLOR_TREE_DEPRECATED);
+                String depColor = sel ? "#FFAAAA" : toHex(RestAutoLabConstants.COLOR_TREE_DEPRECATED);
                 String text = "<html><span style='background-color:" + methodHex
                         + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
                         + "</span>&nbsp;<span style='color:" + depColor
@@ -1942,25 +1942,25 @@ public class ApiTreePanel extends JPanel {
                 }
                 setText(text + "</html>");
                 setIcon(AllIcons.General.Warning);
-                if (!sel) setForeground(AcaiConstants.COLOR_TREE_DEPRECATED);
+                if (!sel) setForeground(RestAutoLabConstants.COLOR_TREE_DEPRECATED);
                 return;
             }
 
             // 手动 API：灰色文字 + 手势图标
             if (!api.isAutoDetected()) {
-                String manualColor = sel ? "#CCCCCC" : toHex(AcaiConstants.COLOR_TREE_MANUAL);
+                String manualColor = sel ? "#CCCCCC" : toHex(RestAutoLabConstants.COLOR_TREE_MANUAL);
                 String text = "<html><span style='background-color:" + methodHex
                         + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
                         + "</span>&nbsp;<span style='color:" + manualColor + "; font-size:11px;'>"
                         + escapeHtml(url) + " \u270b</span>";
                 if (isStarred) text += " ⭐";
-                if (AcaiConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;'>\uD83D\uDF32</span>";
+                if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;'>\uD83D\uDF32</span>";
                 if (description != null && !description.isBlank()) {
                     text += "&nbsp;<span style='color:" + manualColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
                 }
                 setText(text + "</html>");
                 setIcon(AllIcons.Nodes.Plugin);
-                if (!sel) setForeground(AcaiConstants.COLOR_TREE_MANUAL);
+                if (!sel) setForeground(RestAutoLabConstants.COLOR_TREE_MANUAL);
                 return;
             }
 
@@ -1971,7 +1971,7 @@ public class ApiTreePanel extends JPanel {
                     + "</span>&nbsp;<span style='color:" + textColor + "; font-size:11px;'>"
                     + escapeHtml(url) + "</span>";
             if (isStarred) text += " <span style='color:#FFA000;'>⭐</span>";
-            if (AcaiConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;font-size:10px;'>● 新增</span>";
+            if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;font-size:10px;'>● 新增</span>";
             if (description != null && !description.isBlank()) {
                 text += "&nbsp;<span style='color:" + textColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
             }

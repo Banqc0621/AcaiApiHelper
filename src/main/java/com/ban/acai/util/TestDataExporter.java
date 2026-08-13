@@ -1,13 +1,13 @@
 package com.ban.acai.util;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.Environment;
 import com.ban.acai.model.FolderApiStatus;
 import com.ban.acai.model.RequestHistory;
 import com.ban.acai.model.StarredFolder;
 import com.ban.acai.model.TestProfile;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.intellij.openapi.fileChooser.FileChooser;
@@ -74,7 +74,7 @@ public class TestDataExporter {
         public Map<String, TestProfile> testProfiles = new LinkedHashMap<>();
     }
 
-    /** AI 相关设置快照（脱壳自 AcaiSettingsState.State）。
+    /** AI 相关设置快照（脱壳自 RestAutoLabSettingsState.State）。
      *  <p><b>字段不设默认值</b>：导出时必须由 {@link #fillAiSettings} 显式填充。
      *  这样任何遗漏的字段在 JSON 中会显示为 null，而非伪装成合法的默认占位值，
      *  便于在导出结果中一眼发现“未读到实时配置”的问题。</p> */
@@ -96,7 +96,7 @@ public class TestDataExporter {
      * 避免任一导出路径遗漏字段导致 JSON 中残留默认占位值。
      * 所有导出方法（exportTestConfig / exportSingleProfile）都必须调用本方法。</p>
      */
-    private static void fillAiSettings(AiSettingsDto dto, AcaiSettingsState settings) {
+    private static void fillAiSettings(AiSettingsDto dto, RestAutoLabSettingsState settings) {
         if (dto == null || settings == null) return;
         dto.arkApiUrl = settings.getAiServerUrl();
         dto.arkApiKey = settings.getAiToken();
@@ -116,11 +116,11 @@ public class TestDataExporter {
      * @param outputFile  输出文件绝对路径
      * @return 输出文件路径
      */
-    public static String exportTestConfig(AcaiSettingsState settings, String projectName, String outputFile) throws IOException {
+    public static String exportTestConfig(RestAutoLabSettingsState settings, String projectName, String outputFile) throws IOException {
         TestConfigExport data = new TestConfigExport();
         data.exportedBy = projectName;
 
-        AcaiSettingsState.State st = settings.getState();
+        RestAutoLabSettingsState.State st = settings.getState();
         // 统一通过 fillAiSettings 读取当前实时 AI 配置，确保与「AI 配置」对话框口径一致
         fillAiSettings(data.aiSettings, settings);
         if (st != null) {
@@ -142,14 +142,14 @@ public class TestDataExporter {
      * @param inputFile 输入文件绝对路径
      * @return 导入结果摘要
      */
-    public static String importTestConfig(AcaiSettingsState settings, String inputFile) throws IOException {
+    public static String importTestConfig(RestAutoLabSettingsState settings, String inputFile) throws IOException {
         TestConfigExport data = readJson(inputFile, TestConfigExport.class);
         if (data == null) throw new IOException("配置文件格式无效或为空");
         if (!FORMAT_TEST_CONFIG.equals(data.format)) {
             throw new IOException("文件格式不匹配：期望 " + FORMAT_TEST_CONFIG + "，实际 " + data.format);
         }
 
-        AcaiSettingsState.State st = settings.getState();
+        RestAutoLabSettingsState.State st = settings.getState();
         int profileAdded = 0;
         int profileSkipped = 0;
         int envAdded = 0;
@@ -212,7 +212,7 @@ public class TestDataExporter {
      * 导出单个测试 Profile 到文件（包装为 TestConfigExport 格式，可通过「导入测试配置」导入）。
      *
      * <p><b>已废弃</b>：此重载不导出 AI 配置，aiSettings 字段将全部为 null。
-     * 请改用 {@link #exportSingleProfile(TestProfile, AcaiSettingsState, String, String)}。</p>
+     * 请改用 {@link #exportSingleProfile(TestProfile, RestAutoLabSettingsState, String, String)}。</p>
      *
      * @param profile     要导出的测试配置
      * @param projectName 导出方项目名
@@ -243,7 +243,7 @@ public class TestDataExporter {
      * @param outputFile  输出文件绝对路径
      * @return 输出文件路径
      */
-    public static String exportSingleProfile(TestProfile profile, AcaiSettingsState settings,
+    public static String exportSingleProfile(TestProfile profile, RestAutoLabSettingsState settings,
                                              String projectName, String outputFile) throws IOException {
         TestConfigExport data = new TestConfigExport();
         data.exportedBy = projectName;
@@ -290,14 +290,14 @@ public class TestDataExporter {
      * @param outputFile  输出文件绝对路径
      * @return 输出文件路径
      */
-    public static String exportTestData(AcaiSettingsState settings, List<ApiDefinition> apis,
+    public static String exportTestData(RestAutoLabSettingsState settings, List<ApiDefinition> apis,
                                         String projectName, String outputFile) throws IOException {
         TestDataExport data = new TestDataExport();
         data.exportedBy = projectName;
         data.apis = apis != null ? new ArrayList<>(apis) : new ArrayList<>();
         data.requestHistory = settings.loadRequestHistory();
 
-        AcaiSettingsState.State st = settings.getState();
+        RestAutoLabSettingsState.State st = settings.getState();
         if (st != null) {
             collectProfiles(st.savedProfilesJson, data.testProfiles);
             if (st.apiCallCounts != null) data.apiCallCounts.putAll(st.apiCallCounts);
@@ -329,7 +329,7 @@ public class TestDataExporter {
      * @param inputFile 输入文件绝对路径
      * @return 导入结果摘要
      */
-    public static String importTestData(AcaiSettingsState settings, com.ban.acai.scanner.ApiScannerService scanner,
+    public static String importTestData(RestAutoLabSettingsState settings, com.ban.acai.scanner.ApiScannerService scanner,
                                         String inputFile) throws IOException {
         TestDataExport data = readJson(inputFile, TestDataExport.class);
         if (data == null) throw new IOException("数据文件格式无效或为空");
@@ -337,7 +337,7 @@ public class TestDataExporter {
             throw new IOException("文件格式不匹配：期望 " + FORMAT_TEST_DATA + "，实际 " + data.format);
         }
 
-        AcaiSettingsState.State st = settings.getState();
+        RestAutoLabSettingsState.State st = settings.getState();
         int apiAdded = 0;
         int apiSkipped = 0;
         int historyAdded = 0;
@@ -383,7 +383,7 @@ public class TestDataExporter {
                 historyAdded++;
             }
         }
-        while (localHistory.size() > AcaiConstants.MAX_HISTORY_SIZE) {
+        while (localHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {
             localHistory.remove(localHistory.size() - 1);
         }
         settings.saveRequestHistory(localHistory);

@@ -1,6 +1,6 @@
 package com.ban.acai.settings;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.State;
@@ -15,31 +15,31 @@ import org.jetbrains.annotations.Nullable;
  * 配置数据在IDE级别全局共享，不随Project变化。
  */
 @State(
-        name = "AcaiApiHelperGlobalSettings",
-        storages = @Storage("acai-api-helper-global.xml")
+        name = "RestAutoLabGlobalSettings",
+        storages = @Storage("restautolab-global.xml")
 )
-public class AcaiGlobalSettings implements PersistentStateComponent<AcaiGlobalSettings.State> {
+public class RestAutoLabGlobalSettings implements PersistentStateComponent<RestAutoLabGlobalSettings.State> {
 
     /**
      * 全局配置状态 - 恰好9个可配置字段
      */
     public static class State {
         /** 字段1: 默认API基础URL */
-        public String defaultBaseUrl = AcaiConstants.DEFAULT_BASE_URL;
+        public String defaultBaseUrl = RestAutoLabConstants.DEFAULT_BASE_URL;
         /** 字段2: 火山引擎方舟API全局地址 */
-        public String arkApiUrl = AcaiConstants.ARK_API_BASE_URL;
+        public String arkApiUrl = RestAutoLabConstants.ARK_API_BASE_URL;
         /** 字段3: 方舟API Key */
         public String arkApiKey = "";
         /** 字段4: 默认AI模型 */
-        public String defaultAiModel = AcaiConstants.ARK_MODEL_PRO;
+        public String defaultAiModel = RestAutoLabConstants.ARK_MODEL_PRO;
         /** 字段5: 是否启用AI功能 */
         public boolean aiEnabled = true;
         /** 字段6: 是否启用Git预提交检查 */
         public boolean gitCheckEnabled = true;
         /** 字段7: Git检查允许的HTTP状态码 */
-        public String allowedStatusCodes = AcaiConstants.DEFAULT_ALLOWED_STATUS_CODES;
+        public String allowedStatusCodes = RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES;
         /** 字段8: 默认请求超时时间(秒) */
-        public int requestTimeoutSeconds = AcaiConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
+        public int requestTimeoutSeconds = RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
         /** 字段9: 项目启动时是否自动扫描API */
         public boolean autoScanOnStartup = true;
     }
@@ -152,9 +152,9 @@ public class AcaiGlobalSettings implements PersistentStateComponent<AcaiGlobalSe
     }
 
     /**
-     * 获取AcaiGlobalSettings实例的便捷方法（Application级单例）
+     * 获取RestAutoLabGlobalSettings实例的便捷方法（Application级单例）
      */
-    public static AcaiGlobalSettings getInstance() {
-        return ApplicationManager.getApplication().getService(AcaiGlobalSettings.class);
+    public static RestAutoLabGlobalSettings getInstance() {
+        return ApplicationManager.getApplication().getService(RestAutoLabGlobalSettings.class);
     }
 }

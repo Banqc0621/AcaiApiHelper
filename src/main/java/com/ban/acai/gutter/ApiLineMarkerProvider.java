@@ -1,6 +1,6 @@
 package com.ban.acai.gutter;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.scanner.ApiScannerService;
 import com.intellij.codeInsight.daemon.LineMarkerInfo;
@@ -41,7 +41,7 @@ import java.util.Set;
 public class ApiLineMarkerProvider implements LineMarkerProvider {
 
     /** 支持的Spring MVC映射注解全限定名 */
-    private static final Set<String> MAPPING_ANNOTATIONS = new java.util.HashSet<>(AcaiConstants.SPRING_MAPPING_ANNOTATIONS);
+    private static final Set<String> MAPPING_ANNOTATIONS = new java.util.HashSet<>(RestAutoLabConstants.SPRING_MAPPING_ANNOTATIONS);
 
     /**
      * 获取指定PSI元素的行标记信息
@@ -79,7 +79,7 @@ public class ApiLineMarkerProvider implements LineMarkerProvider {
         String basePath = "";
         if (containingClass != null) {
             PsiAnnotation classAnnotation = containingClass.getAnnotation(
-                    AcaiConstants.ANNO_REQUEST_MAPPING);
+                    RestAutoLabConstants.ANNO_REQUEST_MAPPING);
             if (classAnnotation != null) {
                 basePath = extractPath(classAnnotation);
             }
@@ -99,7 +99,7 @@ public class ApiLineMarkerProvider implements LineMarkerProvider {
                     navigateToApiInToolWindow(project, httpMethod, fullPath);
                 },
                 GutterIconRenderer.Alignment.RIGHT,
-                () -> "Acai: " + httpMethod + " " + fullPath
+                () -> "RestAutoLab: " + httpMethod + " " + fullPath
         );
     }
 
@@ -166,13 +166,13 @@ public class ApiLineMarkerProvider implements LineMarkerProvider {
     /**
      * 在ToolWindow中定位到指定的API
      *
-     * 打开右侧的Acai API Helper面板，并尝试在树中选中匹配的API节点。
+     * 打开右侧的RestAutoLab面板，并尝试在树中选中匹配的API节点。
      * 如果API尚未被扫描到，则触发一次新的扫描。
      */
     private void navigateToApiInToolWindow(Project project, String httpMethod, String url) {
         ApplicationManager.getApplication().invokeLater(() -> {
             // 打开ToolWindow
-            ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(AcaiConstants.TOOLWINDOW_ID);
+            ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
             if (toolWindow != null) {
                 toolWindow.activate(null);
             }

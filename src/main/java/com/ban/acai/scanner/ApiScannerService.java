@@ -1,8 +1,8 @@
 package com.ban.acai.scanner;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.*;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
@@ -115,7 +115,7 @@ public final class ApiScannerService {
                 List<String> newSignatures = apis.stream()
                         .map(ApiDefinition::uniqueKey)
                         .collect(Collectors.toList());
-                AcaiSettingsState.getInstance(project).saveLastScanSignatures(newSignatures);
+                RestAutoLabSettingsState.getInstance(project).saveLastScanSignatures(newSignatures);
 
                 indicator.setText("扫描完成，发现 " + apis.size() + " 个接口");
                 indicator.setFraction(1.0);
@@ -143,7 +143,7 @@ public final class ApiScannerService {
 
             // ── 1. 扫描 Spring MVC 控制器 ──
             List<PsiClass> allControllers = new ArrayList<>();
-            for (String annotationFqn : AcaiConstants.SPRING_CONTROLLER_ANNOTATIONS) {
+            for (String annotationFqn : RestAutoLabConstants.SPRING_CONTROLLER_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
                 if (annotationClass != null) {
@@ -158,7 +158,7 @@ public final class ApiScannerService {
             }
 
             // ── 2. 扫描 JAX-RS @Path 注解的类 ──
-            for (String annotationFqn : AcaiConstants.JAXRS_CONTROLLER_ANNOTATIONS) {
+            for (String annotationFqn : RestAutoLabConstants.JAXRS_CONTROLLER_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
                 if (annotationClass != null) {
@@ -170,7 +170,7 @@ public final class ApiScannerService {
             }
 
             // ── 3. 扫描 @FeignClient 接口 ──
-            PsiClass feignAnnotation = psiFacade.findClass(AcaiConstants.ANNO_FEIGN_CLIENT, scope);
+            PsiClass feignAnnotation = psiFacade.findClass(RestAutoLabConstants.ANNO_FEIGN_CLIENT, scope);
             if (feignAnnotation != null) {
                 Collection<PsiClass> classes = AnnotatedElementsSearch
                         .searchPsiClasses(feignAnnotation, scope).findAll();
@@ -184,7 +184,7 @@ public final class ApiScannerService {
             //    但类级 @RequestMapping 通常仍在，可据此补充发现。
             //    候选类会经过 isFrameworkInternalController 过滤 + parseControllerClass 解析，
             //    无 HTTP 映射方法的类不会产出 API，故安全。
-            PsiClass requestMappingAnno = psiFacade.findClass(AcaiConstants.ANNO_REQUEST_MAPPING, scope);
+            PsiClass requestMappingAnno = psiFacade.findClass(RestAutoLabConstants.ANNO_REQUEST_MAPPING, scope);
             if (requestMappingAnno != null) {
                 Collection<PsiClass> classes = AnnotatedElementsSearch
                         .searchPsiClasses(requestMappingAnno, scope).findAll();
@@ -200,7 +200,7 @@ public final class ApiScannerService {
             //    - Kotlin/其他 JVM 语言写的控制器（PSI 方法注解仍可被索引）
             //    候选类会经过 isFrameworkInternalController 过滤 + parseControllerClass 解析，
             //    无 HTTP 映射方法的类不会产出 API，故安全。
-            for (String mappingFqn : AcaiConstants.SPRING_MAPPING_ANNOTATIONS) {
+            for (String mappingFqn : RestAutoLabConstants.SPRING_MAPPING_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass mappingAnno = psiFacade.findClass(mappingFqn, scope);
                 if (mappingAnno == null) continue;
@@ -373,11 +373,11 @@ public final class ApiScannerService {
 
     /** 判断类是否为 JAX-RS 风格（有 @Path 注解但无 Spring 控制器注解） */
     private boolean isJaxrsClass(PsiClass psiClass) {
-        boolean hasPath = psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAVAX) != null
-                || psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAKARTA) != null;
-        boolean hasSpring = psiClass.getAnnotation(AcaiConstants.ANNO_REST_CONTROLLER) != null
-                || psiClass.getAnnotation(AcaiConstants.ANNO_CONTROLLER) != null
-                || psiClass.getAnnotation(AcaiConstants.ANNO_FEIGN_CLIENT) != null;
+        boolean hasPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAVAX) != null
+                || psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAKARTA) != null;
+        boolean hasSpring = psiClass.getAnnotation(RestAutoLabConstants.ANNO_REST_CONTROLLER) != null
+                || psiClass.getAnnotation(RestAutoLabConstants.ANNO_CONTROLLER) != null
+                || psiClass.getAnnotation(RestAutoLabConstants.ANNO_FEIGN_CLIENT) != null;
         return hasPath && !hasSpring;
     }
 
@@ -471,20 +471,20 @@ public final class ApiScannerService {
      */
     private List<String> extractClassBasePaths(PsiClass psiClass) {
         // Spring @RequestMapping（支持多路径）
-        PsiAnnotation requestMapping = psiClass.getAnnotation(AcaiConstants.ANNO_REQUEST_MAPPING);
+        PsiAnnotation requestMapping = psiClass.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_MAPPING);
         if (requestMapping != null) {
             List<String> paths = extractPathsFromAnnotation(requestMapping);
             if (!paths.isEmpty()) return paths;
         }
         // JAX-RS @Path（支持多路径）
-        PsiAnnotation jaxrsPath = psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAVAX);
-        if (jaxrsPath == null) jaxrsPath = psiClass.getAnnotation(AcaiConstants.JAXRS_PATH_JAKARTA);
+        PsiAnnotation jaxrsPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAVAX);
+        if (jaxrsPath == null) jaxrsPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAKARTA);
         if (jaxrsPath != null) {
             List<String> paths = extractJaxrsPaths(jaxrsPath);
             if (!paths.isEmpty()) return paths;
         }
         // FeignClient @FeignClient(path = "...")
-        PsiAnnotation feignClient = psiClass.getAnnotation(AcaiConstants.ANNO_FEIGN_CLIENT);
+        PsiAnnotation feignClient = psiClass.getAnnotation(RestAutoLabConstants.ANNO_FEIGN_CLIENT);
         if (feignClient != null) {
             PsiAnnotationMemberValue pathVal = feignClient.findAttributeValue("path");
             if (pathVal != null) {
@@ -538,12 +538,12 @@ public final class ApiScannerService {
      */
     private PsiAnnotation findSpringMappingAnnotation(PsiMethod method) {
         String[] annotations = {
-                AcaiConstants.ANNO_GET_MAPPING,
-                AcaiConstants.ANNO_POST_MAPPING,
-                AcaiConstants.ANNO_PUT_MAPPING,
-                AcaiConstants.ANNO_DELETE_MAPPING,
-                AcaiConstants.ANNO_PATCH_MAPPING,
-                AcaiConstants.ANNO_REQUEST_MAPPING
+                RestAutoLabConstants.ANNO_GET_MAPPING,
+                RestAutoLabConstants.ANNO_POST_MAPPING,
+                RestAutoLabConstants.ANNO_PUT_MAPPING,
+                RestAutoLabConstants.ANNO_DELETE_MAPPING,
+                RestAutoLabConstants.ANNO_PATCH_MAPPING,
+                RestAutoLabConstants.ANNO_REQUEST_MAPPING
         };
         for (String ann : annotations) {
             PsiAnnotation annotation = method.getAnnotation(ann);
@@ -601,8 +601,8 @@ public final class ApiScannerService {
 
         // JAX-RS @Path（支持多路径）
         List<String> methodPaths = new ArrayList<>();
-        PsiAnnotation pathAnno = method.getAnnotation(AcaiConstants.JAXRS_PATH_JAVAX);
-        if (pathAnno == null) pathAnno = method.getAnnotation(AcaiConstants.JAXRS_PATH_JAKARTA);
+        PsiAnnotation pathAnno = method.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAVAX);
+        if (pathAnno == null) pathAnno = method.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAKARTA);
         if (pathAnno != null) {
             methodPaths = extractJaxrsPaths(pathAnno);
         }
@@ -629,13 +629,13 @@ public final class ApiScannerService {
      */
     private String resolveJaxrsHttpMethod(PsiMethod method) {
         // javax.ws.rs 注解
-        for (String ann : AcaiConstants.JAXRS_METHOD_ANNOTATIONS_JAVAX) {
+        for (String ann : RestAutoLabConstants.JAXRS_METHOD_ANNOTATIONS_JAVAX) {
             if (method.getAnnotation(ann) != null) {
                 return ann.substring(ann.lastIndexOf('.') + 1).toUpperCase();
             }
         }
         // jakarta.ws.rs 注解
-        for (String ann : AcaiConstants.JAXRS_METHOD_ANNOTATIONS_JAKARTA) {
+        for (String ann : RestAutoLabConstants.JAXRS_METHOD_ANNOTATIONS_JAKARTA) {
             if (method.getAnnotation(ann) != null) {
                 return ann.substring(ann.lastIndexOf('.') + 1).toUpperCase();
             }
@@ -682,7 +682,7 @@ public final class ApiScannerService {
         api.setSourceLineNumber(getLineNumber(method));
         api.setConsumes(extractConsumes(method, declaringClass));
         api.setProduces(extractProduces(method, declaringClass));
-        api.setDeprecated(method.hasAnnotation(AcaiConstants.ANNO_DEPRECATED));
+        api.setDeprecated(method.hasAnnotation(RestAutoLabConstants.ANNO_DEPRECATED));
 
         api.setParameters(new ArrayList<>(parseMethodParameters(method)));
         api.setResponseBodyType(extractReturnType(method));
@@ -690,7 +690,7 @@ public final class ApiScannerService {
         api.setResponseSchema(extractResponseSchema(method));
 
         // 标记来源为自动扫描
-        api.setSource(AcaiConstants.API_SOURCE_AUTO);
+        api.setSource(RestAutoLabConstants.API_SOURCE_AUTO);
         api.setScanTimestamp(System.currentTimeMillis());
 
         return api;
@@ -841,7 +841,7 @@ public final class ApiScannerService {
      */
     private String extractApiName(PsiMethod method) {
         // Swagger 2.x @ApiOperation
-        PsiAnnotation apiOperation = method.getAnnotation(AcaiConstants.SWAGGER_API_OPERATION);
+        PsiAnnotation apiOperation = method.getAnnotation(RestAutoLabConstants.SWAGGER_API_OPERATION);
         if (apiOperation != null) {
             PsiAnnotationMemberValue value = apiOperation.findAttributeValue("value");
             if (value != null) {
@@ -851,7 +851,7 @@ public final class ApiScannerService {
         }
 
         // OpenAPI 3.x @Operation
-        PsiAnnotation operation = method.getAnnotation(AcaiConstants.OPENAPI_OPERATION);
+        PsiAnnotation operation = method.getAnnotation(RestAutoLabConstants.OPENAPI_OPERATION);
         if (operation != null) {
             PsiAnnotationMemberValue summary = operation.findAttributeValue("summary");
             if (summary != null) {
@@ -880,7 +880,7 @@ public final class ApiScannerService {
             }
         }
 
-        PsiAnnotation apiOperation = method.getAnnotation(AcaiConstants.SWAGGER_API_OPERATION);
+        PsiAnnotation apiOperation = method.getAnnotation(RestAutoLabConstants.SWAGGER_API_OPERATION);
         if (apiOperation != null) {
             PsiAnnotationMemberValue notes = apiOperation.findAttributeValue("notes");
             if (notes != null) {
@@ -890,7 +890,7 @@ public final class ApiScannerService {
         }
 
         // OpenAPI 3: @Operation(summary=..., description=...) — summary 已被 extractApiName 使用，这里取 description
-        PsiAnnotation operation = method.getAnnotation(AcaiConstants.OPENAPI_OPERATION);
+        PsiAnnotation operation = method.getAnnotation(RestAutoLabConstants.OPENAPI_OPERATION);
         if (operation != null) {
             PsiAnnotationMemberValue descVal = operation.findAttributeValue("description");
             if (descVal != null) {
@@ -949,7 +949,7 @@ public final class ApiScannerService {
         // ── Spring 注解 ──
 
         // @RequestParam
-        PsiAnnotation requestParam = param.getAnnotation(AcaiConstants.ANNO_REQUEST_PARAM);
+        PsiAnnotation requestParam = param.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_PARAM);
         if (requestParam != null) {
             ApiParameter p = new ApiParameter();
             p.setName(extractParamName(requestParam, paramName));
@@ -963,7 +963,7 @@ public final class ApiScannerService {
         }
 
         // @PathVariable
-        PsiAnnotation pathVariable = param.getAnnotation(AcaiConstants.ANNO_PATH_VARIABLE);
+        PsiAnnotation pathVariable = param.getAnnotation(RestAutoLabConstants.ANNO_PATH_VARIABLE);
         if (pathVariable != null) {
             ApiParameter p = new ApiParameter();
             p.setName(extractParamName(pathVariable, paramName));
@@ -976,7 +976,7 @@ public final class ApiScannerService {
         }
 
         // @RequestBody
-        PsiAnnotation requestBody = param.getAnnotation(AcaiConstants.ANNO_REQUEST_BODY);
+        PsiAnnotation requestBody = param.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_BODY);
         if (requestBody != null) {
             ApiParameter p = new ApiParameter();
             p.setName(paramName);
@@ -990,7 +990,7 @@ public final class ApiScannerService {
         }
 
         // @RequestHeader
-        PsiAnnotation requestHeader = param.getAnnotation(AcaiConstants.ANNO_REQUEST_HEADER);
+        PsiAnnotation requestHeader = param.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_HEADER);
         if (requestHeader != null) {
             ApiParameter p = new ApiParameter();
             p.setName(extractParamName(requestHeader, paramName));
@@ -1004,7 +1004,7 @@ public final class ApiScannerService {
         }
 
         // @CookieValue
-        PsiAnnotation cookieValue = param.getAnnotation(AcaiConstants.ANNO_COOKIE_VALUE);
+        PsiAnnotation cookieValue = param.getAnnotation(RestAutoLabConstants.ANNO_COOKIE_VALUE);
         if (cookieValue != null) {
             ApiParameter p = new ApiParameter();
             p.setName(extractParamName(cookieValue, paramName));
@@ -1018,7 +1018,7 @@ public final class ApiScannerService {
         }
 
         // @RequestPart (multipart 表单字段 / 文件上传)
-        PsiAnnotation requestPart = param.getAnnotation(AcaiConstants.ANNO_REQUEST_PART);
+        PsiAnnotation requestPart = param.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_PART);
         if (requestPart != null) {
             ApiParameter p = new ApiParameter();
             p.setName(extractParamName(requestPart, paramName));
@@ -1032,7 +1032,7 @@ public final class ApiScannerService {
         }
 
         // @ModelAttribute → 展开字段为查询参数
-        PsiAnnotation modelAttribute = param.getAnnotation(AcaiConstants.ANNO_MODEL_ATTRIBUTE);
+        PsiAnnotation modelAttribute = param.getAnnotation(RestAutoLabConstants.ANNO_MODEL_ATTRIBUTE);
         if (modelAttribute != null) {
             List<ApiParameter> fields = parseComplexType(param.getType(), new HashSet<>());
             for (ApiParameter field : fields) {
@@ -1056,7 +1056,7 @@ public final class ApiScannerService {
 
         // JAX-RS @QueryParam
         for (String annFqn : new String[]{
-                AcaiConstants.JAXRS_QUERY_PARAM_JAVAX, AcaiConstants.JAXRS_QUERY_PARAM_JAKARTA}) {
+                RestAutoLabConstants.JAXRS_QUERY_PARAM_JAVAX, RestAutoLabConstants.JAXRS_QUERY_PARAM_JAKARTA}) {
             PsiAnnotation qp = param.getAnnotation(annFqn);
             if (qp != null) {
                 ApiParameter p = new ApiParameter();
@@ -1072,7 +1072,7 @@ public final class ApiScannerService {
 
         // JAX-RS @PathParam
         for (String annFqn : new String[]{
-                AcaiConstants.JAXRS_PATH_PARAM_JAVAX, AcaiConstants.JAXRS_PATH_PARAM_JAKARTA}) {
+                RestAutoLabConstants.JAXRS_PATH_PARAM_JAVAX, RestAutoLabConstants.JAXRS_PATH_PARAM_JAKARTA}) {
             PsiAnnotation pp = param.getAnnotation(annFqn);
             if (pp != null) {
                 ApiParameter p = new ApiParameter();
@@ -1088,7 +1088,7 @@ public final class ApiScannerService {
 
         // JAX-RS @HeaderParam
         for (String annFqn : new String[]{
-                AcaiConstants.JAXRS_HEADER_PARAM_JAVAX, AcaiConstants.JAXRS_HEADER_PARAM_JAKARTA}) {
+                RestAutoLabConstants.JAXRS_HEADER_PARAM_JAVAX, RestAutoLabConstants.JAXRS_HEADER_PARAM_JAKARTA}) {
             PsiAnnotation hp = param.getAnnotation(annFqn);
             if (hp != null) {
                 ApiParameter p = new ApiParameter();
@@ -1104,7 +1104,7 @@ public final class ApiScannerService {
 
         // JAX-RS @FormParam
         for (String annFqn : new String[]{
-                AcaiConstants.JAXRS_FORM_PARAM_JAVAX, AcaiConstants.JAXRS_FORM_PARAM_JAKARTA}) {
+                RestAutoLabConstants.JAXRS_FORM_PARAM_JAVAX, RestAutoLabConstants.JAXRS_FORM_PARAM_JAKARTA}) {
             PsiAnnotation fp = param.getAnnotation(annFqn);
             if (fp != null) {
                 ApiParameter p = new ApiParameter();
@@ -1120,7 +1120,7 @@ public final class ApiScannerService {
 
         // JAX-RS @CookieParam
         for (String annFqn : new String[]{
-                AcaiConstants.JAXRS_COOKIE_PARAM_JAVAX, AcaiConstants.JAXRS_COOKIE_PARAM_JAKARTA}) {
+                RestAutoLabConstants.JAXRS_COOKIE_PARAM_JAVAX, RestAutoLabConstants.JAXRS_COOKIE_PARAM_JAKARTA}) {
             PsiAnnotation cp = param.getAnnotation(annFqn);
             if (cp != null) {
                 ApiParameter p = new ApiParameter();
@@ -1273,7 +1273,7 @@ public final class ApiScannerService {
             }
         }
 
-        PsiAnnotation apiParam = param.getAnnotation(AcaiConstants.SWAGGER_API_PARAM);
+        PsiAnnotation apiParam = param.getAnnotation(RestAutoLabConstants.SWAGGER_API_PARAM);
         if (apiParam != null) {
             PsiAnnotationMemberValue value = apiParam.findAttributeValue("value");
             if (value != null) {
@@ -1388,7 +1388,7 @@ public final class ApiScannerService {
 
     /** 判断字段是否必填 */
     private boolean isFieldRequired(PsiField field) {
-        for (String ann : AcaiConstants.VALIDATION_REQUIRED_ANNOTATIONS) {
+        for (String ann : RestAutoLabConstants.VALIDATION_REQUIRED_ANNOTATIONS) {
             if (field.hasAnnotation(ann)) return true;
         }
         return false;
@@ -1396,7 +1396,7 @@ public final class ApiScannerService {
 
     /** 从字段注解或Javadoc提取描述 */
     private String extractFieldDescription(PsiField field) {
-        PsiAnnotation apiModelProperty = field.getAnnotation(AcaiConstants.SWAGGER_API_MODEL_PROPERTY);
+        PsiAnnotation apiModelProperty = field.getAnnotation(RestAutoLabConstants.SWAGGER_API_MODEL_PROPERTY);
         if (apiModelProperty != null) {
             PsiAnnotationMemberValue value = apiModelProperty.findAttributeValue("value");
             if (value != null) {
@@ -1421,7 +1421,7 @@ public final class ApiScannerService {
 
     /** 从 @ApiModelProperty 提取示例值 */
     private String extractFieldExample(PsiField field) {
-        PsiAnnotation apiModelProperty = field.getAnnotation(AcaiConstants.SWAGGER_API_MODEL_PROPERTY);
+        PsiAnnotation apiModelProperty = field.getAnnotation(RestAutoLabConstants.SWAGGER_API_MODEL_PROPERTY);
         if (apiModelProperty != null) {
             PsiAnnotationMemberValue example = apiModelProperty.findAttributeValue("example");
             if (example != null) {
@@ -1443,13 +1443,13 @@ public final class ApiScannerService {
     private String extractConsumes(PsiMethod method, PsiClass declaringClass) {
         // 先从方法注解取
         String result = extractConsumesFromAnnotations(method.getAnnotations());
-        if (!result.equals(AcaiConstants.DEFAULT_CONTENT_TYPE)) return result;
+        if (!result.equals(RestAutoLabConstants.DEFAULT_CONTENT_TYPE)) return result;
 
         // 再从类级别取
         result = extractConsumesFromAnnotations(declaringClass.getAnnotations());
-        if (!result.equals(AcaiConstants.DEFAULT_CONTENT_TYPE)) return result;
+        if (!result.equals(RestAutoLabConstants.DEFAULT_CONTENT_TYPE)) return result;
 
-        return AcaiConstants.DEFAULT_CONTENT_TYPE;
+        return RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     }
 
     private String extractConsumesFromAnnotations(PsiAnnotation[] annotations) {
@@ -1478,7 +1478,7 @@ public final class ApiScannerService {
                 }
             }
         }
-        return AcaiConstants.DEFAULT_CONTENT_TYPE;
+        return RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     }
 
     /**
@@ -1486,12 +1486,12 @@ public final class ApiScannerService {
      */
     private String extractProduces(PsiMethod method, PsiClass declaringClass) {
         String result = extractProducesFromAnnotations(method.getAnnotations());
-        if (!result.equals(AcaiConstants.DEFAULT_CONTENT_TYPE)) return result;
+        if (!result.equals(RestAutoLabConstants.DEFAULT_CONTENT_TYPE)) return result;
 
         result = extractProducesFromAnnotations(declaringClass.getAnnotations());
-        if (!result.equals(AcaiConstants.DEFAULT_CONTENT_TYPE)) return result;
+        if (!result.equals(RestAutoLabConstants.DEFAULT_CONTENT_TYPE)) return result;
 
-        return AcaiConstants.DEFAULT_CONTENT_TYPE;
+        return RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     }
 
     private String extractProducesFromAnnotations(PsiAnnotation[] annotations) {
@@ -1519,7 +1519,7 @@ public final class ApiScannerService {
                 }
             }
         }
-        return AcaiConstants.DEFAULT_CONTENT_TYPE;
+        return RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
     }
 
     // ================================================================
@@ -1673,7 +1673,7 @@ public final class ApiScannerService {
         api.setUrl(url);
         api.setName(name != null ? name : "");
         api.setControllerName("手动添加");
-        api.setSource(AcaiConstants.API_SOURCE_MANUAL);
+        api.setSource(RestAutoLabConstants.API_SOURCE_MANUAL);
         api.setScanTimestamp(System.currentTimeMillis());
 
         List<ApiDefinition> newApis = new ArrayList<>(cachedApis);
@@ -1715,7 +1715,7 @@ public final class ApiScannerService {
                 skipped++;
             } else {
                 // 标记为手动来源，避免被自动扫描去重逻辑误删
-                imp.setSource(AcaiConstants.API_SOURCE_MANUAL);
+                imp.setSource(RestAutoLabConstants.API_SOURCE_MANUAL);
                 newApis.add(imp);
                 localKeys.add(key);
                 added++;
@@ -1809,10 +1809,10 @@ public final class ApiScannerService {
             String key = api.uniqueKey();
             newKeys.add(key);
             if (!beforeSet.contains(key)) {
-                api.setChangeMarker(AcaiConstants.CHANGE_ADDED);
+                api.setChangeMarker(RestAutoLabConstants.CHANGE_ADDED);
                 added++;
             } else {
-                api.setChangeMarker(AcaiConstants.CHANGE_NONE);
+                api.setChangeMarker(RestAutoLabConstants.CHANGE_NONE);
             }
         }
 
@@ -1830,7 +1830,7 @@ public final class ApiScannerService {
      * 从设置恢复API收藏状态和调用统计
      */
     private void restoreApiMetadata(List<ApiDefinition> apis) {
-        AcaiSettingsState settings = AcaiSettingsState.getInstance(project);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         Set<String> starred = settings.getStarredApis();
 
         for (ApiDefinition api : apis) {

@@ -3,7 +3,7 @@ package com.ban.acai.scanner;
 import com.ban.acai.model.ApiDefinition;
 import com.ban.acai.model.FolderApiStatus;
 import com.ban.acai.model.StarredFolder;
-import com.ban.acai.settings.AcaiSettingsState;
+import com.ban.acai.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
@@ -16,7 +16,7 @@ import java.util.*;
  * 收藏文件夹管理服务 —— 收藏 GUI 的数据层。
  *
  * <p>负责文件夹的增删改名、接口在文件夹间的加入/移除/移动、以及每对(文件夹,接口)绑定的
- * 测试参数与测试状态的持久化。所有写操作立即落盘到 {@link AcaiSettingsState}。</p>
+ * 测试参数与测试状态的持久化。所有写操作立即落盘到 {@link RestAutoLabSettingsState}。</p>
  *
  * <p>收藏语义：</p>
  * <ul>
@@ -40,8 +40,8 @@ public final class StarredFolderService {
         return project.getService(StarredFolderService.class);
     }
 
-    private AcaiSettingsState settings() {
-        return AcaiSettingsState.getInstance(project);
+    private RestAutoLabSettingsState settings() {
+        return RestAutoLabSettingsState.getInstance(project);
     }
 
     // ==================== 文件夹 CRUD ====================
@@ -261,7 +261,7 @@ public final class StarredFolderService {
     private void syncStarredSet(List<StarredFolder> folders) {
         Set<String> set = new LinkedHashSet<>();
         for (StarredFolder f : folders) set.addAll(f.getApiKeys());
-        AcaiSettingsState s = settings();
+        RestAutoLabSettingsState s = settings();
         s.getState().starredApis.clear();
         s.getState().starredApis.addAll(set);
     }

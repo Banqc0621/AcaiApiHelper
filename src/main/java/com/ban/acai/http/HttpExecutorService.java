@@ -1,6 +1,6 @@
 package com.ban.acai.http;
 
-import com.ban.acai.AcaiConstants;
+import com.ban.acai.RestAutoLabConstants;
 import com.ban.acai.model.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -58,7 +58,7 @@ public final class HttpExecutorService {
         this.project = project;
         cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(AcaiConstants.HTTP_CONNECT_TIMEOUT_SECONDS))
+                .connectTimeout(Duration.ofSeconds(RestAutoLabConstants.HTTP_CONNECT_TIMEOUT_SECONDS))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .cookieHandler(cookieManager)
                 .build();
@@ -122,7 +122,7 @@ public final class HttpExecutorService {
                 // 文件上传：构建 multipart/form-data 请求体
                 MultipartBody multipart = buildMultipartBody(api, paramValues, environment);
                 multipartBytes = multipart.bytes;
-                contentType = AcaiConstants.CONTENT_TYPE_FORM_DATA + "; boundary=" + multipart.boundary;
+                contentType = RestAutoLabConstants.CONTENT_TYPE_FORM_DATA + "; boundary=" + multipart.boundary;
                 requestBodyDisplay = multipart.summary;
             } else if (BODY_FORMAT_RAW.equals(bodyFormat)) {
                 // RAW格式：直接使用传入的requestBody
@@ -291,7 +291,7 @@ public final class HttpExecutorService {
      */
     private String resolveContentType(ApiDefinition api, String bodyFormat) {
         if (BODY_FORMAT_FORM.equals(bodyFormat)) {
-            return AcaiConstants.CONTENT_TYPE_FORM_URLENCODED;
+            return RestAutoLabConstants.CONTENT_TYPE_FORM_URLENCODED;
         }
         return api.getConsumes();
     }
@@ -337,7 +337,7 @@ public final class HttpExecutorService {
      */
     private String buildRequestBody(ApiDefinition api, Map<String, String> paramValues, String bodyFormat) {
         String method = api.getHttpMethod().toUpperCase();
-        if (AcaiConstants.METHODS_WITHOUT_BODY.contains(method)) return null;
+        if (RestAutoLabConstants.METHODS_WITHOUT_BODY.contains(method)) return null;
 
         List<ApiParameter> bodyParams = api.bodyParameters();
         List<ApiParameter> formParams = api.formParameters();
@@ -438,7 +438,7 @@ public final class HttpExecutorService {
      */
     private MultipartBody buildMultipartBody(ApiDefinition api, Map<String, String> paramValues,
                                              Environment env) {
-        String boundary = "----AcaiBoundary" + System.currentTimeMillis();
+        String boundary = "----RestAutoLabBoundary" + System.currentTimeMillis();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         List<String> summaryParts = new ArrayList<>();
         String CRLF = "\r\n";
@@ -512,11 +512,11 @@ public final class HttpExecutorService {
                                           Map<String, String> extraHeaders, Environment env) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(AcaiConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
+                .timeout(Duration.ofSeconds(RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
 
         // 设置默认请求头
-        builder.header(AcaiConstants.HEADER_CONTENT_TYPE, contentType);
-        builder.header(AcaiConstants.HEADER_ACCEPT, api.getProduces());
+        builder.header(RestAutoLabConstants.HEADER_CONTENT_TYPE, contentType);
+        builder.header(RestAutoLabConstants.HEADER_ACCEPT, api.getProduces());
 
         // 设置API定义中的自定义请求头（支持环境变量替换）
         api.getHeaders().forEach((k, v) -> builder.header(k, resolveEnvVars(v, env)));
