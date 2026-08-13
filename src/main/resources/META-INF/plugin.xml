@@ -120,43 +120,43 @@
 
         <!-- 1. ToolWindow: 在IDE右侧显示API调试面板 -->
         <toolWindow id="RestAutoLab"
-                    factoryClass="com.ban.acai.ui.RestAutoLabToolWindowFactory"
+                    factoryClass="com.hronline.ui.RestAutoLabToolWindowFactory"
                     anchor="right"
                     icon="AllIcons.Toolwindows.ToolWindowPalette"
                     secondary="false"/>
 
         <!-- 2. Application级全局配置: IDE级别共享配置 -->
-        <applicationService serviceImplementation="com.ban.acai.settings.RestAutoLabGlobalSettings"/>
+        <applicationService serviceImplementation="com.hronline.settings.RestAutoLabGlobalSettings"/>
 
         <!-- 2b. Project级持久化服务: 存储项目级配置（AI服务器地址、Token等） -->
-        <projectService serviceImplementation="com.ban.acai.settings.RestAutoLabSettingsState"/>
+        <projectService serviceImplementation="com.hronline.settings.RestAutoLabSettingsState"/>
 
         <!-- 3. 设置页面: 在IDE Settings中注册插件配置页 -->
         <projectConfigurable
                 parentId="tools"
-                instance="com.ban.acai.settings.RestAutoLabSettingsConfigurable"
+                instance="com.hronline.settings.RestAutoLabSettingsConfigurable"
                 id="com.ban.acai.settings"
                 displayName="RestAutoLab"/>
 
         <!-- 5. Git预提交检查处理器: 接口测试未通过时阻断提交 -->
-        <checkinHandlerFactory implementation="com.ban.acai.git.RestAutoLabCheckinHandlerFactory"/>
+        <checkinHandlerFactory implementation="git.com.hronline.RestAutoLabCheckinHandlerFactory"/>
 
         <!-- 6. 编辑器Gutter图标提供器: 在Controller方法旁显示API调试图标 -->
         <codeInsight.lineMarkerProvider
                 language="JAVA"
-                implementationClass="com.ban.acai.gutter.ApiLineMarkerProvider"/>
+                implementationClass="com.hronline.gutter.ApiLineMarkerProvider"/>
 
         <!-- 7. API扫描服务 -->
-        <projectService serviceImplementation="com.ban.acai.scanner.ApiScannerService"/>
+        <projectService serviceImplementation="com.hronline.scanner.ApiScannerService"/>
 
         <!-- 8. HTTP执行服务 -->
-        <projectService serviceImplementation="com.ban.acai.http.HttpExecutorService"/>
+        <projectService serviceImplementation="com.hronline.http.HttpExecutorService"/>
 
         <!-- 9. AI参数生成服务 -->
-        <projectService serviceImplementation="com.ban.acai.ai.AiParameterService"/>
+        <projectService serviceImplementation="com.hronline.ai.AiParameterService"/>
 
         <!-- 9b. ToolWindow面板持有服务: 供右键Action拿到树/调试面板，实现精准定位 -->
-        <projectService serviceImplementation="com.ban.acai.ui.RestAutoLabToolWindowHolder"/>
+        <projectService serviceImplementation="com.hronline.ui.RestAutoLabToolWindowHolder"/>
 
         <!-- 10. 通知组: 用于在IDE底部展示操作结果通知 -->
         <notificationGroup id="RestAutoLab.Notification"
@@ -182,7 +182,7 @@
 
         <!-- 动作: 扫描项目API -->
         <action id="RestAutoLab.ScanApis"
-                class="com.ban.acai.actions.ScanApisAction"
+                class="actions.com.hronline.ScanApisAction"
                 text="扫描项目API"
                 description="扫描当前项目中的所有REST/Spring MVC接口"
                 icon="AllIcons.Actions.Refresh">
@@ -191,7 +191,7 @@
 
         <!-- 动作: 调试当前接口 -->
         <action id="RestAutoLab.DebugApi"
-                class="com.ban.acai.actions.DebugApiAction"
+                class="actions.com.hronline.DebugApiAction"
                 text="调试当前接口"
                 description="在RestAutoLab面板中打开当前接口的调试界面"
                 icon="AllIcons.Actions.Execute">
@@ -200,7 +200,7 @@
 
         <!-- 动作: 运行全部API测试 -->
         <action id="RestAutoLab.RunAllTests"
-                class="com.ban.acai.actions.RunAllTestsAction"
+                class="actions.com.hronline.RunAllTestsAction"
                 text="运行全部接口测试"
                 description="执行所有已配置的接口自动化测试"
                 icon="AllIcons.RunConfigurations.Junit">

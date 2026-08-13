@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(./gradlew runIde)"
+      "Bash(./gradlew runIde)",
+      "Bash(./gradlew clean:*)",
+      "Bash(./gradlew buildPlugin -x buildSearchableOptions 2>&1)"
     ]
   }
 }
