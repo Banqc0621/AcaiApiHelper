@@ -273,31 +273,19 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 创建顶部工具栏 - 扫描、刷新、环境切换等快捷操作
+     * 创建顶部工具栏 - 环境切换与请求结果导出快捷操作
      * <p>拆为上下两排，避免单行过长：</p>
      * <ul>
-     *   <li>第 1 行：扫描API + 环境（下拉+管理）+ 数据管理</li>
+     *   <li>第 1 行：当前环境下拉</li>
      *   <li>第 2 行：导出cURL / 导出文档 / 导出报告（清Cookie 已挪到请求头右键）</li>
      * </ul>
      */
     private JPanel createToolbar() {
-        // ============== 第 1 行：扫描API + 环境 + 环境管理 + 数据管理 ==============
+        // ============== 第 1 行：当前环境（扫描和管理入口统一放在左侧面板） ==============
         JToolBar toolbar1 = new JToolBar();
         toolbar1.setFloatable(false);
         toolbar1.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
 
-        JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
-        scanBtn.setToolTipText("重新扫描项目中的所有API接口");
-        scanBtn.putClientProperty("JButton.buttonType", "roundRect");
-        scanBtn.setFont(scanBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        scanBtn.setFocusPainted(false);
-        scanBtn.addActionListener(e -> {
-            ApiScannerService.getInstance(project).scanProjectApisAsync();
-            statusLabel.setText("● 正在扫描API...");
-        });
-        toolbar1.add(scanBtn);
-
-        toolbar1.addSeparator(new Dimension(12, 0));
         JBLabel envLabel = new JBLabel("环境: ");
         UiStyle.hint(envLabel);
         toolbar1.add(envLabel);
@@ -341,16 +329,6 @@ public class ApiDebuggerPanel extends JPanel {
             }
         });
         toolbar1.add(envCombo);
-
-        // 一伦优化 #3：原"环境管理"+"数据管理"两个按钮合并为单个入口"环境 & 数据"，
-        // 弹统一的合并对话框（EnvAndDataManageDialog），不再在工具栏占两个槽位。
-        JButton envDataBtn = new JButton("环境 & 数据", AllIcons.General.Settings);
-        envDataBtn.setToolTipText("管理环境 / 变量 / 全局请求头；导入导出测试配置与接口数据");
-        envDataBtn.putClientProperty("JButton.buttonType", "roundRect");
-        envDataBtn.setFont(envDataBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        envDataBtn.setFocusPainted(false);
-        envDataBtn.addActionListener(e -> showEnvAndDataManageDialog());
-        toolbar1.add(envDataBtn);
 
         // ============== 第 2 行：导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
         // 一伦优化 #2：原"导入"按钮已挪到左侧接口树右键菜单（ApiTreePanel → 导入cURL），
@@ -3106,7 +3084,7 @@ public class ApiDebuggerPanel extends JPanel {
      * 数据管理（{@link DataManagePanel} 卡片列表），关闭后通过 {@link EnvAndDataManageDialog#getPendingDataAction()}
      * 获取用户点选的导出/导入操作并 invokeLater 执行（Windows 模态兼容）。
      */
-    private void showEnvAndDataManageDialog() {
+    public void openEnvAndDataManageDialog() {
         // 配置类操作（AI 设置 · 环境配置 · 测试配置）
         java.util.List<DataManagePanel.Action> configActions = new java.util.ArrayList<>();
         configActions.add(new DataManagePanel.Action(
@@ -3155,7 +3133,7 @@ public class ApiDebuggerPanel extends JPanel {
     /** 一伦优化 #3：原 showDataManagerDialog + 内嵌 DataManagerDialog 类（~170 行）已删除。
      *  现由 {@link EnvAndDataManageDialog} 统一承担「环境 & 数据」合并弹窗：
      *  - 数据卡片列表由 {@link DataManagePanel} 静态构建
-     *  - 卡片点击的 Runnable 由 {@link #showEnvAndDataManageDialog()} 注入
+     *  - 卡片点击的 Runnable 由 {@link #openEnvAndDataManageDialog()} 注入
      *  - 原 exportTestConfigAction / importTestConfigAction / exportTestDataAction /
      *    importTestDataAction 保留在下方（3297+），仅调用方变化。 */
 

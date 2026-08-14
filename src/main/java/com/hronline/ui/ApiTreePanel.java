@@ -22,6 +22,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
+import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -106,7 +107,7 @@ public class ApiTreePanel extends JPanel {
     /** API选中回调 - 通知调试面板更新 */
     private Consumer<ApiDefinition> onApiSelected = null;
 
-    /** 调试面板引用（注入，用于跨面板操作，如 cURL 导入跳转） */
+    /** 调试面板引用（注入，用于跨面板操作，如 cURL 导入和环境/数据管理） */
     private ApiDebuggerPanel debuggerPanel;
 
     /** 收藏模式下：apiKey -> ApiDefinition 解析表 */
@@ -527,15 +528,81 @@ public class ApiTreePanel extends JPanel {
 
         bar.add(Box.createHorizontalGlue());
 
-        // 提示：cURL 导入已挪到接口节点右键菜单，避免用户找不到
-        JBLabel hint = new JBLabel("提示：cURL 导入见右键菜单");
-        hint.setForeground(JBColor.GRAY);
-        hint.setFont(hint.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
-        bar.add(hint);
+        JButton moreBtn = new JButton("…");
+        moreBtn.setToolTipText("环境、数据与收藏列表管理");
+        moreBtn.putClientProperty("JButton.buttonType", "borderless");
+        moreBtn.setFont(moreBtn.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        moreBtn.setFocusPainted(false);
+        moreBtn.setMargin(new Insets(2, 8, 2, 8));
+        moreBtn.addActionListener(e -> showMoreMenu(moreBtn));
+        bar.add(moreBtn);
 
         JPanel wrapper = new JPanel(new BorderLayout());
         wrapper.add(bar, BorderLayout.CENTER);
         return wrapper;
+    }
+
+    /** 左侧统一的更多操作入口：环境/数据管理与收藏列表共享。 */
+    private void showMoreMenu(JButton anchor) {
+        JPopupMenu menu = new JPopupMenu();
+
+        JMenuItem envData = new JMenuItem("环境 & 数据", AllIcons.General.Settings);
+        envData.setToolTipText("管理环境、变量、全局请求头和测试数据");
+        envData.addActionListener(e -> {
+            if (debuggerPanel == null) {
+                Messages.showErrorDialog(project, "调试面板尚未初始化，请重新打开 RestAutoLab 工具窗口。", "无法打开管理面板");
+                return;
+            }
+            debuggerPanel.openEnvAndDataManageDialog();
+        });
+        menu.add(envData);
+        menu.addSeparator();
+
+        JMenuItem exportFavorites = new JMenuItem("导出收藏列表", AllIcons.ToolbarDecorator.Export);
+        exportFavorites.setToolTipText("导出收藏文件夹、接口成员及文件夹级参数/状态");
+        exportFavorites.addActionListener(e -> exportFavoritesAction());
+        menu.add(exportFavorites);
+
+        JMenuItem importFavorites = new JMenuItem("导入收藏列表", AllIcons.ToolbarDecorator.Import);
+        importFavorites.setToolTipText("本地优先合并收藏列表，不覆盖已有参数和状态");
+        importFavorites.addActionListener(e -> importFavoritesAction());
+        menu.add(importFavorites);
+
+        menu.show(anchor, 0, anchor.getHeight());
+    }
+
+    private void exportFavoritesAction() {
+        String outputPath = TestDataExporter.chooseExportPath(project,
+                TestDataExporter.suggestFileName("restautolab-favorites", "json"));
+        if (outputPath == null) return;
+        try {
+            TestDataExporter.exportFavorites(RestAutoLabSettingsState.getInstance(project),
+                    project.getName(), outputPath);
+            statsLabel.setText("● 收藏列表已导出");
+            Messages.showInfoMessage(project, "收藏列表已导出到：\n" + outputPath, "导出成功");
+        } catch (Exception ex) {
+            LOG.warn("导出收藏列表失败", ex);
+            Messages.showErrorDialog(project, "导出收藏列表失败：" + ex.getMessage(), "导出失败");
+        }
+    }
+
+    private void importFavoritesAction() {
+        FileChooserDescriptor descriptor = new FileChooserDescriptor(true, false, false, false, false, false)
+                .withFileFilter(file -> file.getName().toLowerCase(Locale.ROOT).endsWith(".json"));
+        descriptor.setTitle("选择收藏列表文件");
+        descriptor.setDescription("选择由 RestAutoLab 导出的收藏列表 JSON；已有本地数据不会被覆盖");
+        VirtualFile selected = com.intellij.openapi.fileChooser.FileChooser.chooseFile(descriptor, project, null);
+        if (selected == null) return;
+        try {
+            String result = TestDataExporter.importFavorites(RestAutoLabSettingsState.getInstance(project),
+                    selected.getPath());
+            applyFilters();
+            statsLabel.setText("● 收藏列表已导入");
+            Messages.showInfoMessage(project, result, "导入成功");
+        } catch (Exception ex) {
+            LOG.warn("导入收藏列表失败", ex);
+            Messages.showErrorDialog(project, "导入收藏列表失败：" + ex.getMessage(), "导入失败");
+        }
     }
 
     /**

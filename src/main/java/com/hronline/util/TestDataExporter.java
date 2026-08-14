@@ -30,6 +30,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * 测试配置与接口数据的导入导出工具
@@ -53,6 +54,7 @@ public class TestDataExporter {
 
     public static final String FORMAT_TEST_CONFIG = "acai-test-config";
     public static final String FORMAT_TEST_DATA = "acai-test-data";
+    public static final String FORMAT_FAVORITES = "restautolab-favorites";
     public static final String EXPORT_VERSION = "1.0";
 
     private TestDataExporter() {}
@@ -253,6 +255,186 @@ public class TestDataExporter {
         }
         fillAiSettings(data.aiSettings, settings);
         return writeJson(data, outputFile);
+    }
+
+    // ================================================================
+    // 收藏列表（文件夹 + 接口成员 + 文件夹级参数/状态）
+    // ================================================================
+
+    /** 独立收藏列表交换格式，不携带接口定义、历史记录或 AI 凭据。 */
+    public static class FavoritesExport {
+        public String format = FORMAT_FAVORITES;
+        public String version = EXPORT_VERSION;
+        public long exportedAt = System.currentTimeMillis();
+        public String exportedBy = "";
+        public List<StarredFolder> folders = new ArrayList<>();
+        public Map<String, Map<String, String>> folderApiParams = new LinkedHashMap<>();
+        public Map<String, FolderApiStatus> folderApiStatus = new LinkedHashMap<>();
+    }
+
+    /** 导出独立收藏列表，便于团队共享收藏分组和文件夹级测试数据。 */
+    public static String exportFavorites(RestAutoLabSettingsState settings, String projectName,
+                                         String outputFile) throws IOException {
+        FavoritesExport data = new FavoritesExport();
+        data.exportedBy = projectName == null ? "" : projectName;
+        data.folders = settings.loadStarredFolders();
+        data.folderApiParams = settings.loadFolderApiParams();
+        data.folderApiStatus = settings.loadFolderApiStatus();
+        return writeJson(data, outputFile);
+    }
+
+    /**
+     * 导入独立收藏列表。
+     * <p>合并原则：本地数据优先；同名文件夹视为同一分组并合并成员；同 ID 同名也合并；
+     * 同 ID 异名时为导入文件夹生成新 ID；未分类始终映射到本地未分类。参数和状态随文件夹
+     * ID 映射迁移，仅补入本地不存在的键。最后从文件夹成员重建兼容用 starredApis 索引。</p>
+     */
+    public static String importFavorites(RestAutoLabSettingsState settings, String inputFile) throws IOException {
+        FavoritesExport data = readJson(inputFile, FavoritesExport.class);
+        if (data == null) throw new IOException("收藏文件格式无效或为空");
+        if (!FORMAT_FAVORITES.equals(data.format)) {
+            throw new IOException("文件格式不匹配：期望 " + FORMAT_FAVORITES + "，实际 " + data.format);
+        }
+        if (!EXPORT_VERSION.equals(data.version)) {
+            throw new IOException("不支持的收藏文件版本：" + data.version);
+        }
+        if (data.folders == null) throw new IOException("收藏文件缺少 folders 字段");
+
+        validateFavoriteFolders(data.folders);
+
+        List<StarredFolder> localFolders = settings.loadStarredFolders();
+        Map<String, StarredFolder> localById = new LinkedHashMap<>();
+        Map<String, StarredFolder> localByName = new LinkedHashMap<>();
+        for (StarredFolder folder : localFolders) {
+            localById.put(folder.getId(), folder);
+            localByName.put(folder.getName(), folder);
+        }
+
+        Map<String, String> importedIdMapping = new LinkedHashMap<>();
+        int folderAdded = 0;
+        int folderMerged = 0;
+        int apiAdded = 0;
+
+        for (StarredFolder imported : data.folders) {
+            String importedId = imported.getId();
+            String importedName = imported.getName().trim();
+            StarredFolder target;
+            boolean created = false;
+
+            if (StarredFolder.UNCATEGORIZED_ID.equals(importedId)) {
+                target = localById.get(StarredFolder.UNCATEGORIZED_ID);
+            } else {
+                StarredFolder sameId = localById.get(importedId);
+                StarredFolder sameName = localByName.get(importedName);
+                if (sameId != null && importedName.equals(sameId.getName())) {
+                    target = sameId;
+                } else if (sameName != null) {
+                    target = sameName;
+                } else {
+                    String targetId = importedId;
+                    if (targetId == null || targetId.isBlank() || localById.containsKey(targetId)) {
+                        targetId = uniqueFolderId(localById);
+                    }
+                    target = new StarredFolder(targetId, importedName);
+                    localFolders.add(target);
+                    localById.put(targetId, target);
+                    localByName.put(importedName, target);
+                    folderAdded++;
+                    created = true;
+                }
+            }
+
+            if (target == null) {
+                target = new StarredFolder(StarredFolder.UNCATEGORIZED_ID, StarredFolder.UNCATEGORIZED_NAME);
+                localFolders.add(0, target);
+                localById.put(target.getId(), target);
+                localByName.put(target.getName(), target);
+                folderAdded++;
+                created = true;
+            }
+            if (!created) {
+                folderMerged++;
+            }
+
+            importedIdMapping.put(importedId, target.getId());
+            for (String apiKey : imported.getApiKeys()) {
+                if (apiKey != null && !apiKey.isBlank() && !target.getApiKeys().contains(apiKey)) {
+                    target.getApiKeys().add(apiKey);
+                    apiAdded++;
+                }
+            }
+        }
+
+        settings.saveStarredFolders(localFolders);
+
+        int paramsAdded = mergeFavoriteMap(settings.loadFolderApiParams(), data.folderApiParams,
+                importedIdMapping, settings::saveFolderApiParams);
+        int statusAdded = mergeFavoriteMap(settings.loadFolderApiStatus(), data.folderApiStatus,
+                importedIdMapping, settings::saveFolderApiStatus);
+
+        RestAutoLabSettingsState.State state = settings.getState();
+        if (state != null) {
+            state.starredApis.clear();
+            for (StarredFolder folder : localFolders) state.starredApis.addAll(folder.getApiKeys());
+        }
+
+        return "收藏列表已导入。新增文件夹 " + folderAdded + " 个，合并文件夹 " + folderMerged
+                + " 个，新增收藏接口 " + apiAdded + " 个，补入参数 " + paramsAdded
+                + " 份、状态 " + statusAdded + " 份。";
+    }
+
+    private static void validateFavoriteFolders(List<StarredFolder> folders) throws IOException {
+        Set<String> ids = new LinkedHashSet<>();
+        for (StarredFolder folder : folders) {
+            if (folder == null) throw new IOException("收藏文件包含空文件夹记录");
+            if (folder.getId() == null || folder.getId().isBlank()) {
+                throw new IOException("收藏文件夹 ID 不能为空");
+            }
+            if (!ids.add(folder.getId())) {
+                throw new IOException("收藏文件包含重复文件夹 ID：" + folder.getId());
+            }
+            if (folder.getName() == null || folder.getName().isBlank()) {
+                throw new IOException("收藏文件夹名称不能为空");
+            }
+            if (folder.getApiKeys() == null) folder.setApiKeys(new ArrayList<>());
+        }
+    }
+
+    private static String uniqueFolderId(Map<String, StarredFolder> localById) {
+        String id;
+        do {
+            id = UUID.randomUUID().toString();
+        } while (localById.containsKey(id));
+        return id;
+    }
+
+    private interface FavoriteMapSaver<T> {
+        void save(Map<String, T> value);
+    }
+
+    private static <T> int mergeFavoriteMap(Map<String, T> local, Map<String, T> imported,
+                                            Map<String, String> idMapping,
+                                            FavoriteMapSaver<T> saver) {
+        if (imported == null || imported.isEmpty()) return 0;
+        int added = 0;
+        for (Map.Entry<String, T> entry : imported.entrySet()) {
+            String mappedKey = remapFavoriteKey(entry.getKey(), idMapping);
+            if (mappedKey != null && !local.containsKey(mappedKey)) {
+                local.put(mappedKey, entry.getValue());
+                added++;
+            }
+        }
+        saver.save(local);
+        return added;
+    }
+
+    private static String remapFavoriteKey(String key, Map<String, String> idMapping) {
+        if (key == null) return null;
+        int separator = key.indexOf('\n');
+        if (separator <= 0 || separator == key.length() - 1) return null;
+        String mappedFolderId = idMapping.get(key.substring(0, separator));
+        if (mappedFolderId == null) return null;
+        return mappedFolderId + key.substring(separator);
     }
 
     // ================================================================
