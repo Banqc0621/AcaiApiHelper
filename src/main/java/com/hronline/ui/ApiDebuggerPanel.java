@@ -505,6 +505,9 @@ public class ApiDebuggerPanel extends JPanel {
         sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         sendButton.setFocusPainted(false);
         sendButton.setToolTipText("发送请求到当前接口");
+        // 一伦优化 #9：发送按钮应用 accent 主题（默认蓝 / 翠绿可切）
+        UiStyle.applyAccent(sendButton,
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         panel.add(sendButton, gbc);
 
         return panel;

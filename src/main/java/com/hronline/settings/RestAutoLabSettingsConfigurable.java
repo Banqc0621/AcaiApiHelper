@@ -1,6 +1,7 @@
 package com.hronline.settings;
 
 import com.hronline.RestAutoLabConstants;
+import com.hronline.ui.UiStyle;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.project.Project;
 import com.intellij.ui.JBColor;
@@ -29,6 +30,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
     private JBTextField arkModelProField;
     private JBTextField arkModelCodeField;
     private JBCheckBox aiEnabledBox;
+    private JComboBox<String> accentColorCombo;
     private JBCheckBox gitCheckEnabledBox;
     private JBTextField gitAllowedCodesField;
     private JBTextField timeoutField;
@@ -67,6 +69,24 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         arkModelProField = new JBTextField(state != null ? state.arkModelPro : RestAutoLabConstants.ARK_MODEL_PRO);
         arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : RestAutoLabConstants.ARK_MODEL_CODE);
         aiEnabledBox = new JBCheckBox("启用AI参数生成", state != null && state.aiEnabled);
+        // 一伦优化 #9：accent 主题下拉（"BLUE" / "GREEN"），显示名用 UiStyle.AccentColor.displayName
+        accentColorCombo = new JComboBox<>();
+        for (UiStyle.AccentColor a : UiStyle.AccentColor.values()) {
+            accentColorCombo.addItem(a.name());
+        }
+        accentColorCombo.setSelectedItem(
+                (state != null && state.accentColor != null) ? state.accentColor : "BLUE");
+        accentColorCombo.setRenderer(new DefaultListCellRenderer() {
+            @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                                     boolean isSelected, boolean cellHasFocus) {
+                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value instanceof String s) {
+                    UiStyle.AccentColor a = UiStyle.parseAccent(s);
+                    setText(a.displayName);
+                }
+                return this;
+            }
+        });
         gitCheckEnabledBox = new JBCheckBox("启用Git预提交API检查", state == null || state.gitCheckEnabled);
         gitAllowedCodesField = new JBTextField(state != null ? state.gitAllowedStatusCodes : RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES);
         timeoutField = new JBTextField(String.valueOf(state != null ? state.requestTimeout : RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
@@ -90,6 +110,12 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         // Section header style
         JBColor sectionColor = new JBColor(new Color(0x4B, 0x00, 0x82), new Color(0xBB, 0x86, 0xFC));
         Font sectionFont = UIManager.getFont("Label.font").deriveFont(Font.BOLD, 13f);
+
+        // ── Section 0: 外观（一伦优化 #9：accent 主题）──
+        JBLabel appearanceHeader = new JBLabel("外观");
+        appearanceHeader.setForeground(sectionColor);
+        appearanceHeader.setFont(sectionFont);
+        JBLabel appearanceDesc = new JBLabel("<html><font color='#888888' size='2'>跟随 IDE 主题 + 2 套可选 accent 主题</font></html>");
 
         // ── Section 1: API Service ──
         JBLabel apiHeader = new JBLabel("API 服务配置");
@@ -126,6 +152,12 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         JBLabel gitDesc = new JBLabel("<html><font color='#888888' size='2'>接口测试失败时阻断git commit</font></html>");
 
         JPanel panel = FormBuilder.createFormBuilder()
+                .addComponent(appearanceHeader)
+                .addComponent(appearanceDesc)
+                .addSeparator()
+                .addLabeledComponent(new JBLabel("Accent 主题:"), accentColorCombo, 1, false)
+                .addVerticalGap(16)
+
                 .addComponent(apiHeader)
                 .addComponent(apiDesc)
                 .addSeparator()
@@ -184,6 +216,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
                 || !fieldText(arkModelProField).equals(state.arkModelPro)
                 || !fieldText(arkModelCodeField).equals(state.arkModelCode)
                 || aiEnabledBox.isSelected() != state.aiEnabled
+                || !comboSelected(accentColorCombo).equals(state.accentColor == null ? "BLUE" : state.accentColor)
                 || gitCheckEnabledBox.isSelected() != state.gitCheckEnabled
                 || !fieldText(gitAllowedCodesField).equals(state.gitAllowedStatusCodes)
                 || autoScanBox.isSelected() != state.autoScanOnStartup
@@ -203,6 +236,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         s.setArkModelPro(fieldText(arkModelProField));
         s.setArkModelCode(fieldText(arkModelCodeField));
         s.setAiEnabled(aiEnabledBox.isSelected());
+        s.setAccentColor(comboSelected(accentColorCombo));
         s.setGitCheckEnabled(gitCheckEnabledBox.isSelected());
         s.setGitAllowedStatusCodes(fieldText(gitAllowedCodesField));
         s.setRequestTimeout(parseInt(fieldText(timeoutField), RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
@@ -224,6 +258,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         arkModelProField.setText(state.arkModelPro);
         arkModelCodeField.setText(state.arkModelCode);
         aiEnabledBox.setSelected(state.aiEnabled);
+        accentColorCombo.setSelectedItem(state.accentColor == null ? "BLUE" : state.accentColor);
         gitCheckEnabledBox.setSelected(state.gitCheckEnabled);
         gitAllowedCodesField.setText(state.gitAllowedStatusCodes);
         timeoutField.setText(String.valueOf(state.requestTimeout));
@@ -235,4 +270,8 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
 
     private static String fieldText(JTextField f) { return f.getText().trim(); }
     private static int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; } }
+    private static String comboSelected(JComboBox<?> c) {
+        Object o = c.getSelectedItem();
+        return o == null ? "" : o.toString();
+    }
 }

@@ -42,6 +42,50 @@ public final class UiStyle {
             new Color(0x15, 0x65, 0xC0),
             new Color(0x42, 0xA5, 0xF5)
     );
+
+    // ── 可选 accent 主题（一伦优化 #9：跟随 IDE 主题 + 2 套可选 accent）──
+    /**
+     * accent 主题枚举：提供 2 套可选 accent 色（默认蓝 / 翠绿），
+     * 配合 {@link com.intellij.ui.JBColor} 在明暗主题下自动切换。
+     * <p>用于主操作按钮（"发送" / "AI 助手"）的背景色、关键 tab 边框等强语义高亮。</p>
+     */
+    public enum AccentColor {
+        BLUE  ("默认蓝", 0x15, 0x65, 0xC0, 0x42, 0xA5, 0xF5),
+        GREEN ("翠绿",   0x2E, 0x7D, 0x32, 0x66, 0xBB, 0x6A);
+
+        public final String displayName;
+        private final int lightR, lightG, lightB;
+        private final int darkR,  darkG,  darkB;
+
+        AccentColor(String displayName,
+                    int lr, int lg, int lb, int dr, int dg, int db) {
+            this.displayName = displayName;
+            this.lightR = lr; this.lightG = lg; this.lightB = lb;
+            this.darkR  = dr; this.darkG  = dg; this.darkB  = db;
+        }
+
+        /** 返回跟随 IDE 主题的 JBColor */
+        public JBColor color() {
+            return new JBColor(
+                    new Color(lightR, lightG, lightB),
+                    new Color(darkR,  darkG,  darkB));
+        }
+
+        /** 在明暗主题下都偏白，作为主按钮文字色 */
+        public JBColor onAccent() {
+            return new JBColor(Color.WHITE, new Color(0xF5, 0xF5, 0xF5));
+        }
+    }
+
+    /**
+     * 根据名称解析 accent 主题（来自 settings.accentColor）。
+     * 名称不匹配时回退到 BLUE，避免 UI 闪退。
+     */
+    public static AccentColor parseAccent(String name) {
+        if (name == null) return AccentColor.BLUE;
+        try { return AccentColor.valueOf(name.trim().toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException e) { return AccentColor.BLUE; }
+    }
     /** JSON 键名色 */
     public static final JBColor JSON_KEY = new JBColor(
             new Color(0x15, 0x65, 0xC0),
@@ -94,12 +138,35 @@ public final class UiStyle {
 
     /**
      * 主操作按钮（高亮填充），用于「发送」「批量测试」等关键动作。
+     * <p>使用默认 BLUE accent。</p>
      */
     public static JButton primaryButton(String text, Icon icon, ActionListener listener) {
+        return primaryButton(text, icon, listener, AccentColor.BLUE);
+    }
+
+    /**
+     * 主操作按钮（高亮填充），accent 可由 settings.accentColor 控制。
+     * <p>一伦优化 #9：跟随 settings 选择 BLUE/GREEN，明暗主题下自动切换色值。</p>
+     */
+    public static JButton primaryButton(String text, Icon icon, ActionListener listener, AccentColor accent) {
         JButton btn = button(text, icon, listener);
         btn.putClientProperty("JButton.buttonType", "default");
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
+        applyAccent(btn, accent);
         return btn;
+    }
+
+    /**
+     * 一伦优化 #9：把 accent 主题色应用到一个按钮上。
+     * <p>使用 {@code setBackground}/{@code setForeground} 直接着色，
+     * 跳过 LaF 渲染差异，保证明暗主题下都看得见。</p>
+     */
+    public static void applyAccent(JButton btn, AccentColor accent) {
+        if (btn == null || accent == null) return;
+        btn.setBackground(accent.color());
+        btn.setForeground(accent.onAccent());
+        btn.setOpaque(true);
+        btn.setBorderPainted(false);
     }
 
     /**
