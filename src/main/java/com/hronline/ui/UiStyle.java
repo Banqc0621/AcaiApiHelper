@@ -1,11 +1,14 @@
 package com.hronline.ui;
 
 import com.intellij.ui.JBColor;
+import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
+import javax.swing.event.MouseInputAdapter;
 import java.awt.*;
 import java.awt.event.ActionListener;
+import java.awt.event.MouseEvent;
 
 /**
  * 全局 UI 样式工具 —— 统一字体字号、按钮风格、表格观感与边框间距。
@@ -153,6 +156,8 @@ public final class UiStyle {
         btn.putClientProperty("JButton.buttonType", "default");
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
         applyAccent(btn, accent);
+        // 一伦优化 #12：主操作按钮自动挂上悬停/按下/禁用三态反馈
+        attachInteractionFeedback(btn);
         return btn;
     }
 
@@ -168,6 +173,81 @@ public final class UiStyle {
         btn.setOpaque(true);
         btn.setBorderPainted(false);
     }
+
+    // ── 按钮交互反馈（一伦优化 #12：统一悬停/按下/加载态）──
+
+    /**
+     * 给按钮加三态视觉反馈：悬停加深底色，按下再深一档，禁用置灰。
+     * <p>只对主操作按钮（已 setOpaque(true)）有效；幽灵按钮 LaF 自带反馈，不必调。</p>
+     */
+    public static void attachInteractionFeedback(JButton btn) {
+        if (btn == null) return;
+        Color base = btn.getBackground();
+        Color hover = shift(base, 0.92f);
+        Color pressed = shift(base, 0.82f);
+        Color disabled = JBColor.namedColor("Button.disabledText", new Color(0x9E, 0x9E, 0x9E));
+
+        btn.addMouseListener(new MouseInputAdapter() {
+            @Override public void mouseEntered(MouseEvent e) {
+                if (!btn.isEnabled() || !btn.isVisible()) return;
+                btn.setBackground(hover);
+            }
+            @Override public void mouseExited(MouseEvent e) {
+                if (!btn.isEnabled() || !btn.isVisible()) return;
+                btn.setBackground(base);
+            }
+            @Override public void mousePressed(MouseEvent e) {
+                if (!btn.isEnabled() || !btn.isVisible()) return;
+                if (SwingUtilities.isLeftMouseButton(e)) btn.setBackground(pressed);
+            }
+            @Override public void mouseReleased(MouseEvent e) {
+                if (!btn.isEnabled() || !btn.isVisible()) return;
+                btn.setBackground(btn.getMousePosition() != null ? hover : base);
+            }
+        });
+        // 禁用态：底色变灰，文字保留可读性
+        btn.addPropertyChangeListener("enabled", evt -> {
+            boolean en = (boolean) evt.getNewValue();
+            if (en) {
+                btn.setBackground(base);
+                btn.setForeground(btn.getForeground()); // 保留原色
+            } else {
+                btn.setBackground(JBColor.namedColor("Button.background", new Color(0xEE, 0xEE, 0xEE)).darker());
+                btn.setForeground(disabled);
+            }
+        });
+    }
+
+    /**
+     * 切换按钮的"加载中"态：禁用按钮、替换文案为 prefix + 旋转指示。
+     * <p>配套 {@link #endLoading(JButton, String)} 恢复。</p>
+     */
+    public static void startLoading(JButton btn, String prefix) {
+        if (btn == null) return;
+        btn.putClientProperty("__loading_text", btn.getText());
+        btn.setText((prefix == null ? "" : prefix) + "  ⟳ …");
+        btn.setEnabled(false);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+    }
+
+    /** 结束 loading：恢复原文本 + 启用按钮。 */
+    public static void endLoading(JButton btn, String fallbackText) {
+        if (btn == null) return;
+        Object prev = btn.getClientProperty("__loading_text");
+        btn.setText(prev instanceof String ? (String) prev : (fallbackText == null ? "" : fallbackText));
+        btn.setEnabled(true);
+        btn.setCursor(Cursor.getDefaultCursor());
+    }
+
+    /** 把 RGB 各通道按 ratio 缩放，<1 变深，>1 变浅；clamp 到 0-255 */
+    private static Color shift(Color c, float ratio) {
+        if (c == null) return null;
+        int r = clamp((int) (c.getRed()   * ratio));
+        int g = clamp((int) (c.getGreen() * ratio));
+        int b = clamp((int) (c.getBlue()  * ratio));
+        return new Color(r, g, b, c.getAlpha());
+    }
+    private static int clamp(int v) { return Math.max(0, Math.min(255, v)); }
 
     /**
      * 幽灵按钮（无边框无填充），用于工具栏次级操作，悬停时仅靠底色反馈。
@@ -259,6 +339,29 @@ public final class UiStyle {
         JPanel p = new JPanel();
         p.setBorder(cardBorder());
         return p;
+    }
+
+    /**
+     * 一伦优化 #11：常用的"最小尺寸"工厂方法，避免被 splitter 压扁。
+     */
+    public static java.awt.Dimension minSize(int w, int h) {
+        return new java.awt.Dimension(w, h);
+    }
+
+    /**
+     * 一伦优化 #11：可换行的次要提示 JLabel（HTML 模式），用于长文案自适应。
+     */
+    public static JBLabel wrappedHint(String text) {
+        // HTML 模式 + JLabel 自带换行；空 padding 由父容器控制
+        JBLabel l = new JBLabel("<html><div style='width:100%;'>" + escapeHtml(text) + "</div></html>");
+        UiStyle.hint(l);
+        return l;
+    }
+
+    /** 极简 HTML 转义，避免提示文案里的特殊字符破坏渲染 */
+    private static String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /** 顶部细分隔线 */

@@ -465,11 +465,12 @@ public class ApiDebuggerPanel extends JPanel {
         baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         baseUrlField.setToolTipText("服务基础地址，如 http://localhost:8080");
         baseUrlField.setPreferredSize(new Dimension(200, 28));
+        baseUrlField.setMinimumSize(UiStyle.minSize(120, 28));
         panel.add(baseUrlField, gbc);
 
         gbc.gridx = 1; gbc.weightx = 0.0;
-        methodCombo.setPreferredSize(new Dimension(110, 28));
-        methodCombo.setMinimumSize(new Dimension(110, 28));
+        methodCombo.setPreferredSize(UiStyle.minSize(110, 28));
+        methodCombo.setMinimumSize(UiStyle.minSize(110, 28));
         methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         methodCombo.setRenderer(new HttpMethodCellRenderer());
         // 选中方法后联动更新 currentApi 与请求体（POST/PUT/PATCH 生成默认 body，其余清空）
@@ -2219,7 +2220,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 使用 JDialog 替代 JOptionPane，支持自由拉伸收缩（上下左右都可调）
         JDialog dialog = new JDialog((Frame) null, "AI 配置", true);
         dialog.setResizable(true);
-        dialog.setMinimumSize(new Dimension(560, 400));  // 最小尺寸保底
+        dialog.setMinimumSize(UiStyle.minSize(560, 400));  // 最小尺寸保底
 
         // 按钮面板：恢复默认提示词(左) + 确定/取消(右) 同一排，减小上下高度
         JPanel btnPanel = new JPanel(new BorderLayout());
