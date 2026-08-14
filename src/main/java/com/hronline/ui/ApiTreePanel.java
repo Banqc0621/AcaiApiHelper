@@ -972,8 +972,17 @@ public class ApiTreePanel extends JPanel {
             // 空白处：仅「新建文件夹」
             group.add(starredAction("新建文件夹", AllIcons.Actions.NewFolder, this::starredNewFolder));
         } else {
-            tree.setSelectionRow(row);
+            // 一伦优化 #4：右键命中节点时保留多选，而不是替换为单选。
+            // 这与普通 handlePopup 行为一致，让"先 Cmd 多选 N 个接口再右键其中一个"的体验可工作。
             TreePath path = tree.getPathForRow(row);
+            TreePath[] cur = tree.getSelectionPaths();
+            java.util.Set<TreePath> selSet = cur == null
+                    ? new java.util.HashSet<>() : new java.util.HashSet<>(java.util.Arrays.asList(cur));
+            if (!selSet.contains(path)) {
+                selSet.add(path);
+                tree.setSelectionPaths(selSet.toArray(new TreePath[0]));
+            }
+
             DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
             Object uo = node.getUserObject();
 
@@ -987,6 +996,18 @@ public class ApiTreePanel extends JPanel {
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
                 group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::starredChainBatchTest));
             } else if (uo instanceof StarredApiNode) {
+                // 一伦优化 #4：多选 StarredApiNode 时新增「批量测试 / 批量移动到 / 批量删除」入口。
+                List<StarredApiNode> selectedApis = getSelectedStarredApiNodes();
+                if (selectedApis.size() > 1) {
+                    group.add(starredAction("批量测试（" + selectedApis.size() + " 项）",
+                            AllIcons.Actions.Execute, this::starredBatchTestSelected));
+                    group.add(starredAction("批量移动到…（" + selectedApis.size() + " 项）",
+                            AllIcons.Actions.MoveTo2, this::starredBatchMoveTo));
+                    group.add(starredAction("批量删除（" + selectedApis.size() + " 项）",
+                            AllIcons.Actions.GC, this::starredBatchRemove));
+                    group.addSeparator();
+                }
+                // 保留单选/上下文回退菜单
                 group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
                 group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
                 group.add(starredAction("移动到…", AllIcons.Actions.MoveTo2, this::starredMoveTo));
@@ -1001,6 +1022,25 @@ public class ApiTreePanel extends JPanel {
 
         ActionPopupMenu popup = ActionManager.getInstance().createActionPopupMenu(ActionPlaces.POPUP, group);
         popup.getComponent().show(tree, e.getX(), e.getY());
+    }
+
+    /**
+     * 一伦优化 #4：收集收藏视图下用户多选的 StarredApiNode（不展开 FolderNode）。
+     * 与普通视图 getSelectedApis() 对齐语义。
+     */
+    private List<StarredApiNode> getSelectedStarredApiNodes() {
+        List<StarredApiNode> result = new ArrayList<>();
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null || paths.length == 0) return result;
+        for (TreePath tp : paths) {
+            Object node = tp.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) continue;
+            Object userObj = ((DefaultMutableTreeNode) node).getUserObject();
+            if (userObj instanceof StarredApiNode) {
+                result.add((StarredApiNode) userObj);
+            }
+        }
+        return result;
     }
 
     private static AnAction starredAction(String text, Icon icon, Runnable run) {
@@ -1355,6 +1395,133 @@ public class ApiTreePanel extends JPanel {
                 statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
             });
         });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 一伦优化 #4：收藏视图 多选 StarredApiNode 批量操作
+    //  - 批量测试：跨文件夹执行（每个 API 用自己文件夹的 params）
+    //  - 批量移动到：把所有选中的 API 一次性移到目标文件夹（同文件夹内自动跳过）
+    //  - 批量删除：从各自所属文件夹中移除选中 API
+    // ═══════════════════════════════════════════════════════════════
+
+    /** 批量测试：跨文件夹对多选 StarredApiNode 顺序执行。 */
+    private void starredBatchTestSelected() {
+        refreshStarredApiIndex();
+        List<StarredApiNode> selected = getSelectedStarredApiNodes();
+        if (selected.size() < 2) {
+            Messages.showInfoMessage(project, "批量测试需要至少 2 个接口", "提示");
+            return;
+        }
+        final List<StarredApiNode> targets = new ArrayList<>(selected);
+        final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
+        statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            int passed = 0, failed = 0;
+            for (int i = 0; i < targets.size(); i++) {
+                final StarredApiNode n = targets.get(i);
+                ApiDefinition api = starredApiByKey.get(n.api.uniqueKey());
+                if (api == null) continue;
+                Map<String, String> params = folderService.getParams(n.folderId, api.uniqueKey());
+                if (params == null) params = aiService.generateDefaultParameters(api);
+                final int idx = i + 1;
+                FolderApiStatus status = new FolderApiStatus();
+                try {
+                    TestResult tr = httpService.executeRequest(api, baseUrl, params);
+                    status.setPassed(tr.getStatus() == TestStatus.PASSED);
+                    status.setStatusCode(tr.getStatusCode());
+                    status.setMessage(status.isPassed() ? "通过" : ("未通过 HTTP " + tr.getStatusCode()));
+                } catch (Exception ex) {
+                    status.setPassed(false);
+                    status.setStatusCode(-1);
+                    status.setMessage("请求异常：" + ex.getMessage());
+                }
+                status.setManuallyCleared(false);
+                status.setTestedAt(System.currentTimeMillis());
+                folderService.setStatus(n.folderId, api.uniqueKey(), status);
+                if (status.isPassed()) passed++; else failed++;
+                final int pNow = passed, fNow = failed;
+                SwingUtilities.invokeLater(() ->
+                        statsLabel.setText("批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow));
+            }
+            final int passedF = passed, failedF = failed;
+            SwingUtilities.invokeLater(() -> {
+                buildStarredTree();
+                statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
+            });
+        });
+    }
+
+    /** 批量移动：把多选 API 一次性移到目标文件夹。 */
+    private void starredBatchMoveTo() {
+        refreshStarredApiIndex();
+        List<StarredApiNode> selected = getSelectedStarredApiNodes();
+        if (selected.size() < 2) {
+            Messages.showInfoMessage(project, "批量移动需要至少 2 个接口", "提示");
+            return;
+        }
+        List<StarredFolder> folders = folderService.loadFolders();
+        if (folders.isEmpty()) {
+            Messages.showInfoMessage(project, "暂无收藏文件夹", "批量移动");
+            return;
+        }
+        // 排除所有选中 API 所属的文件夹（无意义），保留可作为目标的文件夹
+        java.util.Set<String> sourceIds = new java.util.HashSet<>();
+        for (StarredApiNode n : selected) sourceIds.add(n.folderId);
+        List<StarredFolder> candidates = folders.stream()
+                .filter(f -> !sourceIds.contains(f.getId()))
+                .collect(Collectors.toList());
+        if (candidates.isEmpty()) {
+            Messages.showInfoMessage(project, "选中的接口已覆盖全部文件夹，无可移入目标", "批量移动");
+            return;
+        }
+        // 弹一个简单选择对话框（不重复造轮子，用 JOptionPane）
+        String[] names = candidates.stream().map(StarredFolder::getName).toArray(String[]::new);
+        Object choice = JOptionPane.showInputDialog(tree,
+                "将 " + selected.size() + " 个接口移动到哪个文件夹？",
+                "批量移动",
+                JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
+        if (choice == null) return;
+        int idx = java.util.Arrays.asList(names).indexOf(choice);
+        if (idx < 0 || idx >= candidates.size()) return;
+        StarredFolder target = candidates.get(idx);
+        int ok = 0, skip = 0;
+        for (StarredApiNode n : selected) {
+            if (n.folderId.equals(target.getId())) { skip++; continue; }
+            // 目标里已有同 API：跳过（移动语义），保持与单接口 moveTo 一致
+            if (target.getApiKeys().contains(n.api.uniqueKey())) { skip++; continue; }
+            boolean moved = folderService.moveApi(n.api.uniqueKey(), n.folderId, target.getId());
+            if (moved) ok++;
+        }
+        buildStarredTree();
+        Messages.showInfoMessage(project,
+                "已移动 " + ok + " 个到「" + target.getName() + "」" +
+                        (skip > 0 ? "（" + skip + " 个已存在或同文件夹，已跳过）" : ""),
+                "批量移动完成");
+    }
+
+    /** 批量删除：从各自所属文件夹中移除多选 API。 */
+    private void starredBatchRemove() {
+        List<StarredApiNode> selected = getSelectedStarredApiNodes();
+        if (selected.size() < 2) {
+            Messages.showInfoMessage(project, "批量删除需要至少 2 个接口", "提示");
+            return;
+        }
+        int ret = Messages.showYesNoDialog(project,
+                "将从各自所属文件夹移除 " + selected.size() + " 个接口，是否继续？\n" +
+                        "（仅从收藏移除，不会删除源码中的接口）",
+                "批量删除", Messages.getQuestionIcon());
+        if (ret != Messages.YES) return;
+        int ok = 0;
+        for (StarredApiNode n : selected) {
+            try {
+                folderService.removeApiFromFolder(n.folderId, n.api.uniqueKey());
+                ok++;
+            } catch (Exception ex) {
+                LOG.warn("批量删除失败: " + n.api.getUrl(), ex);
+            }
+        }
+        buildStarredTree();
+        Messages.showInfoMessage(project, "已从收藏移除 " + ok + " 个接口", "批量删除完成");
     }
 
     // ═══════════════════════════════════════════════════════════
