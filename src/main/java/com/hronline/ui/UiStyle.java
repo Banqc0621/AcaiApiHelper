@@ -23,6 +23,10 @@ import java.awt.event.MouseEvent;
  */
 public final class UiStyle {
 
+    private static final String INTERACTION_FEEDBACK_ATTACHED = "__interaction_feedback_attached";
+    private static final String LOADING_TEXT = "__loading_text";
+    private static final String LOADING_CURSOR = "__loading_cursor";
+
     private UiStyle() {}
 
     // ── 字号（float，供 deriveFont 使用）──
@@ -149,20 +153,20 @@ public final class UiStyle {
 
     /**
      * 主操作按钮（高亮填充），accent 可由 settings.accentColor 控制。
-     * <p>一伦优化 #9：跟随 settings 选择 BLUE/GREEN，明暗主题下自动切换色值。</p>
+     * <p>一轮优化 #9：跟随 settings 选择 BLUE/GREEN，明暗主题下自动切换色值。</p>
      */
     public static JButton primaryButton(String text, Icon icon, ActionListener listener, AccentColor accent) {
         JButton btn = button(text, icon, listener);
         btn.putClientProperty("JButton.buttonType", "default");
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
         applyAccent(btn, accent);
-        // 一伦优化 #12：主操作按钮自动挂上悬停/按下/禁用三态反馈
+        // 一轮优化 #12：主操作按钮自动挂上悬停/按下/禁用三态反馈
         attachInteractionFeedback(btn);
         return btn;
     }
 
     /**
-     * 一伦优化 #9：把 accent 主题色应用到一个按钮上。
+     * 一轮优化 #9：把 accent 主题色应用到一个按钮上。
      * <p>使用 {@code setBackground}/{@code setForeground} 直接着色，
      * 跳过 LaF 渲染差异，保证明暗主题下都看得见。</p>
      */
@@ -174,7 +178,7 @@ public final class UiStyle {
         btn.setBorderPainted(false);
     }
 
-    // ── 按钮交互反馈（一伦优化 #12：统一悬停/按下/加载态）──
+    // ── 按钮交互反馈（一轮优化 #12：统一悬停/按下/加载态）──
 
     /**
      * 给按钮加三态视觉反馈：悬停加深底色，按下再深一档，禁用置灰。
@@ -182,7 +186,11 @@ public final class UiStyle {
      */
     public static void attachInteractionFeedback(JButton btn) {
         if (btn == null) return;
+        if (Boolean.TRUE.equals(btn.getClientProperty(INTERACTION_FEEDBACK_ATTACHED))) return;
+        btn.putClientProperty(INTERACTION_FEEDBACK_ATTACHED, Boolean.TRUE);
+
         Color base = btn.getBackground();
+        Color baseForeground = btn.getForeground();
         Color hover = shift(base, 0.92f);
         Color pressed = shift(base, 0.82f);
         Color disabled = JBColor.namedColor("Button.disabledText", new Color(0x9E, 0x9E, 0x9E));
@@ -210,7 +218,7 @@ public final class UiStyle {
             boolean en = (boolean) evt.getNewValue();
             if (en) {
                 btn.setBackground(base);
-                btn.setForeground(btn.getForeground()); // 保留原色
+                btn.setForeground(baseForeground);
             } else {
                 btn.setBackground(JBColor.namedColor("Button.background", new Color(0xEE, 0xEE, 0xEE)).darker());
                 btn.setForeground(disabled);
@@ -224,7 +232,10 @@ public final class UiStyle {
      */
     public static void startLoading(JButton btn, String prefix) {
         if (btn == null) return;
-        btn.putClientProperty("__loading_text", btn.getText());
+        if (btn.getClientProperty(LOADING_TEXT) == null) {
+            btn.putClientProperty(LOADING_TEXT, btn.getText());
+            btn.putClientProperty(LOADING_CURSOR, btn.getCursor());
+        }
         btn.setText((prefix == null ? "" : prefix) + "  ⟳ …");
         btn.setEnabled(false);
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
@@ -233,10 +244,15 @@ public final class UiStyle {
     /** 结束 loading：恢复原文本 + 启用按钮。 */
     public static void endLoading(JButton btn, String fallbackText) {
         if (btn == null) return;
-        Object prev = btn.getClientProperty("__loading_text");
+        Object prev = btn.getClientProperty(LOADING_TEXT);
+        Object previousCursor = btn.getClientProperty(LOADING_CURSOR);
         btn.setText(prev instanceof String ? (String) prev : (fallbackText == null ? "" : fallbackText));
         btn.setEnabled(true);
-        btn.setCursor(Cursor.getDefaultCursor());
+        btn.setCursor(previousCursor instanceof Cursor
+                ? (Cursor) previousCursor
+                : Cursor.getDefaultCursor());
+        btn.putClientProperty(LOADING_TEXT, null);
+        btn.putClientProperty(LOADING_CURSOR, null);
     }
 
     /** 把 RGB 各通道按 ratio 缩放，<1 变深，>1 变浅；clamp 到 0-255 */
