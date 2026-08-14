@@ -351,6 +351,24 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(copyCurlAction);
 
+        // 一伦优化 #2：cURL 导入入口——从右键菜单触发。
+        // 不再占用主工具栏，避免与右侧"导出cURL"视觉冲突；保持与"复制为cURL"相邻。
+        AnAction importCurlAction = new AnAction("导入cURL", "粘贴cURL命令覆盖当前接口的请求参数", AllIcons.ToolbarDecorator.Import) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                if (debuggerPanel == null) {
+                    Messages.showWarningDialog(project, "调试面板尚未初始化，请打开工具窗口后重试", "导入cURL");
+                    return;
+                }
+                // 把当前右键命中的接口加载到调试面板，作为 cURL 导入的上下文
+                if (onApiSelected != null && api != null) {
+                    onApiSelected.accept(api);
+                }
+                debuggerPanel.importCurlOrJson();
+            }
+        };
+        group.add(importCurlAction);
+
         // 导出选中接口（支持多选）
         group.addSeparator();
         AnAction exportMdAction = new AnAction("📄 导出 Markdown（多选）",

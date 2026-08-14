@@ -370,18 +370,12 @@ public class ApiDebuggerPanel extends JPanel {
         dataMgrBtn.addActionListener(e -> showDataManagerDialog());
         toolbar1.add(dataMgrBtn);
 
-        // ============== 第 2 行：导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
+        // ============== 第 2 行：导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
+        // 一伦优化 #2：原"导入"按钮已挪到左侧接口树右键菜单（ApiTreePanel → 导入cURL），
+        // 不再在本工具栏占位，腾出空间给更常用的导出与清Cookie。
         JToolBar toolbar2 = new JToolBar();
         toolbar2.setFloatable(false);
         toolbar2.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
-
-        JButton importBtn = new JButton("导入", AllIcons.ToolbarDecorator.Import);
-        importBtn.setToolTipText("导入cURL或JSON测试用例");
-        importBtn.putClientProperty("JButton.buttonType", "roundRect");
-        importBtn.setFont(importBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        importBtn.setFocusPainted(false);
-        importBtn.addActionListener(e -> importCurlOrJson());
-        toolbar2.add(importBtn);
 
         JButton exportBtn = new JButton("导出cURL", AllIcons.ToolbarDecorator.Export);
         exportBtn.setToolTipText("导出为cURL命令");
@@ -2853,7 +2847,11 @@ public class ApiDebuggerPanel extends JPanel {
         return (Environment) envCombo.getSelectedItem();
     }
 
-    private void importCurlOrJson() {
+    /**
+     * 一伦优化 #2：从 ApiTreePanel 右键菜单触发 cURL 导入（移出本面板工具栏后，
+     * 这里只从入口端调用，但保持包内可见以减少外部依赖）。
+     */
+    public void importCurlOrJson() {
         String input = Messages.showInputDialog(project,
                 "粘贴cURL命令或JSON:", "导入", Messages.getQuestionIcon());
         if (input == null || input.isBlank()) return;
