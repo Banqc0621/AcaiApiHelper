@@ -963,9 +963,12 @@ public class ApiDebuggerPanel extends JPanel {
         UiStyle.hint(aiConfigInfoLabel);
         statusCard.add(aiConfigInfoLabel);
 
-        JButton configBtn = iconButton("配置", AllIcons.General.Settings, e -> showAiConfigDialog());
-        configBtn.setToolTipText("⚙️ 配置AI服务器、API Key和模型");
-        statusCard.add(configBtn);
+        // 一伦优化 #7：原"配置"按钮已移除，AI 配置统一去 Settings → Tools → RestAutoLab → AI 模型配置
+        JBLabel configHint = new JBLabel("（在 Settings → Tools → " + RestAutoLabConstants.PLUGIN_NAME
+                + " → AI 模型配置 中维护）");
+        configHint.setFont(configHint.getFont().deriveFont(Font.ITALIC, UiStyle.FONT_TINY));
+        configHint.setForeground(JBColor.GRAY);
+        statusCard.add(configHint);
 
         panel.add(statusCard);
         panel.add(Box.createVerticalStrut(8));
