@@ -18,12 +18,13 @@ public final class MyMessageBundle {
     private MyMessageBundle() {}
 
     @NotNull
-    public static @Nls String message(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, @NotNull Object @NotNull ... params) {
+    @Nls
+    public static String message(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, @NotNull Object... params) {
         return INSTANCE.getMessage(key, params);
     }
 
     @NotNull
-    public static Supplier<@Nls String> lazyMessage(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, @NotNull Object @NotNull ... params) {
+    public static Supplier<String> lazyMessage(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, @NotNull Object... params) {
         return INSTANCE.getLazyMessage(key, params);
     }
 }

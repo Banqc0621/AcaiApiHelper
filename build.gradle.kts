@@ -1,5 +1,7 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
+val ideaVersion = providers.gradleProperty("ideaVersion").orElse("2023.3.6").get()
+
 plugins {
     id("java")
     id("org.jetbrains.intellij.platform")
@@ -49,7 +51,9 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
 
     intellijPlatform {
-        intellijIdea("2025.3.5")
+        // 默认使用仍受构建插件维护的 Java 17 平台；可用 -PideaVersion=2022.3.3
+        // 单独执行最低兼容版本的编译和测试。
+        intellijIdea(ideaVersion)
         testFramework(TestFrameworkType.Platform)
 
         // Java PSI support

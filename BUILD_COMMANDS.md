@@ -33,7 +33,7 @@
 产物位于：
 
 ```
-build/distributions/acai-2.0.0.zip
+build/distributions/restautolab-2.0.0.zip
 ```
 
 这个 zip 可以直接通过 IDEA 的 `Settings → Plugins → ⚙️ → Install Plugin from Disk...` 安装。
@@ -72,7 +72,7 @@ build/distributions/acai-2.0.0.zip
 
 会启动一个新的 IDEA 实例，自动加载本插件。**这是日常开发最常用的命令**。
 
-### 2. 启动并指定 IDEA 版本（覆盖默认 2025.3.5）
+### 2. 启动并指定 IDEA 版本（覆盖默认 2023.3.6）
 
 ```bash
 ./gradlew runIde -PideaVersion=2024.1
@@ -99,6 +99,16 @@ build/distributions/acai-2.0.0.zip
 ```bash
 ./gradlew test
 ```
+
+### 1.1 验证最低兼容版本（IDEA 2022.3）
+
+```bash
+./gradlew test verifyPluginProjectConfiguration -PideaVersion=2022.3.3
+```
+
+该命令使用 Java 17 和 IDEA 2022.3.3 API 编译、测试源码，用于拦截误用高版本 API。
+新版 IntelliJ Platform Gradle 插件不再支持为 2022.3 生成设置搜索索引，因此完整
+`buildPlugin` 默认在仍受支持的 IDEA 2023.3.6 基线上执行。
 
 ### 2. 运行指定测试类
 
@@ -150,7 +160,7 @@ build/distributions/acai-2.0.0.zip
 ./gradlew buildPlugin
 
 # 2. 查看产物
-ls -lah build/distributions/acai-2.0.0.zip
+ls -lah build/distributions/restautolab-2.0.0.zip
 
 # 3. 查看待提交内容
 git status

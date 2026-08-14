@@ -2,7 +2,7 @@
 
 > 本文档指导将 RestAutoLab（com.ban.acai，IntelliJ IDEA 插件）迁移到**无互联网**的离线环境正常运行。
 > 适用对象：构建/运维人员。
-> 项目构建方式：Gradle 9.5.0 Wrapper + IntelliJ Platform Gradle Plugin 2.17.0，目标 IDE 为 IntelliJ IDEA 2025.3.5。
+> 项目构建方式：Gradle 9.5.0 Wrapper + IntelliJ Platform Gradle Plugin 2.17.0，默认构建基线为 IntelliJ IDEA 2023.3.6；最低兼容检查使用 2022.3.3。
 
 ---
 
@@ -38,7 +38,7 @@
 ```bash
 cd /path/to/RestAutoLab
 
-# 清理并构建（会自动下载 IntelliJ Platform SDK 2025.3.5 与全部依赖）
+# 清理并构建（会自动下载 IntelliJ Platform SDK 2023.3.6 与全部依赖）
 ./gradlew clean buildPlugin
 
 # 跳过测试快速构建（如急需）
@@ -55,10 +55,10 @@ build/distributions/acai-<版本号>.zip      # 例如 acai-1.0.0.zip
 
 ### A.2 在线机：下载 IDE 离线安装包
 
-插件兼容 **IDEA 2022.3 ~ 2026.1.x**。推荐下载与构建目标一致的 **IntelliJ IDEA 2025.3.5**（Ultimate 或 Community 均可，但插件依赖 `com.intellij.java` 与 `Git4Idea` 这两个 bundled 插件，二者在两个发行版中均自带）。
+插件声明兼容 **IDEA 2022.3 ~ 2026.1.x**。推荐下载与默认构建目标一致的 **IntelliJ IDEA 2023.3.6**；最低版本另用 `-PideaVersion=2022.3.3` 编译测试。插件依赖 `com.intellij.java` 与 `Git4Idea` 两个 bundled 插件。
 
 - 官网离线安装包下载页：https://www.jetbrains.com/idea/download/other.html
-- 选择 `2025.3.5` 对应平台的 `.dmg`（macOS）/ `.exe` 或 `.zip`（Windows）/ `.tar.gz`（Linux）
+- 选择 `2023.3.6` 对应平台的 `.dmg`（macOS）/ `.exe` 或 `.zip`（Windows）/ `.tar.gz`（Linux）
 
 > 若离线机已有符合版本范围的 IDEA，可跳过本步。
 
@@ -76,7 +76,7 @@ IDEA 2022.3+ 需要 JDK 17+ 运行时。下载离线安装包：
 ```
 物料清单：
 ├── acai-<版本号>.zip              # A.1 产出的插件包
-├── ideaIU-2025.3.5.dmg           # A.2 IDE 安装包（按平台替换后缀）
+├── ideaIU-2023.3.6.dmg           # A.2 IDE 安装包（按平台替换后缀）
 └── Temurin17.jdk.pkg             # A.3 JDK 安装包（离线机已装有则省略）
 ```
 
@@ -140,7 +140,7 @@ IDEA 2022.3+ 需要 JDK 17+ 运行时。下载离线安装包：
 cd /path/to/RestAutoLab
 ./gradlew clean buildPlugin
 
-# 2. 打包 Gradle 依赖缓存（含 IntelliJ Platform SDK 2025.3.5、Gson、JUnit 等）
+# 2. 打包 Gradle 依赖缓存（含 IntelliJ Platform SDK 2023.3.6、Gson、JUnit 等）
 #    排除 *.lock 避免离线机解压后锁文件残留；wrapper/dists 已含 gradle-9.5.0 发行包
 #    用 zip 格式，Windows 自带支持；-rq 静默递归
 cd ~
@@ -289,7 +289,7 @@ gradlew.bat clean buildPlugin --offline
 ### Q1：安装插件时提示「插件不兼容当前 IDE 版本」
 检查 IDE 版本是否在 **2022.3 ~ 2026.1.x** 范围内（`Help → About` 查看 build 号是否在 223 ~ 261 之间）。版本不符需更换 IDE 版本或重新调整 `plugin.xml` 与 `build.gradle.kts` 的 `sinceBuild/untilBuild`。
 
-### Q2：方案B构建报 `Could not resolve com.jetbrains.intellij.idea:ideaIU:2025.3.5`
+### Q2：方案B构建报 `Could not resolve com.jetbrains.intellij.idea:ideaIU:2023.3.6`
 说明 Gradle 缓存未完整拷贝。回到在线机，删除 `~/.gradle/caches` 后重新执行 `./gradlew buildPlugin` 触发完整下载，再重新打包。注意 `caches\modules-2` 与 `caches\9.5.0` **两个目录都要拷**（即 zip 内 `.gradle\caches\` 下都要有）。
 
 ### Q3：方案B构建卡在下载 Gradle 发行包
