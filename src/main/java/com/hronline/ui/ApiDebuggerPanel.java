@@ -339,36 +339,15 @@ public class ApiDebuggerPanel extends JPanel {
         });
         toolbar1.add(envCombo);
 
-        JButton envBtn = new JButton("环境管理", AllIcons.General.Settings);
-        envBtn.setToolTipText("管理环境配置");
-        envBtn.putClientProperty("JButton.buttonType", "roundRect");
-        envBtn.setFont(envBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        envBtn.setFocusPainted(false);
-        envBtn.addActionListener(e -> {
-            EnvironmentManagerDialog dialog = new EnvironmentManagerDialog(project);
-            if (dialog.showAndGet()) {
-                refreshEnvCombo();
-                // 对话框内可能激活了其他环境，回显到主面板
-                Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
-                if (active != null) {
-                    applyEnvironmentToPanel(active);
-                    statusLabel.setText("● 已切换到环境: " + active.getName());
-                } else {
-                    statusLabel.setText("● 环境配置已更新");
-                }
-            }
-        });
-        toolbar1.add(envBtn);
-
-        toolbar1.addSeparator(new Dimension(12, 0));
-
-        JButton dataMgrBtn = new JButton("数据管理", AllIcons.Actions.MenuSaveall);
-        dataMgrBtn.setToolTipText("保存 / 导入 / 导出 测试配置与全量测试数据");
-        dataMgrBtn.putClientProperty("JButton.buttonType", "roundRect");
-        dataMgrBtn.setFont(dataMgrBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        dataMgrBtn.setFocusPainted(false);
-        dataMgrBtn.addActionListener(e -> showDataManagerDialog());
-        toolbar1.add(dataMgrBtn);
+        // 一伦优化 #3：原"环境管理"+"数据管理"两个按钮合并为单个入口"环境 & 数据"，
+        // 弹统一的合并对话框（EnvAndDataManageDialog），不再在工具栏占两个槽位。
+        JButton envDataBtn = new JButton("环境 & 数据", AllIcons.General.Settings);
+        envDataBtn.setToolTipText("管理环境 / 变量 / 全局请求头；导入导出测试配置与接口数据");
+        envDataBtn.putClientProperty("JButton.buttonType", "roundRect");
+        envDataBtn.setFont(envDataBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        envDataBtn.setFocusPainted(false);
+        envDataBtn.addActionListener(e -> showEnvAndDataManageDialog());
+        toolbar1.add(envDataBtn);
 
         // ============== 第 2 行：导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
         // 一伦优化 #2：原"导入"按钮已挪到左侧接口树右键菜单（ApiTreePanel → 导入cURL），
@@ -3051,180 +3030,64 @@ public class ApiDebuggerPanel extends JPanel {
     // 数据管理对话框：集中存放 保存/导入/导出 测试配置与全量测试数据
     // ================================================================
 
-    /** 弹出「数据管理」对话框，集中管理测试配置与测试数据的保存/导入/导出。
-     *  <p>对话框只负责让用户选择操作并关闭；真正执行操作在 show() 返回后进行，
-     *  此时已无任何模态对话框，原生文件保存/选择对话框可正常弹出（Windows 兼容）。</p> */
-    private void showDataManagerDialog() {
-        DataManagerDialog dialog = new DataManagerDialog();
+    /**
+     * 一伦优化 #3：合并后的「环境 & 数据」入口。
+     * 用一个 JTabbedPane 同时承载环境管理（{@link EnvironmentManagerDialog#createCenterPanel()}）和
+     * 数据管理（{@link DataManagePanel} 卡片列表），关闭后通过 {@link EnvAndDataManageDialog#getPendingDataAction()}
+     * 获取用户点选的导出/导入操作并 invokeLater 执行（Windows 模态兼容）。
+     */
+    private void showEnvAndDataManageDialog() {
+        // 配置类操作（AI 设置 · 环境配置 · 测试配置）
+        java.util.List<DataManagePanel.Action> configActions = new java.util.ArrayList<>();
+        configActions.add(new DataManagePanel.Action(
+                AllIcons.ToolbarDecorator.Export, "导出配置",
+                "将当前 AI 设置、环境配置、测试配置导出为 JSON",
+                this::exportTestConfigAction));
+        configActions.add(new DataManagePanel.Action(
+                AllIcons.ToolbarDecorator.Import, "导入配置",
+                "导入他人配置；AI 设置覆盖当前，环境/同名配置保留本地",
+                this::importTestConfigAction));
+
+        // 接口数据类操作（全量接口定义 · 已测接口测试数据）
+        java.util.List<DataManagePanel.Action> apiDataActions = new java.util.ArrayList<>();
+        apiDataActions.add(new DataManagePanel.Action(
+                AllIcons.Actions.Download, "导出接口数据",
+                "导出全量接口定义与已测接口的测试数据",
+                this::exportTestDataAction));
+        apiDataActions.add(new DataManagePanel.Action(
+                AllIcons.ToolbarDecorator.Import, "导入接口数据",
+                "按接口粒度合并；本地已测接口保留不覆盖，未测接口补入",
+                this::importTestDataAction));
+
+        EnvAndDataManageDialog dialog = new EnvAndDataManageDialog(project, configActions, apiDataActions);
         dialog.show();
-        Runnable pending = dialog.getPendingAction();
+
+        // 环境 Tab 的 applyChanges 已在 dialog.doOKAction 内统一执行，这里刷新回主面板
+        refreshEnvCombo();
+        Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
+        if (active != null) {
+            applyEnvironmentToPanel(active);
+            statusLabel.setText("● 已切换到环境: " + active.getName());
+        } else {
+            statusLabel.setText("● 环境配置已更新");
+        }
+
+        // 数据 Tab：执行用户点选的待办操作（导出/导入），用 invokeLater + defaultModalityState
+        // 避免 Windows 上模态状态残留导致原生文件对话框无法弹出
+        Runnable pending = dialog.getPendingDataAction();
         if (pending != null) {
-            // Windows 上 DataManagerDialog 关闭后，其模态状态（ModalityState）并非同步清除——
-            // show() 返回时 dispose 已触发但底层窗口句柄与模态栈可能尚未完全释放。
-            // 若此时直接执行导出操作，其中调用的原生文件保存对话框（IFileDialog）会因
-            // 残留模态上下文而拒绝弹出（表现：点击无反应）。macOS 的 NSSavePanel 对此
-            // 更宽容，所以 Mac 正常。
-            // 使用 invokeLater + defaultModalityState：将操作排入 EDT 队列，仅在确认无任何模态对话框
-            // 时才执行，彻底避免模态状态残留导致原生文件对话框无法弹出。
             ApplicationManager.getApplication().invokeLater(pending, ModalityState.defaultModalityState());
         }
     }
 
-    /**
-     * 数据管理对话框 - 把分散的「保存配置 / 导出测试配置 / 导入测试配置 /
-     * 导出测试数据 / 导入测试数据」集中到一个弹窗，避免工具栏按钮过多。
-     */
-    private class DataManagerDialog extends DialogWrapper {
 
-        /** 用户点击卡片后待执行的操作；点击「关闭」则为 null。show() 返回后由调用方执行。 */
-        private Runnable pendingAction;
 
-        DataManagerDialog() {
-            super(project);
-            setTitle("数据管理");
-            setOKButtonText("关闭");
-            init();
-        }
-
-        Runnable getPendingAction() { return pendingAction; }
-
-        @Override
-        protected Action @NotNull [] createActions() {
-            // 只保留「关闭」按钮，操作均通过列表中的卡片触发
-            return new Action[]{getOKAction()};
-        }
-
-        @Override
-        protected javax.swing.JComponent createCenterPanel() {
-            JPanel panel = new JPanel(new BorderLayout(0, 10));
-            panel.setPreferredSize(new Dimension(540, 320));
-            panel.setBorder(JBUI.Borders.empty(4, 2, 2, 2));
-
-            // 顶部说明
-            JBLabel hint = new JBLabel("选择需要执行的操作，点击卡片即可触发");
-            UiStyle.hint(hint);
-            hint.setBorder(JBUI.Borders.empty(0, 2, 0, 0));
-            panel.add(hint, BorderLayout.NORTH);
-
-            // 卡片列表容器
-            JPanel list = new JPanel();
-            list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
-            list.setBorder(JBUI.Borders.empty(2, 2));
-
-            // —— 配置类 ——
-            list.add(sectionHeader("配置", "AI 设置 · 环境配置 · 测试配置"));
-            list.add(actionCard(AllIcons.ToolbarDecorator.Export, "导出配置",
-                    "将当前 AI 设置、环境配置、测试配置导出为 JSON",
-                    e -> exportTestConfigAction()));
-            list.add(actionCard(AllIcons.ToolbarDecorator.Import, "导入配置",
-                    "导入他人配置；AI 设置覆盖当前，环境/同名配置保留本地",
-                    e -> importTestConfigAction()));
-            list.add(Box.createVerticalStrut(8));
-
-            // —— 接口数据类 ——
-            list.add(sectionHeader("接口数据", "全量接口定义 · 已测接口测试数据"));
-            list.add(actionCard(AllIcons.Actions.Download, "导出接口数据",
-                    "导出全量接口定义与已测接口的测试数据",
-                    e -> exportTestDataAction()));
-            list.add(actionCard(AllIcons.ToolbarDecorator.Import, "导入接口数据",
-                    "按接口粒度合并；本地已测接口保留不覆盖，未测接口补入",
-                    e -> importTestDataAction()));
-
-            list.add(Box.createVerticalGlue());
-
-            JBScrollPane scroll = new JBScrollPane(list);
-            scroll.setBorder(JBUI.Borders.empty());
-            scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-            panel.add(scroll, BorderLayout.CENTER);
-
-            return panel;
-        }
-
-        /** 分区标题：左侧标签 + 右侧细线分隔，营造分组层次感 */
-        private JComponent sectionHeader(String title, String subtitle) {
-            JPanel header = new JPanel(new BorderLayout(8, 0));
-            header.setOpaque(false);
-            header.setBorder(JBUI.Borders.empty(8, 6, 4, 6));
-
-            JPanel left = new JPanel(new BorderLayout(0, 0));
-            left.setOpaque(false);
-            JBLabel titleLabel = new JBLabel(title);
-            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_SECTION));
-            titleLabel.setForeground(JBColor.foreground());
-            left.add(titleLabel, BorderLayout.CENTER);
-            header.add(left, BorderLayout.WEST);
-
-            JBLabel subLabel = new JBLabel(subtitle);
-            UiStyle.hint(subLabel);
-            header.add(subLabel, BorderLayout.EAST);
-
-            return header;
-        }
-
-        /**
-         * 构造一张可点击的操作卡片：图标 + 标题/描述，整行可点击。
-         * <p>hover 时浅色高亮、鼠标变手型。点击时先关闭本弹窗，再执行操作：
-         * 导出/导入会弹出确认框与原生文件对话框，Windows 上若本模态弹窗仍开启，
-         * 原生文件保存对话框无法正常置顶弹出，因此必须先关闭本弹窗。</p>
-         */
-        private JComponent actionCard(Icon icon, String title, String desc, java.awt.event.ActionListener listener) {
-            JPanel card = new JPanel(new BorderLayout(10, 0));
-            card.setOpaque(false);
-            card.setBorder(JBUI.Borders.empty(8, 10));
-            card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-
-            // 图标
-            JBLabel iconLabel = new JBLabel(icon);
-            iconLabel.setVerticalAlignment(SwingConstants.CENTER);
-            card.add(iconLabel, BorderLayout.WEST);
-
-            // 标题 + 描述
-            JPanel text = new JPanel(new BorderLayout(0, 3));
-            text.setOpaque(false);
-            JBLabel titleLabel = new JBLabel(title);
-            titleLabel.setFont(titleLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_SECTION));
-            JBLabel descLabel = new JBLabel(desc);
-            UiStyle.hint(descLabel);
-            text.add(titleLabel, BorderLayout.CENTER);
-            text.add(descLabel, BorderLayout.SOUTH);
-            card.add(text, BorderLayout.CENTER);
-
-            // 右侧箭头指示可点击
-            JBLabel arrow = new JBLabel(AllIcons.Icons.Ide.NextStep);
-            arrow.setVerticalAlignment(SwingConstants.CENTER);
-            arrow.setForeground(JBColor.GRAY);
-            card.add(arrow, BorderLayout.EAST);
-
-            // hover 高亮 + 点击触发
-            card.addMouseListener(new java.awt.event.MouseAdapter() {
-                @Override
-                public void mousePressed(java.awt.event.MouseEvent e) {
-                    // 仅响应鼠标左键；mousePressed 比 mouseClicked 在 Windows 上更可靠
-                    // （mouseClicked 在 press/release 间若有微小位移或组件重排即不触发）。
-                    if (!javax.swing.SwingUtilities.isLeftMouseButton(e)) return;
-                    // 不在此执行操作，只记录待办操作并关闭对话框。
-                    // 真正执行在 show() 返回后进行（此时已无模态对话框），避免 Windows 上
-                    // 模态弹窗关闭过程与原生文件保存对话框争抢窗口句柄导致后者无法弹出。
-                    pendingAction = () -> listener.actionPerformed(
-                            new java.awt.event.ActionEvent(card, 0, "click"));
-                    close(OK_EXIT_CODE);
-                }
-
-                @Override
-                public void mouseEntered(java.awt.event.MouseEvent e) {
-                    card.setOpaque(true);
-                    card.setBackground(JBColor.namedColor("Table.stripeColor", new Color(245, 246, 247)));
-                }
-
-                @Override
-                public void mouseExited(java.awt.event.MouseEvent e) {
-                    card.setOpaque(false);
-                }
-            });
-
-            return card;
-        }
-    }
+    /** 一伦优化 #3：原 showDataManagerDialog + 内嵌 DataManagerDialog 类（~170 行）已删除。
+     *  现由 {@link EnvAndDataManageDialog} 统一承担「环境 & 数据」合并弹窗：
+     *  - 数据卡片列表由 {@link DataManagePanel} 静态构建
+     *  - 卡片点击的 Runnable 由 {@link #showEnvAndDataManageDialog()} 注入
+     *  - 原 exportTestConfigAction / importTestConfigAction / exportTestDataAction /
+     *    importTestDataAction 保留在下方（3297+），仅调用方变化。 */
 
     // ================================================================
     // 测试配置 / 测试数据 导入导出

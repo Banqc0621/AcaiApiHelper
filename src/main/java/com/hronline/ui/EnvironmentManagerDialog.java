@@ -60,7 +60,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     }
 
     @Override
-    protected @Nullable JComponent createCenterPanel() {
+    public @Nullable JComponent createCenterPanel() {
         JPanel panel = new JPanel(new BorderLayout(8, 0));
         panel.setPreferredSize(new Dimension(780, 500));
 
@@ -310,5 +310,14 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             }
         }
         super.doOKAction();
+    }
+
+    /**
+     * 一伦优化 #3：把环境变更持久化逻辑独立为可复用方法，
+     * 让 EnvAndDataManageDialog（合并对话框）能在自身 OK 时调用，
+     * 不依赖本对话框的 OK 按钮。保持与 doOKAction 一致：保存当前编辑 + 写回 settings。
+     */
+    public void applyChanges() {
+        doOKAction();
     }
 }
