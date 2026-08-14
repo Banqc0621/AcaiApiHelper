@@ -277,7 +277,7 @@ public class ApiDebuggerPanel extends JPanel {
      * <p>拆为上下两排，避免单行过长：</p>
      * <ul>
      *   <li>第 1 行：扫描API + 环境（下拉+管理）+ 数据管理</li>
-     *   <li>第 2 行：导入 / 导出cURL / 导出文档 / 导出报告 / 清Cookie</li>
+     *   <li>第 2 行：导出cURL / 导出文档 / 导出报告（清Cookie 已挪到请求头右键）</li>
      * </ul>
      */
     private JPanel createToolbar() {
@@ -383,19 +383,8 @@ public class ApiDebuggerPanel extends JPanel {
         exportReportBtn.addActionListener(e -> exportLastReport());
         toolbar2.add(exportReportBtn);
 
-        toolbar2.addSeparator(new Dimension(4, 0));
-
-        JButton clearCookieBtn = new JButton("清Cookie", AllIcons.Actions.GC);
-        clearCookieBtn.setToolTipText("清空Cookie");
-        clearCookieBtn.putClientProperty("JButton.buttonType", "roundRect");
-        clearCookieBtn.setFont(clearCookieBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        clearCookieBtn.setFocusPainted(false);
-        clearCookieBtn.addActionListener(e -> {
-            HttpExecutorService.getInstance(project).clearCookies();
-            cookieStatusLabel.setText("Cookie: 已清空");
-            statusLabel.setText("● Cookie已清空");
-        });
-        toolbar2.add(clearCookieBtn);
+        // 一伦优化 #8：原"清Cookie"按钮从主工具栏移除，挪到『请求头』Tab 的右键菜单
+        // （点击请求头区域 → 右键 → 清空 Cookie），与请求头使用场景对齐
 
         // ============== 外层：垂直 BoxLayout 包裹两行 ==============
         JPanel wrapper = new JPanel();
@@ -731,6 +720,8 @@ public class ApiDebuggerPanel extends JPanel {
         panel.setBorder(JBUI.Borders.empty(4));
 
         UiStyle.styleTable(headerTable);
+        // 一伦优化 #8：请求头区域右键菜单，含"清空 Cookie"（与原工具栏按钮行为一致）
+        headerTable.setComponentPopupMenu(buildHeaderTablePopup());
         panel.add(new JBScrollPane(headerTable), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
@@ -745,6 +736,41 @@ public class ApiDebuggerPanel extends JPanel {
         panel.add(btnPanel, BorderLayout.SOUTH);
 
         return panel;
+    }
+
+    /**
+     * 一伦优化 #8：请求头表格右键菜单
+     * <p>把"清空 Cookie"动作从主工具栏搬到请求头区域的右键菜单，
+     * 顺带提供"添加行 / 删除选中行"两个常用动作，与表格内操作保持近距离。</p>
+     */
+    private JPopupMenu buildHeaderTablePopup() {
+        JPopupMenu menu = new JPopupMenu();
+
+        JMenuItem addItem = new JMenuItem("➕ 添加请求头", AllIcons.General.Add);
+        addItem.addActionListener(e -> headerTableModel.addRow(new Object[]{"", ""}));
+        menu.add(addItem);
+
+        JMenuItem delItem = new JMenuItem("➖ 删除选中行", AllIcons.General.Remove);
+        delItem.addActionListener(e -> {
+            int row = headerTable.getSelectedRow();
+            if (row >= 0) headerTableModel.removeRow(row);
+        });
+        menu.add(delItem);
+
+        menu.addSeparator();
+
+        // 清空 Cookie：与原工具栏"清Cookie"按钮行为完全一致
+        JMenuItem clearCookieItem = new JMenuItem("🍪 清空 Cookie", AllIcons.Actions.GC);
+        clearCookieItem.addActionListener(e -> {
+            HttpExecutorService.getInstance(project).clearCookies();
+            if (cookieStatusLabel != null) {
+                cookieStatusLabel.setText("Cookie: 已清空");
+            }
+            statusLabel.setText("● Cookie已清空");
+        });
+        menu.add(clearCookieItem);
+
+        return menu;
     }
 
     private JPanel createBodyTab() {
