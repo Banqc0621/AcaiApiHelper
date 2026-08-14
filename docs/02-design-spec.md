@@ -1,20 +1,55 @@
-# RestAutoLab UI 三轮优化接续验收 — Product and UI/UX Design
+# RestAutoLab 全量界面与交互优化 — 设计规格
 
-## Product logic
+- Task ID: `RAL-UI-OPT-20260814`
+- Revision: 1
 
-## Information architecture
+## 信息架构
 
-## Screens and states
+```text
+Tool Window
+├── 左侧：接口导航
+│   ├── 顶部：扫描
+│   ├── 接口节点右键：cURL 导入、导出、收藏
+│   ├── 收藏视图：批量操作、收藏列表导入/导出
+│   └── …：环境 & 数据管理
+└── 右侧：请求编辑与执行
+    ├── 上层：当前环境、前置脚本、变量覆盖
+    └── 下层：方法、URL、参数、AI/测试、发送、停止、响应
+```
 
-## Primary interaction flow
+## 组件边界
 
-## Visual tokens
+- `ApiTreePanel`：左侧入口、上下文菜单、批量收藏操作。
+- `EnvAndDataManageDialog` / `DataManagePanel`：统一环境与数据弹窗。
+- `ApiDebuggerPanel`：右侧分层、请求状态机、AI/测试入口、Cookie 菜单。
+- `UiStyle`：主题、间距、边框、尺寸和按钮状态。
+- `RestAutoLabSettingsState` / `RestAutoLabSettingsConfigurable`：持久化外观、AI 与请求配置。
 
-## Responsive and platform behavior
+## 执行节点
 
-## Loading, empty, error, and success states
+1. A/P0：左侧“…”统一入口；收藏列表导入/导出。
+2. B/P0：按目标重构右侧上下层；补前置脚本、变量覆盖、发送/停止。
+3. C/P1：AI 生成/测试统一入口；高对比度主题；全局按钮状态覆盖。
+4. CX Gate：最低版本测试、默认基线测试、完整打包、产物验签和人工运行验收。
 
-## Accessibility
+## 请求状态机
 
-## Prototype/render evidence
+```text
+idle -> running -> succeeded | failed | cancelled
+```
+
+- `running` 时发送按钮进入 loading，停止按钮可用。
+- `cancelled` 必须终止或忽略后台结果，恢复按钮、文案、颜色和光标。
+- 异常必须转换为可展示错误结果，不能把按钮永久留在禁用态。
+
+## 兼容策略
+
+- `ideaVersion` 使用 Gradle 属性参数化。
+- 默认 2023.3.6 用于完整打包和设置搜索索引。
+- 2022.3.3 用于最低 API/注解兼容编译与测试。
+- 源码和产物字节码保持 Java 17。
+
+## 已知设计差异
+
+当前 `JBSplitter` 是请求/响应分层，不能作为目标双层布局的完成证据；当前 AI 菜单也不是目标所述的“AI 生成/测试”合并。两项必须按节点 B/C 修正后重新验收。
 
