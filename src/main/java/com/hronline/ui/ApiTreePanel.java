@@ -9,9 +9,11 @@ import com.hronline.model.RequestHistory;
 import com.hronline.chain.ApiDependency;
 import com.hronline.chain.ChainTestExecutor;
 import com.hronline.chain.DependencyDetector;
+import com.hronline.scanner.ApiScannerService;
 import com.hronline.scanner.StarredFolderService;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.hronline.util.ApiDocExporter;
+import com.hronline.util.CurlUtil;
 import com.hronline.util.PostmanCollectionExporter;
 import com.hronline.util.TestDataExporter;
 import com.intellij.icons.AllIcons;
@@ -103,6 +105,9 @@ public class ApiTreePanel extends JPanel {
 
     /** API选中回调 - 通知调试面板更新 */
     private Consumer<ApiDefinition> onApiSelected = null;
+
+    /** 调试面板引用（注入，用于跨面板操作，如 cURL 导入跳转） */
+    private ApiDebuggerPanel debuggerPanel;
 
     /** 收藏模式下：apiKey -> ApiDefinition 解析表 */
     private final Map<String, ApiDefinition> starredApiByKey = new LinkedHashMap<>();
@@ -406,12 +411,18 @@ public class ApiTreePanel extends JPanel {
     private void setupLayout() {
         JPanel topContainer = new JPanel(new BorderLayout(0, 3));
         topContainer.setBorder(JBUI.Borders.empty(4, 6));
-        topContainer.add(createFilterPanel(), BorderLayout.NORTH);
+
+        // 顶部：导入能力前置工具栏（"扫描/导入" 任务：一轮优化把 扫描/导入 入口上移到工具栏）
+        topContainer.add(createTopToolbar(), BorderLayout.NORTH);
+
+        // 中部：过滤器 + 搜索框
+        JPanel middleContainer = new JPanel(new BorderLayout(0, 3));
+        middleContainer.add(createFilterPanel(), BorderLayout.NORTH);
 
         // 配置搜索框
         searchField.getTextEditor().getEmptyText().setText("搜索接口路径、名称、Controller或描述...");
         searchField.setFont(searchField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        topContainer.add(searchField, BorderLayout.SOUTH);
+        middleContainer.add(searchField, BorderLayout.SOUTH);
 
         // 搜索框实时过滤
         searchField.addDocumentListener(new DocumentAdapter() {
@@ -420,6 +431,7 @@ public class ApiTreePanel extends JPanel {
                 applyFilters();
             }
         });
+        topContainer.add(middleContainer, BorderLayout.CENTER);
 
         add(topContainer, BorderLayout.NORTH);
 
@@ -471,6 +483,41 @@ public class ApiTreePanel extends JPanel {
         panel.add(hintLabel, gbc);
 
         return panel;
+    }
+
+    /**
+     * 创建顶部"扫描"工具栏。
+     * <p>一轮优化（#1）：把扫描入口从右侧调试面板上移到左侧接口树顶部，
+     * 让用户进入插件后第一眼就能看到这个高频动作。cURL 导入在右键菜单中提供（不在工具栏占位）。</p>
+     */
+    private JPanel createTopToolbar() {
+        JToolBar bar = new JToolBar();
+        bar.setFloatable(false);
+        bar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+
+        JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
+        scanBtn.setToolTipText("重新扫描项目中的所有API接口");
+        scanBtn.putClientProperty("JButton.buttonType", "roundRect");
+        scanBtn.setFont(scanBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        scanBtn.setFocusPainted(false);
+        scanBtn.setMargin(new Insets(2, 10, 2, 10));
+        scanBtn.addActionListener(e -> {
+            ApiScannerService.getInstance(project).scanProjectApisAsync();
+            statsLabel.setText("● 正在扫描API...");
+        });
+        bar.add(scanBtn);
+
+        bar.add(Box.createHorizontalGlue());
+
+        // 提示：cURL 导入已挪到接口节点右键菜单，避免用户找不到
+        JBLabel hint = new JBLabel("提示：cURL 导入见右键菜单");
+        hint.setForeground(JBColor.GRAY);
+        hint.setFont(hint.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
+        bar.add(hint);
+
+        JPanel wrapper = new JPanel(new BorderLayout());
+        wrapper.add(bar, BorderLayout.CENTER);
+        return wrapper;
     }
 
     /**
@@ -539,6 +586,19 @@ public class ApiTreePanel extends JPanel {
 
     public void setOnApiSelected(Consumer<ApiDefinition> onApiSelected) {
         this.onApiSelected = onApiSelected;
+    }
+
+    /**
+     * 注入调试面板引用，供面板间协作（如顶部"扫描/导入"按钮、cURL 导入跳转等）。
+     * 由 {@link RestAutoLabToolWindowFactory} 在创建面板时调用。
+     */
+    public void setDebuggerPanel(ApiDebuggerPanel debuggerPanel) {
+        this.debuggerPanel = debuggerPanel;
+    }
+
+    /** 获取注入的调试面板（可能为 null，外层在 ToolWindowFactory 中已确保非空） */
+    public ApiDebuggerPanel getDebuggerPanel() {
+        return debuggerPanel;
     }
 
     /** 当前选中接口所属的收藏文件夹ID（仅收藏视图有效；全量视图返回null）。

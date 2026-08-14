@@ -34,6 +34,9 @@ public class RestAutoLabToolWindowFactory implements ToolWindowFactory {
 
         // 把 treePanel 注入到 debuggerPanel，使其能获取用户在树中的多选（用于 Markdown 导出）
         debuggerPanel.setTreePanel(treePanel);
+        // 同时把 debuggerPanel 注入到 treePanel，供左侧顶部"扫描"等面板间协作使用
+        // （一伦优化 #1：扫描/导入 入口上移到左侧工具栏）
+        treePanel.setDebuggerPanel(debuggerPanel);
 
         // 注册到持有服务，供编辑键 Action 拿到面板实例并精准定位到选中接口
         RestAutoLabToolWindowHolder.getInstance(project).setPanels(treePanel, debuggerPanel);
