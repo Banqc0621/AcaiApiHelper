@@ -506,9 +506,10 @@ public class ApiDebuggerPanel extends JPanel {
         sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         sendButton.setFocusPainted(false);
         sendButton.setToolTipText("发送请求到当前接口");
-        // 一伦优化 #9：发送按钮应用 accent 主题（默认蓝 / 翠绿可切）
+        // 一轮优化 #9/#12：发送按钮应用 accent 主题和统一交互反馈
         UiStyle.applyAccent(sendButton,
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        UiStyle.attachInteractionFeedback(sendButton);
         panel.add(sendButton, gbc);
 
         return panel;
@@ -1020,6 +1021,9 @@ public class ApiDebuggerPanel extends JPanel {
         JButton aiAssistantBtn = iconButton("🤖 AI 助手", AllIcons.Actions.Lightning, null);
         aiAssistantBtn.setToolTipText("AI 参数生成助手（含按当前场景生成 / 全量生成两个子动作）");
         aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
+        UiStyle.applyAccent(aiAssistantBtn,
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        UiStyle.attachInteractionFeedback(aiAssistantBtn);
         aiAssistantBtn.addActionListener(e -> showAiAssistantMenu(aiAssistantBtn));
         controlPanel.add(aiAssistantBtn);
 
@@ -1229,7 +1233,7 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showWarningDialog(project, "请先选择一个API接口", "提示");
             return;
         }
-        sendButton.setEnabled(false);
+        UiStyle.startLoading(sendButton, "发送中");
         statusLabel.setText("○ 请求发送中...");
 
         Map<String, String> params = collectParameterValues();
@@ -1252,10 +1256,13 @@ public class ApiDebuggerPanel extends JPanel {
             finalBodyFormat = HttpExecutorService.BODY_FORMAT_JSON;
         }
         final Environment env = getCurrentEnvironment();
+        final ApiDefinition requestApi = currentApi;
+        final String requestBaseUrl = baseUrlField.getText().trim();
+        final List<ResponseAssertion> requestAssertions = new ArrayList<>(currentAssertions);
 
         // 详细日志：记录要发送的请求信息
-        LOG.info("[执行请求] 开始 => API=" + currentApi.getHttpMethod() + " " + currentApi.getUrl()
-                + ", baseUrl=" + baseUrlField.getText().trim()
+        LOG.info("[执行请求] 开始 => API=" + requestApi.getHttpMethod() + " " + requestApi.getUrl()
+                + ", baseUrl=" + requestBaseUrl
                 + ", bodyFormat=" + finalBodyFormat
                 + ", 参数个数=" + params.size() + ", 请求头个数=" + headers.size());
         if (!attachmentPaths.isEmpty()) {
@@ -1270,13 +1277,23 @@ public class ApiDebuggerPanel extends JPanel {
         }
 
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            HttpExecutorService http = HttpExecutorService.getInstance(project);
-            TestResult result = http.executeRequest(currentApi, baseUrlField.getText().trim(),
-                    params, headers, requestBody, finalBodyFormat, env, new ArrayList<>(currentAssertions));
+            TestResult requestResult;
+            try {
+                HttpExecutorService http = HttpExecutorService.getInstance(project);
+                requestResult = http.executeRequest(requestApi, requestBaseUrl,
+                        params, headers, requestBody, finalBodyFormat, env, requestAssertions);
+            } catch (Exception ex) {
+                LOG.warn("[执行请求] 请求异常", ex);
+                String message = ex.getMessage() == null || ex.getMessage().isBlank()
+                        ? ex.getClass().getSimpleName()
+                        : ex.getMessage();
+                requestResult = TestResult.fromError(requestApi, message);
+            }
+            TestResult result = requestResult;
 
             ApplicationManager.getApplication().invokeLater(() -> {
                 displayResponse(result);
-                sendButton.setEnabled(true);
+                UiStyle.endLoading(sendButton, "发送");
                 statusLabel.setText("● " + result.summary());
             });
         });
