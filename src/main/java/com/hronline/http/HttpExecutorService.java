@@ -126,15 +126,15 @@ public final class HttpExecutorService {
                 requestBodyDisplay = multipart.summary;
             } else if (BODY_FORMAT_RAW.equals(bodyFormat)) {
                 // RAW格式：直接使用传入的requestBody
-                body = requestBody;
+                body = resolveEnvVars(requestBody, environment);
                 contentType = api.getConsumes();
                 requestBodyDisplay = body != null ? body : "";
             } else if (requestBody != null) {
-                body = requestBody;
+                body = resolveEnvVars(requestBody, environment);
                 contentType = resolveContentType(api, bodyFormat);
                 requestBodyDisplay = body;
             } else {
-                body = buildRequestBody(api, paramValues, bodyFormat);
+                body = buildRequestBody(api, paramValues, bodyFormat, environment);
                 contentType = resolveContentType(api, bodyFormat);
                 requestBodyDisplay = body != null ? body : "";
             }
@@ -188,6 +188,16 @@ public final class HttpExecutorService {
             log.info("请求完成: " + api.getHttpMethod() + " " + fullUrl + " -> " + response.statusCode() + " (" + duration + "ms)");
             return result;
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            TestResult result = new TestResult();
+            result.setApiDefinition(api);
+            result.setStatus(TestStatus.CANCELLED);
+            result.setErrorMessage("请求已取消");
+            result.setDurationMs(System.currentTimeMillis() - startTime);
+            result.setTimestamp(System.currentTimeMillis());
+            log.info("请求已取消: " + api.getHttpMethod() + " " + api.getUrl());
+            return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
             log.warn("请求异常: " + api.getHttpMethod() + " " + api.getUrl() + " - " + e.getMessage());
@@ -335,7 +345,8 @@ public final class HttpExecutorService {
     /**
      * 构建请求体（支持JSON和form-urlencoded格式）
      */
-    private String buildRequestBody(ApiDefinition api, Map<String, String> paramValues, String bodyFormat) {
+    private String buildRequestBody(ApiDefinition api, Map<String, String> paramValues, String bodyFormat,
+                                    Environment environment) {
         String method = api.getHttpMethod().toUpperCase();
         if (RestAutoLabConstants.METHODS_WITHOUT_BODY.contains(method)) return null;
 
@@ -349,17 +360,17 @@ public final class HttpExecutorService {
             for (ApiParameter param : bodyParams) {
                 String value = paramValues.get(param.getName());
                 if (value != null) {
-                    formData.put(param.getName(), value);
+                    formData.put(param.getName(), resolveEnvVars(value, environment));
                 } else {
-                    formData.put(param.getName(), param.generateDefaultValue());
+                    formData.put(param.getName(), resolveEnvVars(param.generateDefaultValue(), environment));
                 }
             }
             for (ApiParameter param : formParams) {
                 String value = paramValues.get(param.getName());
                 if (value != null) {
-                    formData.put(param.getName(), value);
+                    formData.put(param.getName(), resolveEnvVars(value, environment));
                 } else {
-                    formData.put(param.getName(), param.generateDefaultValue());
+                    formData.put(param.getName(), resolveEnvVars(param.generateDefaultValue(), environment));
                 }
             }
             return formData.entrySet().stream()
@@ -375,6 +386,7 @@ public final class HttpExecutorService {
         for (ApiParameter param : bodyParams) {
             String value = paramValues.get(param.getName());
             if (value != null) {
+                value = resolveEnvVars(value, environment);
                 jsonMap.put(param.getName(), parseValueByType(value, param.getType()));
             } else if (param.isComplexType()) {
                 jsonMap.put(param.getName(), gson.fromJson(param.generateDefaultValue(), Object.class));

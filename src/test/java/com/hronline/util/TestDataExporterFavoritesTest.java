@@ -114,6 +114,27 @@ class TestDataExporterFavoritesTest {
         assertEquals(List.of("GET|/local"), findByName(local.loadStarredFolders(), "Local").getApiKeys());
     }
 
+    @Test
+    void testDataExchangeMergesPreRequestConfigurationLocalFirst() throws Exception {
+        RestAutoLabSettingsState local = new RestAutoLabSettingsState();
+        local.savePreRequestScript("GET|/kept", "set source=local");
+        local.saveApiVariableOverrides("GET|/kept", Map.of("tenant", "local"));
+
+        RestAutoLabSettingsState remote = new RestAutoLabSettingsState();
+        remote.savePreRequestScript("GET|/kept", "set source=remote");
+        remote.savePreRequestScript("POST|/added", "header X-Trace=remote");
+        remote.saveApiVariableOverrides("GET|/kept", Map.of("tenant", "remote"));
+        remote.saveApiVariableOverrides("POST|/added", Map.of("tenant", "added"));
+        Path file = tempDir.resolve("test-data.json");
+        TestDataExporter.exportTestData(remote, List.of(), "remote-project", file.toString());
+
+        TestDataExporter.importTestData(local, null, file.toString());
+        assertEquals("set source=local", local.loadPreRequestScripts().get("GET|/kept"));
+        assertEquals("header X-Trace=remote", local.loadPreRequestScripts().get("POST|/added"));
+        assertEquals("local", local.loadApiVariableOverrides().get("GET|/kept").get("tenant"));
+        assertEquals("added", local.loadApiVariableOverrides().get("POST|/added").get("tenant"));
+    }
+
     private static StarredFolder folder(String id, String name, String... apiKeys) {
         StarredFolder folder = new StarredFolder(id, name);
         folder.setApiKeys(new ArrayList<>(List.of(apiKeys)));

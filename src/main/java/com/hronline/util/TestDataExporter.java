@@ -462,6 +462,10 @@ public class TestDataExporter {
         public Map<String, Map<String, String>> folderApiParams = new LinkedHashMap<>();
         /** 各文件夹下接口的测试状态（key=folderId\napiKey -> FolderApiStatus） */
         public Map<String, FolderApiStatus> folderApiStatus = new LinkedHashMap<>();
+        /** 接口级安全前置脚本（key=apiKey -> script） */
+        public Map<String, String> preRequestScripts = new LinkedHashMap<>();
+        /** 接口级变量覆盖（key=apiKey -> Map<variable,value>） */
+        public Map<String, Map<String, String>> apiVariableOverrides = new LinkedHashMap<>();
     }
 
     /**
@@ -491,6 +495,8 @@ public class TestDataExporter {
             data.starredFolders = settings.loadStarredFolders();
             data.folderApiParams = settings.loadFolderApiParams();
             data.folderApiStatus = settings.loadFolderApiStatus();
+            data.preRequestScripts = settings.loadPreRequestScripts();
+            data.apiVariableOverrides = settings.loadApiVariableOverrides();
         }
 
         return writeJson(data, outputFile);
@@ -529,6 +535,7 @@ public class TestDataExporter {
         int profileSkipped = 0;
         int folderAdded = 0;
         int folderParamsAdded = 0;
+        int preRequestConfigAdded = 0;
 
         // 0) 接口定义合并：本地已存在的接口保留，没有的新增
         if (scanner != null && data.apis != null && !data.apis.isEmpty()) {
@@ -636,12 +643,34 @@ public class TestDataExporter {
                 }
                 settings.saveFolderApiStatus(localStatus);
             }
+            // 6) 接口级前置配置本地优先合并
+            Map<String, String> localScripts = settings.loadPreRequestScripts();
+            if (data.preRequestScripts != null) {
+                for (Map.Entry<String, String> e : data.preRequestScripts.entrySet()) {
+                    if (!localScripts.containsKey(e.getKey())) {
+                        settings.savePreRequestScript(e.getKey(), e.getValue());
+                        localScripts.put(e.getKey(), e.getValue());
+                        preRequestConfigAdded++;
+                    }
+                }
+            }
+            Map<String, Map<String, String>> localOverrides = settings.loadApiVariableOverrides();
+            if (data.apiVariableOverrides != null) {
+                for (Map.Entry<String, Map<String, String>> e : data.apiVariableOverrides.entrySet()) {
+                    if (!localOverrides.containsKey(e.getKey())) {
+                        settings.saveApiVariableOverrides(e.getKey(), e.getValue());
+                        localOverrides.put(e.getKey(), e.getValue());
+                        preRequestConfigAdded++;
+                    }
+                }
+            }
         }
 
         return "接口数据已导入。新增接口 " + apiAdded + " 个（跳过已存在 " + apiSkipped + " 个），"
                 + "新增测试数据 " + historyAdded + " 条（已测接口保留本地 " + historySkipped + " 条），"
                 + "新增测试配置 " + profileAdded + " 个（跳过已存在 " + profileSkipped + " 个），"
-                + "新增收藏文件夹 " + folderAdded + " 个，补入实时参数 " + folderParamsAdded + " 份。";
+                + "新增收藏文件夹 " + folderAdded + " 个，补入实时参数 " + folderParamsAdded
+                + " 份、接口前置配置 " + preRequestConfigAdded + " 份。";
     }
 
     // ================================================================

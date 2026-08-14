@@ -69,6 +69,10 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public String folderApiParamsJson = "";
         /** 文件夹内接口测试状态 JSON（key=folderId\napiKey -> FolderApiStatus） */
         public String folderApiStatusJson = "";
+        /** 接口级前置脚本（key=apiKey -> script） */
+        public String preRequestScriptsJson = "";
+        /** 接口级变量覆盖（key=apiKey -> Map<variable,value>） */
+        public String apiVariableOverridesJson = "";
         /** 请求历史JSON */
         public String requestHistoryJson = "";
         /** 保存的测试Profile名称 -> JSON */
@@ -295,6 +299,50 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     /** 保存文件夹内接口测试状态 */
     public void saveFolderApiStatus(Map<String, FolderApiStatus> status) {
         myState.folderApiStatusJson = gson.toJson(status);
+    }
+
+    /** 加载接口级前置脚本。 */
+    public Map<String, String> loadPreRequestScripts() {
+        if (myState.preRequestScriptsJson == null || myState.preRequestScriptsJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, String>>(){}.getType();
+            Map<String, String> value = gson.fromJson(myState.preRequestScriptsJson, t);
+            return value != null ? value : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    public void savePreRequestScript(String apiKey, String script) {
+        if (apiKey == null || apiKey.isBlank()) return;
+        Map<String, String> scripts = loadPreRequestScripts();
+        if (script == null || script.isBlank()) scripts.remove(apiKey);
+        else scripts.put(apiKey, script);
+        myState.preRequestScriptsJson = gson.toJson(scripts);
+    }
+
+    /** 加载接口级变量覆盖。 */
+    public Map<String, Map<String, String>> loadApiVariableOverrides() {
+        if (myState.apiVariableOverridesJson == null || myState.apiVariableOverridesJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, Map<String, String>>>(){}.getType();
+            Map<String, Map<String, String>> value = gson.fromJson(myState.apiVariableOverridesJson, t);
+            return value != null ? value : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    public void saveApiVariableOverrides(String apiKey, Map<String, String> overrides) {
+        if (apiKey == null || apiKey.isBlank()) return;
+        Map<String, Map<String, String>> all = loadApiVariableOverrides();
+        if (overrides == null || overrides.isEmpty()) all.remove(apiKey);
+        else all.put(apiKey, new LinkedHashMap<>(overrides));
+        myState.apiVariableOverridesJson = gson.toJson(all);
     }
 
     /** 记录API调用统计 */

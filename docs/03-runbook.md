@@ -36,6 +36,8 @@ unzip -l build/distributions/restautolab-2.0.0.zip
 3. 左侧扫描；接口右键导入 cURL；“…”打开环境与数据。
 4. 批量收藏并导出，再清空测试数据后导入恢复。
 5. 配置环境、前置脚本和变量覆盖；发送请求并在运行中停止。
+   - 前置脚本仅接受 `set/param/header name=value`；输入未知命令时应在发送前报错。
+   - 切换接口或点击停止后，迟到响应不得覆盖当前界面；切换环境后旧全局请求头不得残留。
 6. 使用统一 AI/测试入口；检查成功、失败、取消、加载和禁用恢复。
 7. 检查请求头右键清除 Cookie。
 8. 截取左侧、右侧、设置页和异常/停止状态作为视觉证据。
@@ -46,4 +48,3 @@ unzip -l build/distributions/restautolab-2.0.0.zip
 - `ClassNotFoundException` / `IllegalAccessException`：检查 `plugin.xml` 注册类路径及反射可见性。
 - 2022.3 注解位置编译失败：避免仅在新版 annotations 支持的 TYPE_USE 写法。
 - 并行执行覆盖工作树：停止扩大改动，先固化各自文件并在唯一分支提交，再继续下一节点。
-

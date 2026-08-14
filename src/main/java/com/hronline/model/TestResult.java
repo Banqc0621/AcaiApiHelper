@@ -128,6 +128,7 @@ public class TestResult {
             case ERROR -> "⚠ " + errorMessage;
             case PENDING -> "○ 未执行";
             case RUNNING -> "◌ 执行中...";
+            case CANCELLED -> "⊘ 已取消";
             case SKIPPED -> "⊘ 已跳过";
         };
     }

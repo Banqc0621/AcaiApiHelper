@@ -14,6 +14,8 @@ public enum TestStatus {
     PENDING,
     /** 正在执行中 */
     RUNNING,
+    /** 用户主动取消 */
+    CANCELLED,
     /** 已跳过（依赖接口失败等原因） */
     SKIPPED
 }

@@ -3,6 +3,7 @@ package com.hronline.ui;
 import com.hronline.RestAutoLabConstants;
 import com.hronline.ai.AiParameterService;
 import com.hronline.http.HttpExecutorService;
+import com.hronline.http.PreRequestProcessor;
 import com.hronline.model.*;
 import com.hronline.scanner.ApiScannerService;
 import com.hronline.scanner.StarredFolderService;
@@ -30,6 +31,7 @@ import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.JBSplitter;
+import com.intellij.ui.DocumentAdapter;
 import com.intellij.ui.components.*;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -45,6 +47,8 @@ import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * API调试面板 - 简洁大方的请求构建与测试界面
@@ -64,7 +68,16 @@ public class ApiDebuggerPanel extends JPanel {
     private final ComboBox<String> methodCombo = new ComboBox<>(RestAutoLabConstants.HTTP_METHOD_NAMES);
     private final JBTextField urlField = new JBTextField();
     private final JButton sendButton = new JButton("发送", AllIcons.Actions.Execute);
+    private final JButton stopButton = new JButton("停止", AllIcons.Actions.Suspend);
     private final JBTextField baseUrlField = new JBTextField();
+    private final JBLabel activeEnvInfoLabel = new JBLabel("当前环境: -");
+    private final JBTextArea preRequestScriptArea = new JBTextArea(4, 32);
+    private final DefaultTableModel variableOverrideModel = new DefaultTableModel(
+            new Object[]{"变量名", "覆盖值"}, 0);
+    private final JBTable variableOverrideTable = new JBTable(variableOverrideModel);
+    private boolean loadingPreRequestConfig = false;
+    private volatile Future<?> activeRequestFuture;
+    private final AtomicLong requestSequence = new AtomicLong();
 
     private final DefaultTableModel paramTableModel = new DefaultTableModel(
             new Object[]{"参数名", "类型", "位置", "值", "必填", "描述"}, 0);
@@ -81,6 +94,8 @@ public class ApiDebuggerPanel extends JPanel {
     private final DefaultTableModel headerTableModel = new DefaultTableModel(
             new Object[]{"Header名", "值"}, 0);
     private final JBTable headerTable = new JBTable(headerTableModel);
+    /** 最近一次注入的环境级请求头名称，用于切换环境时精准移除旧值。 */
+    private final Set<String> appliedGlobalHeaderNames = new LinkedHashSet<>();
 
     // ── 请求体编辑器（v2.0.0：失焦折叠 / 获焦展开 + Ctrl+Z/Y 撤销重做）──
     /** body 编辑器折叠时的行数（默认紧凑，给响应区让出垂直空间） */
@@ -167,10 +182,10 @@ public class ApiDebuggerPanel extends JPanel {
     private void setupUI() {
         setBorder(UiStyle.contentBorder());
 
-        // 北部容器：工具栏 + 请求栏
+        // 上层：当前环境、接口级前置脚本和变量覆盖
         JPanel northPanel = new JPanel(new BorderLayout(0, 4));
         northPanel.add(createToolbar(), BorderLayout.NORTH);
-        northPanel.add(createTopPanel(), BorderLayout.CENTER);
+        northPanel.add(createPreRequestPanel(), BorderLayout.CENTER);
         add(northPanel, BorderLayout.NORTH);
 
         // 一伦优化 #5：右面板拆为「请求配置层（顶部，可拖动）+ 响应展示层（底部）」双层布局。
@@ -190,9 +205,14 @@ public class ApiDebuggerPanel extends JPanel {
 
         JPanel responsePanel = createResponsePanel();
 
-        // 垂直分割：true=垂直方向（上下），0.6=顶部请求层占 60%
+        // 下层：方法、URL、参数、发送/停止与响应
+        JPanel requestPanel = new JPanel(new BorderLayout(0, 4));
+        requestPanel.add(createTopPanel(), BorderLayout.NORTH);
+        requestPanel.add(requestScroll, BorderLayout.CENTER);
+
+        // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        splitter.setFirstComponent(requestScroll);
+        splitter.setFirstComponent(requestPanel);
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
         splitter.setHonorComponentsMinimumSize(false);
@@ -401,31 +421,123 @@ public class ApiDebuggerPanel extends JPanel {
     private void applyEnvironmentToPanel(Environment env) {
         if (env == null) return;
         baseUrlField.setText(env.getBaseUrl());
+        activeEnvInfoLabel.setText("当前环境: " + env.getName() + "  ·  " + env.getBaseUrl());
         // 注入全局请求头：先移除旧的"全局请求头"标记区，再在表格顶部插入当前环境的全局头。
         // 这里采用简单策略：保留接口自身请求头，把全局头前置并标记，避免重复。
-        Map<String, String> globalHeaders = env.getGlobalHeaders();
-        if (globalHeaders != null && !globalHeaders.isEmpty()) {
-            // 收集当前表格中非全局头的请求头（即接口自身/Content-Type 等）
-            java.util.List<Object[]> rows = new java.util.ArrayList<>();
-            for (int i = 0; i < headerTableModel.getRowCount(); i++) {
-                rows.add(new Object[]{
-                        headerTableModel.getValueAt(i, 0),
-                        headerTableModel.getValueAt(i, 1)
-                });
+        Map<String, String> globalHeaders = env.getGlobalHeaders() == null
+                ? Collections.emptyMap() : env.getGlobalHeaders();
+        // 收集接口级请求头并剔除上一个环境注入的旧值，避免跨环境串数据。
+        java.util.List<Object[]> rows = new java.util.ArrayList<>();
+        for (int i = 0; i < headerTableModel.getRowCount(); i++) {
+            Object key = headerTableModel.getValueAt(i, 0);
+            if (key instanceof String name && appliedGlobalHeaderNames.contains(name)) continue;
+            rows.add(new Object[]{key, headerTableModel.getValueAt(i, 1)});
+        }
+        headerTableModel.setRowCount(0);
+        appliedGlobalHeaderNames.clear();
+        appliedGlobalHeaderNames.addAll(globalHeaders.keySet());
+        for (Map.Entry<String, String> e : globalHeaders.entrySet()) {
+            headerTableModel.addRow(new Object[]{e.getKey(), e.getValue()});
+        }
+        for (Object[] row : rows) {
+            Object key = row[0];
+            if (key instanceof String name && globalHeaders.containsKey(name)) continue;
+            headerTableModel.addRow(row);
+        }
+    }
+
+    /** 上层接口级配置：明确展示生效环境，并提供安全前置脚本与变量覆盖。 */
+    private JPanel createPreRequestPanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 4));
+        panel.setBorder(UiStyle.cardBorder(4, 6));
+
+        JPanel envRow = new JPanel(new BorderLayout());
+        activeEnvInfoLabel.setFont(activeEnvInfoLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
+        Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
+        if (active != null) {
+            activeEnvInfoLabel.setText("当前环境: " + active.getName() + "  ·  " + active.getBaseUrl());
+        }
+        envRow.add(activeEnvInfoLabel, BorderLayout.WEST);
+        JBLabel scopeHint = new JBLabel("接口级前置配置（仅影响本次请求）");
+        UiStyle.hint(scopeHint);
+        envRow.add(scopeHint, BorderLayout.EAST);
+        panel.add(envRow, BorderLayout.NORTH);
+
+        JPanel scriptPanel = new JPanel(new BorderLayout(0, 3));
+        scriptPanel.setBorder(JBUI.Borders.emptyRight(4));
+        JBLabel scriptLabel = new JBLabel("前置脚本");
+        scriptLabel.setToolTipText("安全 DSL：set/param/header name=value；支持 # 或 // 注释");
+        scriptPanel.add(scriptLabel, BorderLayout.NORTH);
+        preRequestScriptArea.getEmptyText().setText("示例：set token=abc  ·  header X-Trace={{traceId}}");
+        preRequestScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_HINT));
+        JBScrollPane scriptScroll = new JBScrollPane(preRequestScriptArea);
+        scriptScroll.setPreferredSize(new Dimension(320, 78));
+        scriptPanel.add(scriptScroll, BorderLayout.CENTER);
+
+        JPanel variablesPanel = new JPanel(new BorderLayout(0, 3));
+        variablesPanel.setBorder(JBUI.Borders.emptyLeft(4));
+        variablesPanel.add(new JBLabel("变量覆盖"), BorderLayout.NORTH);
+        UiStyle.styleTable(variableOverrideTable);
+        variableOverrideTable.setRowHeight(24);
+        variablesPanel.add(new JBScrollPane(variableOverrideTable), BorderLayout.CENTER);
+        JPanel variableButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        variableButtons.add(UiStyle.button("添加", AllIcons.General.Add,
+                e -> variableOverrideModel.addRow(new Object[]{"", ""})));
+        variableButtons.add(UiStyle.button("删除", AllIcons.General.Remove, e -> {
+            int row = variableOverrideTable.getSelectedRow();
+            if (row >= 0) variableOverrideModel.removeRow(row);
+        }));
+        variablesPanel.add(variableButtons, BorderLayout.SOUTH);
+
+        JBSplitter configSplitter = new JBSplitter(false, 0.55f);
+        configSplitter.setFirstComponent(scriptPanel);
+        configSplitter.setSecondComponent(variablesPanel);
+        configSplitter.setHonorComponentsMinimumSize(false);
+        configSplitter.setSplitterProportionKey("RestAutoLab.Debugger.PreRequestSplitter");
+        panel.add(configSplitter, BorderLayout.CENTER);
+
+        preRequestScriptArea.getDocument().addDocumentListener(new DocumentAdapter() {
+            @Override
+            protected void textChanged(@NotNull javax.swing.event.DocumentEvent e) {
+                saveCurrentPreRequestConfig();
             }
-            headerTableModel.setRowCount(0);
-            // 先放全局头
-            for (Map.Entry<String, String> e : globalHeaders.entrySet()) {
-                headerTableModel.addRow(new Object[]{e.getKey(), e.getValue()});
+        });
+        variableOverrideModel.addTableModelListener(e -> saveCurrentPreRequestConfig());
+        return panel;
+    }
+
+    private void saveCurrentPreRequestConfig() {
+        if (loadingPreRequestConfig || currentApi == null) return;
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        settings.savePreRequestScript(currentApi.uniqueKey(), preRequestScriptArea.getText());
+        settings.saveApiVariableOverrides(currentApi.uniqueKey(), collectVariableOverrides());
+    }
+
+    private void loadPreRequestConfig(ApiDefinition api) {
+        loadingPreRequestConfig = true;
+        try {
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+            preRequestScriptArea.setText(settings.loadPreRequestScripts().getOrDefault(api.uniqueKey(), ""));
+            variableOverrideModel.setRowCount(0);
+            Map<String, String> values = settings.loadApiVariableOverrides().get(api.uniqueKey());
+            if (values != null) {
+                values.forEach((name, value) -> variableOverrideModel.addRow(new Object[]{name, value}));
             }
-            // 再放原有请求头（跳过与全局头同名的，避免重复）
-            java.util.Set<String> globalKeys = new java.util.HashSet<>(globalHeaders.keySet());
-            for (Object[] row : rows) {
-                Object key = row[0];
-                if (key instanceof String k && globalKeys.contains(k)) continue;
-                headerTableModel.addRow(row);
+        } finally {
+            loadingPreRequestConfig = false;
+        }
+    }
+
+    private Map<String, String> collectVariableOverrides() {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int i = 0; i < variableOverrideModel.getRowCount(); i++) {
+            Object name = variableOverrideModel.getValueAt(i, 0);
+            Object value = variableOverrideModel.getValueAt(i, 1);
+            if (name instanceof String key && !key.isBlank()) {
+                values.put(key.trim(), value == null ? "" : String.valueOf(value));
             }
         }
+        return values;
     }
 
     private JPanel createTopPanel() {
@@ -437,7 +549,7 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.fill = GridBagConstraints.HORIZONTAL;
         gbc.insets = new Insets(4, 4, 4, 4);
 
-        // 单行布局: Base URL + 方法 + URL + 发送
+        // 单行布局: Base URL + 方法 + URL + 发送 + 停止
         gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0;
         baseUrlField.setText(RestAutoLabSettingsState.getInstance(project).getBaseUrl());
         baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
@@ -489,6 +601,15 @@ public class ApiDebuggerPanel extends JPanel {
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         UiStyle.attachInteractionFeedback(sendButton);
         panel.add(sendButton, gbc);
+
+        gbc.gridx = 4; gbc.weightx = 0.0;
+        stopButton.putClientProperty("JButton.buttonType", "roundRect");
+        stopButton.setMargin(new Insets(4, 12, 4, 12));
+        stopButton.setFont(stopButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        stopButton.setFocusPainted(false);
+        stopButton.setToolTipText("停止当前单次请求");
+        stopButton.setEnabled(false);
+        panel.add(stopButton, gbc);
 
         return panel;
     }
@@ -1074,6 +1195,7 @@ public class ApiDebuggerPanel extends JPanel {
 
     private void setupActions() {
         sendButton.addActionListener(e -> sendRequest());
+        stopButton.addActionListener(e -> stopRequest());
         baseUrlField.addActionListener(e ->
                 RestAutoLabSettingsState.getInstance(project).setBaseUrl(baseUrlField.getText().trim()));
     }
@@ -1098,8 +1220,10 @@ public class ApiDebuggerPanel extends JPanel {
      * </ul></p>
      */
     public void loadApi(ApiDefinition api, String folderId) {
+        stopRequestIfRunningForApiSwitch();
         currentApi = api;
         currentFolderId = folderId;
+        loadPreRequestConfig(api);
         methodCombo.setSelectedItem(api.getHttpMethod());
         urlField.setText(api.getUrl());
 
@@ -1178,13 +1302,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 同步附件面板
         updateAttachmentPanel(api);
 
-        // 如果没有显式参数，显示默认请求头
-        if (paramTableModel.getRowCount() == 0) {
-            headerTableModel.setRowCount(0);
-            headerTableModel.addRow(new Object[]{RestAutoLabConstants.HEADER_CONTENT_TYPE, api.getConsumes()});
-            headerTableModel.addRow(new Object[]{RestAutoLabConstants.HEADER_ACCEPT, api.getProduces()});
-            api.getHeaders().forEach((k, v) -> headerTableModel.addRow(new Object[]{k, v}));
-        }
+        rebuildHeadersForApi(api);
 
         String method = api.getHttpMethod();
         if (method.equals("POST") || method.equals("PUT") || method.equals("PATCH")) {
@@ -1202,6 +1320,28 @@ public class ApiDebuggerPanel extends JPanel {
         statusLabel.setText("● 已加载: " + api.displayLabel());
     }
 
+    private void rebuildHeadersForApi(ApiDefinition api) {
+        headerTableModel.setRowCount(0);
+        appliedGlobalHeaderNames.clear();
+        Environment environment = getCurrentEnvironment();
+        if (environment != null && environment.getGlobalHeaders() != null) {
+            environment.getGlobalHeaders().forEach((name, value) -> {
+                appliedGlobalHeaderNames.add(name);
+                headerTableModel.addRow(new Object[]{name, value});
+            });
+        }
+        addHeaderIfAbsent(RestAutoLabConstants.HEADER_CONTENT_TYPE, api.getConsumes());
+        addHeaderIfAbsent(RestAutoLabConstants.HEADER_ACCEPT, api.getProduces());
+        api.getHeaders().forEach(this::addHeaderIfAbsent);
+    }
+
+    private void addHeaderIfAbsent(String name, String value) {
+        for (int i = 0; i < headerTableModel.getRowCount(); i++) {
+            if (Objects.equals(name, headerTableModel.getValueAt(i, 0))) return;
+        }
+        headerTableModel.addRow(new Object[]{name, value});
+    }
+
     // ================================================================
     // 核心操作
     // ================================================================
@@ -1211,8 +1351,6 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showWarningDialog(project, "请先选择一个API接口", "提示");
             return;
         }
-        UiStyle.startLoading(sendButton, "发送中");
-        statusLabel.setText("○ 请求发送中...");
 
         Map<String, String> params = collectParameterValues();
         Map<String, String> headers = collectHeaderValues();
@@ -1233,10 +1371,26 @@ public class ApiDebuggerPanel extends JPanel {
         } else {
             finalBodyFormat = HttpExecutorService.BODY_FORMAT_JSON;
         }
-        final Environment env = getCurrentEnvironment();
+        final PreRequestProcessor.Result preRequest;
+        try {
+            preRequest = PreRequestProcessor.apply(preRequestScriptArea.getText(), collectVariableOverrides(),
+                    params, headers, getCurrentEnvironment());
+        } catch (IllegalArgumentException ex) {
+            Messages.showErrorDialog(project, ex.getMessage(), "前置脚本错误");
+            statusLabel.setText("● 前置脚本校验失败");
+            return;
+        }
+        params = preRequest.getParams();
+        headers = preRequest.getHeaders();
+        final Environment env = preRequest.getEnvironment();
         final ApiDefinition requestApi = currentApi;
         final String requestBaseUrl = baseUrlField.getText().trim();
         final List<ResponseAssertion> requestAssertions = new ArrayList<>(currentAssertions);
+        final long requestId = requestSequence.incrementAndGet();
+
+        UiStyle.startLoading(sendButton, "发送中");
+        stopButton.setEnabled(true);
+        statusLabel.setText("○ 请求发送中...");
 
         // 详细日志：记录要发送的请求信息
         LOG.info("[执行请求] 开始 => API=" + requestApi.getHttpMethod() + " " + requestApi.getUrl()
@@ -1254,12 +1408,14 @@ public class ApiDebuggerPanel extends JPanel {
                     + ", 预览=" + (requestBody.length() > 500 ? requestBody.substring(0, 500) + "..." : requestBody));
         }
 
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+        final Map<String, String> requestParams = params;
+        final Map<String, String> requestHeaders = headers;
+        activeRequestFuture = ApplicationManager.getApplication().executeOnPooledThread(() -> {
             TestResult requestResult;
             try {
                 HttpExecutorService http = HttpExecutorService.getInstance(project);
                 requestResult = http.executeRequest(requestApi, requestBaseUrl,
-                        params, headers, requestBody, finalBodyFormat, env, requestAssertions);
+                        requestParams, requestHeaders, requestBody, finalBodyFormat, env, requestAssertions);
             } catch (Exception ex) {
                 LOG.warn("[执行请求] 请求异常", ex);
                 String message = ex.getMessage() == null || ex.getMessage().isBlank()
@@ -1270,11 +1426,33 @@ public class ApiDebuggerPanel extends JPanel {
             TestResult result = requestResult;
 
             ApplicationManager.getApplication().invokeLater(() -> {
+                if (requestId != requestSequence.get()) return;
+                activeRequestFuture = null;
                 displayResponse(result);
                 UiStyle.endLoading(sendButton, "发送");
+                stopButton.setEnabled(false);
                 statusLabel.setText("● " + result.summary());
             });
         });
+    }
+
+    private void stopRequest() {
+        Future<?> task = activeRequestFuture;
+        if (task == null || task.isDone()) {
+            stopButton.setEnabled(false);
+            return;
+        }
+        requestSequence.incrementAndGet();
+        activeRequestFuture = null;
+        task.cancel(true);
+        UiStyle.endLoading(sendButton, "发送");
+        stopButton.setEnabled(false);
+        statusLabel.setText("● 请求已停止");
+    }
+
+    private void stopRequestIfRunningForApiSwitch() {
+        Future<?> task = activeRequestFuture;
+        if (task != null && !task.isDone()) stopRequest();
     }
 
     private void displayResponse(TestResult result) {
