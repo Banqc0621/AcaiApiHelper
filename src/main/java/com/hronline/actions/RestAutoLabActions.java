@@ -33,13 +33,23 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 
 /**
+ * plugin.xml 可直接实例化的公开 Action 容器。
+ *
+ * <p>各 Action 使用公开静态嵌套类，既保留单文件组织，也避免包级可见类被
+ * IntelliJ 插件类加载器反射实例化时触发 IllegalAccessException。</p>
+ */
+public final class RestAutoLabActions {
+
+    private RestAutoLabActions() {}
+
+/**
  * 扫描项目API
  *
  * <p>增强：当光标位于 Controller 映射方法内时，扫描完成后自动在左侧树中定位并选中该接口，
  * 同时在右侧调试面板加载该接口，实现「右键 → 扫描项目API → 直接定位到选中接口」。
  * 否则退化为原有行为（仅扫描 + 打开面板）。</p>
  */
-class ScanApisAction extends AnAction {
+public static final class ScanApisAction extends AnAction {
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
@@ -150,7 +160,7 @@ class ScanApisAction extends AnAction {
  * <p>增强：识别光标所在 Controller 映射方法，扫描后精准定位到该接口（树选中 + 调试面板加载）。
  * 若光标不在接口方法上，提示用户。若尚未扫描，触发扫描并在完成后定位。</p>
  */
-class DebugApiAction extends AnAction {
+public static final class DebugApiAction extends AnAction {
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
@@ -233,7 +243,7 @@ class DebugApiAction extends AnAction {
 /**
  * 运行全部接口测试
  */
-class RunAllTestsAction extends AnAction {
+public static final class RunAllTestsAction extends AnAction {
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
@@ -277,4 +287,6 @@ class RunAllTestsAction extends AnAction {
     public void update(@NotNull AnActionEvent e) {
         e.getPresentation().setEnabledAndVisible(e.getProject() != null);
     }
+}
+
 }

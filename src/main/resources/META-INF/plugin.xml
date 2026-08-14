@@ -139,7 +139,7 @@
                 displayName="RestAutoLab"/>
 
         <!-- 5. Git预提交检查处理器: 接口测试未通过时阻断提交 -->
-        <checkinHandlerFactory implementation="git.com.hronline.RestAutoLabCheckinHandlerFactory"/>
+        <checkinHandlerFactory implementation="com.hronline.git.RestAutoLabCheckinHandler$Factory"/>
 
         <!-- 6. 编辑器Gutter图标提供器: 在Controller方法旁显示API调试图标 -->
         <codeInsight.lineMarkerProvider
@@ -182,7 +182,7 @@
 
         <!-- 动作: 扫描项目API -->
         <action id="RestAutoLab.ScanApis"
-                class="actions.com.hronline.ScanApisAction"
+                class="com.hronline.actions.RestAutoLabActions$ScanApisAction"
                 text="扫描项目API"
                 description="扫描当前项目中的所有REST/Spring MVC接口"
                 icon="AllIcons.Actions.Refresh">
@@ -191,7 +191,7 @@
 
         <!-- 动作: 调试当前接口 -->
         <action id="RestAutoLab.DebugApi"
-                class="actions.com.hronline.DebugApiAction"
+                class="com.hronline.actions.RestAutoLabActions$DebugApiAction"
                 text="调试当前接口"
                 description="在RestAutoLab面板中打开当前接口的调试界面"
                 icon="AllIcons.Actions.Execute">
@@ -200,7 +200,7 @@
 
         <!-- 动作: 运行全部API测试 -->
         <action id="RestAutoLab.RunAllTests"
-                class="actions.com.hronline.RunAllTestsAction"
+                class="com.hronline.actions.RestAutoLabActions$RunAllTestsAction"
                 text="运行全部接口测试"
                 description="执行所有已配置的接口自动化测试"
                 icon="AllIcons.RunConfigurations.Junit">

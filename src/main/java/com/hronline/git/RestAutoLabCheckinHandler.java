@@ -22,18 +22,17 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 
-/**
- * Git预提交检查处理器工厂
- */
-class RestAutoLabCheckinHandlerFactory extends CheckinHandlerFactory {
-    @Override
-    @NotNull
-    public CheckinHandler createHandler(@NotNull CheckinProjectPanel panel, @NotNull CommitContext context) {
-        return new RestAutoLabCheckinHandler(panel.getProject(), panel);
-    }
-}
+public class RestAutoLabCheckinHandler extends CheckinHandler {
 
-class RestAutoLabCheckinHandler extends CheckinHandler {
+    /** plugin.xml 反射实例化入口，必须公开。 */
+    public static final class Factory extends CheckinHandlerFactory {
+        @Override
+        @NotNull
+        public CheckinHandler createHandler(@NotNull CheckinProjectPanel panel, @NotNull CommitContext context) {
+            return new RestAutoLabCheckinHandler(panel.getProject(), panel);
+        }
+    }
+
     private static final Logger LOG = Logger.getInstance(RestAutoLabCheckinHandler.class);
     private final Project project;
     private final CheckinProjectPanel panel;
