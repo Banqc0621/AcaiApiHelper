@@ -13,27 +13,27 @@
 - 修复 IDEA 2022.3 注解兼容；构建目标可通过 `-PideaVersion` 切换。
 - 节点 A：左侧新增“…”统一管理入口，移除右侧重复扫描/管理按钮；增加独立收藏列表导入/导出和冲突安全合并。
 - 节点 B：右侧增加环境/前置配置上层，提供接口级安全脚本、变量覆盖、跨项目本地优先合并和单请求停止；修复环境请求头串用。
+- 节点 C：AI 生成与当前接口测试统一入口，移除本轮非目标的全量生成 UI；增加高对比度方案并让标准按钮自动获得统一反馈。
 - 默认与最低基线测试均通过；完整 `buildPlugin` 通过。
 
 ## 产物
 
 - 路径: `build/distributions/restautolab-2.0.0.zip`
-- 大小: 764983 bytes
-- SHA-256: `0a6777cf860ba0a5ea978ca4e11910a7132d4982bd748041e253e4e86cd2bcf6`
+- 大小: 765104 bytes
+- SHA-256: `b8e5eaf293ee66754a0f95a22ae1a74719eb676b4a3de5dd599dac07cb689838`
 - 内容: 主插件 JAR、searchable options、Gson、Error Prone annotations；未包含依赖缓存或密钥。
 
 ## 验证证据
 
-- `./gradlew test verifyPluginProjectConfiguration -PideaVersion=2022.3.3`：通过，16 tests，0 failures。
-- `./gradlew test --rerun-tasks`：通过，16 tests，0 failures。
+- `./gradlew test verifyPluginProjectConfiguration -PideaVersion=2022.3.3`：通过，17 tests，0 failures。
+- `./gradlew test --rerun-tasks`：通过，17 tests，0 failures。
 - `./gradlew buildPlugin`：通过；真实加载阶段生成 355 个 configurable 的搜索索引，RestAutoLab 扩展无 ClassNotFound/IllegalAccess 错误。
 - 产物内存在更新后的 `ApiTreePanel`、`ApiDebuggerPanel`、`PreRequestProcessor`、`TestDataExporter$FavoritesExport` 和 `plugin.xml`。
+- `./gradlew runIde --args='<project>'`：沙箱 IDEA 2023.3.6 成功启动并记录 `Loaded custom plugins: RestAutoLab (2.0.0)`，未发现 RestAutoLab PluginException/ClassNotFound；桌面处于锁屏，未伪造界面截图。
 
 ## 尚未完成
 
-- AI 生成/测试统一入口；移除本轮不应提前落地的 AI 全量生成入口。
-- 高对比度主题和全部按钮状态覆盖。
-- 目标 IDE 人工主流程、截图和多尺寸视觉验收。
+- 目标 IDE 人工主流程、截图和多尺寸视觉验收（本次沙箱运行时 macOS 桌面处于锁屏，属于外部可视化前提）。
 
 ## 飞书归档
 

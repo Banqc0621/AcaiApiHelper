@@ -41,7 +41,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         /** 启用AI功能 */
         public boolean aiEnabled = true;
         public boolean gitCheckEnabled = true;
-        /** accent 主题（"BLUE" / "GREEN"）—— 一伦优化 #9：跟随 IDE 主题 + 2 套可选 accent */
+        /** accent 主题（BLUE / GREEN / HIGH_CONTRAST） */
         public String accentColor = "BLUE";
         public String gitAllowedStatusCodes = RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES;
         public int requestTimeout = RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
@@ -114,7 +114,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     public boolean isAiEnabled() { return myState.aiEnabled; }
     public void setAiEnabled(boolean v) { myState.aiEnabled = v; }
 
-    /** accent 主题名（"BLUE" / "GREEN"），解析见 {@link com.hronline.ui.UiStyle#parseAccent(String)} */
+    /** accent 主题名，解析见 {@link com.hronline.ui.UiStyle#parseAccent(String)} */
     public String getAccentColor() {
         return (myState.accentColor == null || myState.accentColor.isBlank()) ? "BLUE" : myState.accentColor;
     }

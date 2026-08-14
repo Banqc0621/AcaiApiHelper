@@ -69,7 +69,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         arkModelProField = new JBTextField(state != null ? state.arkModelPro : RestAutoLabConstants.ARK_MODEL_PRO);
         arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : RestAutoLabConstants.ARK_MODEL_CODE);
         aiEnabledBox = new JBCheckBox("启用AI参数生成", state != null && state.aiEnabled);
-        // 一伦优化 #9：accent 主题下拉（"BLUE" / "GREEN"），显示名用 UiStyle.AccentColor.displayName
+        // Accent 主题下拉，包含明确的高对比度方案
         accentColorCombo = new JComboBox<>();
         for (UiStyle.AccentColor a : UiStyle.AccentColor.values()) {
             accentColorCombo.addItem(a.name());
@@ -115,7 +115,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         JBLabel appearanceHeader = new JBLabel("外观");
         appearanceHeader.setForeground(sectionColor);
         appearanceHeader.setFont(sectionFont);
-        JBLabel appearanceDesc = new JBLabel("<html><font color='#888888' size='2'>跟随 IDE 主题 + 2 套可选 accent 主题</font></html>");
+        JBLabel appearanceDesc = new JBLabel("<html><font color='#888888' size='2'>跟随 IDE 明暗主题，并提供默认蓝、翠绿和高对比度方案</font></html>");
 
         // ── Section 1: API Service ──
         JBLabel apiHeader = new JBLabel("API 服务配置");
@@ -139,8 +139,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         promptHeader.setFont(sectionFont);
         JBLabel promptDesc = new JBLabel("<html><font color='#888888' size='2'>自定义系统/用户提示词，用户提示词支持占位符自动注入接口信息</font></html>");
         JBLabel promptHint = new JBLabel("<html><font color='#888888' size='2'>用户提示词占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
-        JButton resetPromptBtn = new JButton("恢复默认提示词");
-        resetPromptBtn.addActionListener(e -> {
+        JButton resetPromptBtn = UiStyle.button("恢复默认提示词", null, e -> {
             systemPromptArea.setText(RestAutoLabConstants.AI_SYSTEM_PROMPT);
             userPromptTemplateArea.setText(RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
         });

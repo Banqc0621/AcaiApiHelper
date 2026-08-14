@@ -130,7 +130,11 @@ public class ApiDebuggerPanel extends JPanel {
     private JButton batchTestBtn;  // 批量测试按钮引用
 
     private final ComboBox<AiParameterService.TestScenario> scenarioCombo = new ComboBox<>(
-            AiParameterService.TestScenario.values());
+            new AiParameterService.TestScenario[]{
+                    AiParameterService.TestScenario.NORMAL,
+                    AiParameterService.TestScenario.BOUNDARY,
+                    AiParameterService.TestScenario.ABNORMAL
+            });
     private final JComboBox<String> modelCombo = new JComboBox<>(RestAutoLabConstants.AI_MODEL_OPTIONS);
 
     // v3 新增字段
@@ -609,6 +613,7 @@ public class ApiDebuggerPanel extends JPanel {
         stopButton.setFocusPainted(false);
         stopButton.setToolTipText("停止当前单次请求");
         stopButton.setEnabled(false);
+        UiStyle.attachInteractionFeedback(stopButton);
         panel.add(stopButton, gbc);
 
         return panel;
@@ -1112,13 +1117,11 @@ public class ApiDebuggerPanel extends JPanel {
 
         scenarioCombo.setPreferredSize(new Dimension(130, 26));
         scenarioCombo.setFont(scenarioCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        scenarioCombo.setToolTipText("选择测试场景：正常/边界/异常/全量");
+        scenarioCombo.setToolTipText("选择本次 AI 生成场景：正常/边界/异常");
         controlPanel.add(scenarioCombo);
 
-        // 一伦优化 #6：原"生成参数" + "全量生成"两个独立按钮合并为单个"🤖 AI 助手"下拉。
-        // 弹层含两个子动作：按当前场景生成 / 全量生成（正常+边界+异常）。
-        JButton aiAssistantBtn = iconButton("🤖 AI 助手", AllIcons.Actions.Lightning, null);
-        aiAssistantBtn.setToolTipText("AI 参数生成助手（含按当前场景生成 / 全量生成两个子动作）");
+        JButton aiAssistantBtn = iconButton("🤖 AI 生成 / 测试", AllIcons.Actions.Lightning, null);
+        aiAssistantBtn.setToolTipText("统一执行 AI 参数生成或使用当前参数测试接口");
         aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
         UiStyle.applyAccent(aiAssistantBtn,
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
@@ -1143,13 +1146,12 @@ public class ApiDebuggerPanel extends JPanel {
     }
     
     /**
-     * 一伦优化 #6：AI 助手下拉菜单
-     * <p>把"按当前场景生成参数"和"全量生成（正常+边界+异常）"两个动作打包到单个 JPopupMenu。</p>
+     * AI 生成与当前接口测试统一入口；批量/全量生成留到下一迭代。
      */
     private void showAiAssistantMenu(JButton invoker) {
         JPopupMenu menu = new JPopupMenu();
 
-        JMenuItem genItem = new JMenuItem("⚡ AI 生成参数（按当前场景）", AllIcons.Actions.Lightning);
+        JMenuItem genItem = new JMenuItem("⚡ AI 生成参数（当前场景）", AllIcons.Actions.Lightning);
         genItem.addActionListener(ev -> {
             AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
             generateAiParameters(s);
@@ -1158,12 +1160,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         menu.addSeparator();
 
-        JMenuItem genAllItem = new JMenuItem("🧪 AI 全量生成（正常+边界+异常）", AllIcons.Actions.RunAll);
-        genAllItem.addActionListener(ev -> {
-            scenarioCombo.setSelectedItem(AiParameterService.TestScenario.FULL);
-            generateAiParameters(AiParameterService.TestScenario.FULL);
-        });
-        menu.add(genAllItem);
+        JMenuItem testItem = new JMenuItem("🧪 测试当前接口（使用当前参数）", AllIcons.Actions.Execute);
+        testItem.addActionListener(ev -> sendRequest());
+        menu.add(testItem);
 
         menu.show(invoker, 0, invoker.getHeight());
     }

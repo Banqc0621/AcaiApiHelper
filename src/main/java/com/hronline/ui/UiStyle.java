@@ -50,7 +50,7 @@ public final class UiStyle {
             new Color(0x42, 0xA5, 0xF5)
     );
 
-    // ── 可选 accent 主题（一伦优化 #9：跟随 IDE 主题 + 2 套可选 accent）──
+    // ── 可选 accent 主题：跟随 IDE 明暗模式，并提供明确高对比度方案 ──
     /**
      * accent 主题枚举：提供 2 套可选 accent 色（默认蓝 / 翠绿），
      * 配合 {@link com.intellij.ui.JBColor} 在明暗主题下自动切换。
@@ -58,7 +58,8 @@ public final class UiStyle {
      */
     public enum AccentColor {
         BLUE  ("默认蓝", 0x15, 0x65, 0xC0, 0x42, 0xA5, 0xF5),
-        GREEN ("翠绿",   0x2E, 0x7D, 0x32, 0x66, 0xBB, 0x6A);
+        GREEN ("翠绿",   0x2E, 0x7D, 0x32, 0x66, 0xBB, 0x6A),
+        HIGH_CONTRAST("高对比度", 0x00, 0x00, 0x00, 0xFF, 0xD6, 0x00);
 
         public final String displayName;
         private final int lightR, lightG, lightB;
@@ -80,6 +81,9 @@ public final class UiStyle {
 
         /** 在明暗主题下都偏白，作为主按钮文字色 */
         public JBColor onAccent() {
+            if (this == HIGH_CONTRAST) {
+                return new JBColor(Color.WHITE, Color.BLACK);
+            }
             return new JBColor(Color.WHITE, new Color(0xF5, 0xF5, 0xF5));
         }
     }
@@ -140,6 +144,7 @@ public final class UiStyle {
         btn.setBorderPainted(true);
         btn.setIconTextGap(4);
         if (listener != null) btn.addActionListener(listener);
+        attachInteractionFeedback(btn);
         return btn;
     }
 

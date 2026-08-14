@@ -520,6 +520,7 @@ public class ApiTreePanel extends JPanel {
         scanBtn.setFont(scanBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         scanBtn.setFocusPainted(false);
         scanBtn.setMargin(new Insets(2, 10, 2, 10));
+        UiStyle.attachInteractionFeedback(scanBtn);
         scanBtn.addActionListener(e -> {
             ApiScannerService.getInstance(project).scanProjectApisAsync();
             statsLabel.setText("● 正在扫描API...");

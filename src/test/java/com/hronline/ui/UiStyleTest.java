@@ -18,6 +18,19 @@ class UiStyleTest {
         assertEquals(UiStyle.AccentColor.BLUE, UiStyle.parseAccent(null));
         assertEquals(UiStyle.AccentColor.BLUE, UiStyle.parseAccent("unknown"));
         assertEquals(UiStyle.AccentColor.GREEN, UiStyle.parseAccent(" green "));
+        assertEquals(UiStyle.AccentColor.HIGH_CONTRAST, UiStyle.parseAccent("high_contrast"));
+    }
+
+    @Test
+    void standardButtonsReceiveDisableAndRecoveryFeedback() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            JButton button = UiStyle.button("导出", null, null);
+            Color originalBackground = button.getBackground();
+            button.setEnabled(false);
+            assertFalse(button.isEnabled());
+            button.setEnabled(true);
+            assertEquals(originalBackground.getRGB(), button.getBackground().getRGB());
+        });
     }
 
     @Test
