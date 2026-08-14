@@ -29,6 +29,7 @@ import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.JBColor;
+import com.intellij.ui.JBSplitter;
 import com.intellij.ui.components.*;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -172,17 +173,32 @@ public class ApiDebuggerPanel extends JPanel {
         northPanel.add(createTopPanel(), BorderLayout.CENTER);
         add(northPanel, BorderLayout.NORTH);
 
-        // Tab页（信息组织）- 类似Apipost的清晰分类
+        // 一伦优化 #5：右面板拆为「请求配置层（顶部，可拖动）+ 响应展示层（底部）」双层布局。
+        // 请求层使用原 TabbedPane（去掉"响应"Tab），响应层常驻底部，可拖动分割条调比例。
         tabbedPane.setFont(tabbedPane.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         tabbedPane.addTab("参数", createParamsTab());
         tabbedPane.addTab("请求头", createHeadersTab());
         tabbedPane.addTab("请求体", createBodyTab());
-        tabbedPane.addTab("响应", createResponseTab());
         tabbedPane.addTab("断言", createAssertionsTab());
         tabbedPane.addTab("历史", createHistoryTab());
         tabbedPane.addTab("测试", createTestTab());
         tabbedPane.addTab("AI生成", createAiTab());
-        add(tabbedPane, BorderLayout.CENTER);
+        JScrollPane requestScroll = new JBScrollPane(tabbedPane);
+        requestScroll.setBorder(JBUI.Borders.empty());
+        requestScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        requestScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+
+        JPanel responsePanel = createResponsePanel();
+
+        // 垂直分割：true=垂直方向（上下），0.6=顶部请求层占 60%
+        JBSplitter splitter = new JBSplitter(true, 0.6f);
+        splitter.setFirstComponent(requestScroll);
+        splitter.setSecondComponent(responsePanel);
+        // 解除子组件最小尺寸限制，使分割条可自由上下拖动
+        splitter.setHonorComponentsMinimumSize(false);
+        // 持久化拖动比例，下次打开工具窗口自动恢复
+        splitter.setSplitterProportionKey("RestAutoLab.Debugger.VerticalSplitter");
+        add(splitter, BorderLayout.CENTER);
 
         // 底部状态栏
         JPanel bottomPanel = new JPanel(new BorderLayout());
@@ -192,9 +208,9 @@ public class ApiDebuggerPanel extends JPanel {
         bottomPanel.add(statusLabel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
 
-        // ── v2.0.0 交互增强：body 编辑器撤销/折叠 + 响应 Tab 切换重置 ──
+        // ── v2.0.0 交互增强：body 编辑器撤销/折叠 ──
+        // 响应层常驻显示，"切到响应Tab重置视图"逻辑已不再适用，移除 initResponseTabListener
         initBodyEditorInteractions();
-        initResponseTabListener();
     }
 
     /**
@@ -252,19 +268,6 @@ public class ApiDebuggerPanel extends JPanel {
                         bodyScrollPane.repaint();
                     }
                 }
-            }
-        });
-    }
-
-    /**
-     * v2.0.0：切换到响应 Tab 时若处于树形视图则切回文本视图，保证下次请求展示一致
-     */
-    private void initResponseTabListener() {
-        tabbedPane.addChangeListener(e -> {
-            int idx = tabbedPane.getSelectedIndex();
-            if (idx >= 0 && "响应".equals(tabbedPane.getTitleAt(idx)) && responseViewTree) {
-                responseCardLayout.show(responseContentPanel, "text");
-                responseViewTree = false;
             }
         });
     }
@@ -781,7 +784,7 @@ public class ApiDebuggerPanel extends JPanel {
         return panel;
     }
 
-    private JPanel createResponseTab() {
+    private JPanel createResponsePanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.empty(4));
 
@@ -1263,7 +1266,7 @@ public class ApiDebuggerPanel extends JPanel {
         responseViewTree = false;
         buildResponseJsonTree(result.getResponseBody());
 
-        tabbedPane.setSelectedIndex(3); // 响应tab
+        // 一伦优化 #5：响应已独立为底部常驻层，无需切 Tab
     }
 
     private String formatBytes(int bytes) {
@@ -1425,7 +1428,7 @@ public class ApiDebuggerPanel extends JPanel {
                     }
                     testResultArea.setText(failInfo.toString());
                     testResultArea.setCaretPosition(0);
-                    tabbedPane.setSelectedIndex(3); // 跳到响应tab展示失败原因
+                    // 一伦优化 #5：响应已独立为底部常驻层，无需切 Tab
                     statusLabel.setText("❌ AI生成失败: " + errMsg.split("\n")[0]);
                     return;
                 }
@@ -1503,7 +1506,7 @@ public class ApiDebuggerPanel extends JPanel {
                 } else {
                     statusLabel.setText("○ 生成失败：未解析出参数");
                     testResultArea.setText("AI返回内容为空，未解析出有效参数。\n\n原始响应:\n" + result.getRawResponse());
-                    tabbedPane.setSelectedIndex(3);
+                    // 一伦优化 #5：响应已独立为底部常驻层，无需切 Tab
                 }
             });
         });
