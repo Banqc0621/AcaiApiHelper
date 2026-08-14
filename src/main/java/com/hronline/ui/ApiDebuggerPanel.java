@@ -2188,10 +2188,10 @@ public class ApiDebuggerPanel extends JPanel {
 
     /**
      * 显示AI配置对话框
+     * <p>一伦优化：左侧"…"按钮统一入口时也用此方法，方法提升为 public 以便外部触发。</p>
      */
-    private void showAiConfigDialog() {
+    public void showAiConfigDialog() {
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-        
         JBTextField urlField = new JBTextField(settings.getAiServerUrl(), 35);
         urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
 
@@ -3254,6 +3254,52 @@ public class ApiDebuggerPanel extends JPanel {
     // ================================================================
     // 数据管理对话框：集中存放 保存/导入/导出 测试配置与全量测试数据
     // ================================================================
+
+    /**
+     * 一伦优化：左侧"…"弹层触发——打开前置脚本与变量覆盖编辑弹窗。
+     * <p>复用 {@link #createPreRequestPanel()} 现有 UI（已有 model 自动持久化），仅在外面包一层
+     * {@link DialogWrapper} 作为模态弹窗。点 OK 仅关闭，不再走 Settings。</p>
+     */
+    public void openPreRequestConfigDialog() {
+        JPanel preReqPanel = createPreRequestPanel();
+        // 去除原 panel 的 cardBorder 以适应弹窗
+        preReqPanel.setBorder(JBUI.Borders.empty(8));
+
+        DialogWrapper dw = new DialogWrapper(project, false) {
+            { init(); setTitle("前置脚本 & 变量覆盖"); setOKButtonText("关闭"); setCancelButtonText(null); }
+
+            @Override
+            protected JComponent createCenterPanel() {
+                return preReqPanel;
+            }
+
+            @Override
+            protected JComponent createSouthPanel() {
+                // 仅显示 OK 按钮（model 已在编辑时实时持久化）
+                JComponent south = super.createSouthPanel();
+                if (south instanceof JPanel p) {
+                    // 移除 Cancel 按钮（如有）
+                    java.awt.Component[] comps = p.getComponents();
+                    for (java.awt.Component c : comps) {
+                        if (c instanceof JButton btn && "Cancel".equals(btn.getText())) {
+                            p.remove(btn);
+                        }
+                    }
+                }
+                return south;
+            }
+        };
+        dw.setSize(720, 460);
+        dw.show();
+    }
+
+    /**
+     * 一伦优化：左侧"…"弹层触发——打开 AI 配置弹窗。
+     * <p>复用 {@link #showAiConfigDialog()}（已提升为 public）。</p>
+     */
+    public void openAiConfigDialog() {
+        showAiConfigDialog();
+    }
 
     /**
      * 一伦优化 #3：合并后的「环境 & 数据」入口。

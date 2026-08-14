@@ -22,7 +22,6 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
-import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -543,7 +542,7 @@ public class ApiTreePanel extends JPanel {
         return wrapper;
     }
 
-    /** 左侧统一的更多操作入口：环境/数据管理与收藏列表共享。 */
+    /** 左侧统一的更多操作入口：环境/数据/前置脚本/变量覆盖/AI 配置 集中入口。 */
     private void showMoreMenu(JButton anchor) {
         JPopupMenu menu = new JPopupMenu();
 
@@ -559,51 +558,29 @@ public class ApiTreePanel extends JPanel {
         menu.add(envData);
         menu.addSeparator();
 
-        JMenuItem exportFavorites = new JMenuItem("导出收藏列表", AllIcons.ToolbarDecorator.Export);
-        exportFavorites.setToolTipText("导出收藏文件夹、接口成员及文件夹级参数/状态");
-        exportFavorites.addActionListener(e -> exportFavoritesAction());
-        menu.add(exportFavorites);
+        JMenuItem preRequest = new JMenuItem("前置脚本 & 变量覆盖", AllIcons.General.Settings);
+        preRequest.setToolTipText("编辑当前接口的请求级前置脚本和变量覆盖值");
+        preRequest.addActionListener(e -> {
+            if (debuggerPanel == null) {
+                Messages.showErrorDialog(project, "调试面板尚未初始化。", "无法打开前置配置");
+                return;
+            }
+            debuggerPanel.openPreRequestConfigDialog();
+        });
+        menu.add(preRequest);
 
-        JMenuItem importFavorites = new JMenuItem("导入收藏列表", AllIcons.ToolbarDecorator.Import);
-        importFavorites.setToolTipText("本地优先合并收藏列表，不覆盖已有参数和状态");
-        importFavorites.addActionListener(e -> importFavoritesAction());
-        menu.add(importFavorites);
+        JMenuItem aiConfig = new JMenuItem("AI 配置", AllIcons.Actions.Lightning);
+        aiConfig.setToolTipText("管理 AI 服务器、API Key、模型与提示词（也可在 Settings 中维护）");
+        aiConfig.addActionListener(e -> {
+            if (debuggerPanel == null) {
+                Messages.showErrorDialog(project, "调试面板尚未初始化。", "无法打开 AI 配置");
+                return;
+            }
+            debuggerPanel.openAiConfigDialog();
+        });
+        menu.add(aiConfig);
 
         menu.show(anchor, 0, anchor.getHeight());
-    }
-
-    private void exportFavoritesAction() {
-        String outputPath = TestDataExporter.chooseExportPath(project,
-                TestDataExporter.suggestFileName("restautolab-favorites", "json"));
-        if (outputPath == null) return;
-        try {
-            TestDataExporter.exportFavorites(RestAutoLabSettingsState.getInstance(project),
-                    project.getName(), outputPath);
-            statsLabel.setText("● 收藏列表已导出");
-            Messages.showInfoMessage(project, "收藏列表已导出到：\n" + outputPath, "导出成功");
-        } catch (Exception ex) {
-            LOG.warn("导出收藏列表失败", ex);
-            Messages.showErrorDialog(project, "导出收藏列表失败：" + ex.getMessage(), "导出失败");
-        }
-    }
-
-    private void importFavoritesAction() {
-        FileChooserDescriptor descriptor = new FileChooserDescriptor(true, false, false, false, false, false)
-                .withFileFilter(file -> file.getName().toLowerCase(Locale.ROOT).endsWith(".json"));
-        descriptor.setTitle("选择收藏列表文件");
-        descriptor.setDescription("选择由 RestAutoLab 导出的收藏列表 JSON；已有本地数据不会被覆盖");
-        VirtualFile selected = com.intellij.openapi.fileChooser.FileChooser.chooseFile(descriptor, project, null);
-        if (selected == null) return;
-        try {
-            String result = TestDataExporter.importFavorites(RestAutoLabSettingsState.getInstance(project),
-                    selected.getPath());
-            applyFilters();
-            statsLabel.setText("● 收藏列表已导入");
-            Messages.showInfoMessage(project, result, "导入成功");
-        } catch (Exception ex) {
-            LOG.warn("导入收藏列表失败", ex);
-            Messages.showErrorDialog(project, "导入收藏列表失败：" + ex.getMessage(), "导入失败");
-        }
     }
 
     /**
