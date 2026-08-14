@@ -819,9 +819,8 @@ public class ApiDebuggerPanel extends JPanel {
 
         // === 顶部状态栏（带色码徽章） ===
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 4));
-        statusPanel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border()),
-                JBUI.Borders.empty(6, 8)));
+        // 一伦优化 #10：用 cardBorder(6, 8) 统一描边 + 留白（替代硬编码 compound）
+        statusPanel.setBorder(UiStyle.cardBorder(6, 8));
         statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
         responseStatusLabel.setFont(responseStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         responseTimeLabel.setFont(responseTimeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
@@ -980,9 +979,8 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel statusCard = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         statusCard.setAlignmentX(Component.LEFT_ALIGNMENT);
         statusCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
-        statusCard.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border()),
-                JBUI.Borders.empty(6, 10)));
+        // 一伦优化 #10：用 cardBorder(6, 10) 统一描边 + 留白
+        statusCard.setBorder(UiStyle.cardBorder(6, 10));
 
         JBLabel configStatusLabel = new JBLabel("🤖 AI配置:");
         configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));

@@ -214,9 +214,51 @@ public final class UiStyle {
 
     /** 卡片/区块的优雅边框：极细描边 + 适度留白 */
     public static javax.swing.border.Border cardBorder() {
+        return cardBorder(8);
+    }
+
+    /**
+     * 一伦优化 #10：参数化卡片边框，padding 灵活可调。
+     * 极细描边由 LaF 决定（Darcula 自带阴影，Light 用 JBColor.border() 描边）。
+     */
+    public static javax.swing.border.Border cardBorder(int padding) {
         return JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1),
-                JBUI.Borders.empty(8));
+                JBUI.Borders.empty(padding));
+    }
+
+    /**
+     * 一伦优化 #10：参数化卡片边框（垂直/水平分开），适配"窄高/宽矮"等不同区块。
+     */
+    public static javax.swing.border.Border cardBorder(int vertical, int horizontal) {
+        return JBUI.Borders.compound(
+                JBUI.Borders.customLine(JBColor.border(), 1),
+                JBUI.Borders.empty(vertical, horizontal));
+    }
+
+    /**
+     * 一伦优化 #10：四向 padding 边框（无描边），替代硬编码 {@code new Insets(...)}。
+     */
+    public static javax.swing.border.Border paddedBorder(int top, int left, int bottom, int right) {
+        return JBUI.Borders.empty(top, left, bottom, right);
+    }
+
+    /**
+     * 一伦优化 #10：常用内边距面板（FlowLayout），替代到处 new JPanel(new FlowLayout(...)) + setBorder。
+     */
+    public static JPanel paddedPanel(int top, int left, int bottom, int right) {
+        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        p.setBorder(paddedBorder(top, left, bottom, right));
+        return p;
+    }
+
+    /**
+     * 一伦优化 #10：卡片面板（带描边 + 圆角渲染交由 LaF），用于 AI 状态卡、响应状态卡等区块。
+     */
+    public static JPanel cardPanel() {
+        JPanel p = new JPanel();
+        p.setBorder(cardBorder());
+        return p;
     }
 
     /** 顶部细分隔线 */
