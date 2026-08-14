@@ -984,20 +984,13 @@ public class ApiDebuggerPanel extends JPanel {
         scenarioCombo.setToolTipText("选择测试场景：正常/边界/异常/全量");
         controlPanel.add(scenarioCombo);
 
-        JButton genBtn = iconButton("生成参数", AllIcons.Actions.Lightning, e -> {
-            AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
-            generateAiParameters(s);
-        });
-        genBtn.setToolTipText("⚡ 调用AI生成真实可用的测试参数");
-        genBtn.putClientProperty("JButton.buttonType", "default");
-        controlPanel.add(genBtn);
-
-        JButton genMultiBtn = iconButton("全量生成", AllIcons.Actions.RunAll, e -> {
-            scenarioCombo.setSelectedItem(AiParameterService.TestScenario.FULL);
-            generateAiParameters(AiParameterService.TestScenario.FULL);
-        });
-        genMultiBtn.setToolTipText("生成正常+边界+异常多组数据");
-        controlPanel.add(genMultiBtn);
+        // 一伦优化 #6：原"生成参数" + "全量生成"两个独立按钮合并为单个"🤖 AI 助手"下拉。
+        // 弹层含两个子动作：按当前场景生成 / 全量生成（正常+边界+异常）。
+        JButton aiAssistantBtn = iconButton("🤖 AI 助手", AllIcons.Actions.Lightning, null);
+        aiAssistantBtn.setToolTipText("AI 参数生成助手（含按当前场景生成 / 全量生成两个子动作）");
+        aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
+        aiAssistantBtn.addActionListener(e -> showAiAssistantMenu(aiAssistantBtn));
+        controlPanel.add(aiAssistantBtn);
 
         panel.add(controlPanel);
         panel.add(Box.createVerticalStrut(8));
@@ -1015,6 +1008,32 @@ public class ApiDebuggerPanel extends JPanel {
         return panel;
     }
     
+    /**
+     * 一伦优化 #6：AI 助手下拉菜单
+     * <p>把"按当前场景生成参数"和"全量生成（正常+边界+异常）"两个动作打包到单个 JPopupMenu。</p>
+     */
+    private void showAiAssistantMenu(JButton invoker) {
+        JPopupMenu menu = new JPopupMenu();
+
+        JMenuItem genItem = new JMenuItem("⚡ AI 生成参数（按当前场景）", AllIcons.Actions.Lightning);
+        genItem.addActionListener(ev -> {
+            AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
+            generateAiParameters(s);
+        });
+        menu.add(genItem);
+
+        menu.addSeparator();
+
+        JMenuItem genAllItem = new JMenuItem("🧪 AI 全量生成（正常+边界+异常）", AllIcons.Actions.RunAll);
+        genAllItem.addActionListener(ev -> {
+            scenarioCombo.setSelectedItem(AiParameterService.TestScenario.FULL);
+            generateAiParameters(AiParameterService.TestScenario.FULL);
+        });
+        menu.add(genAllItem);
+
+        menu.show(invoker, 0, invoker.getHeight());
+    }
+
     /**
      * 获取AI配置摘要显示
      */
