@@ -141,8 +141,12 @@ public class JsonSyntaxPane extends JTextPane {
 
         JMenuItem copyAllItem = new JMenuItem("复制全部", AllIcons.Actions.Copy);
         copyAllItem.addActionListener(e -> {
-            StringSelection sel = new StringSelection(getText());
-            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
+            String all = getText();
+            if (all != null && !all.isEmpty()) {
+                StringSelection sel = new StringSelection(all);
+                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
+                showCopyToast("已复制全部 " + all.length() + " 字符");
+            }
         });
 
         JMenuItem selectAllItem = new JMenuItem("全选", AllIcons.Actions.Selectall);
@@ -191,7 +195,51 @@ public class JsonSyntaxPane extends JTextPane {
         if (selected != null && !selected.isEmpty()) {
             StringSelection sel = new StringSelection(selected);
             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
+            // 一伦优化 #15：复制成功后弹 1.5s 自动消失的 toast，给用户视觉反馈
+            showCopyToast("已复制 " + selected.length() + " 字符");
         }
+    }
+
+    /**
+     * 一伦优化 #15：在面板右下角弹出短暂 toast，1.5s 后自动淡出。
+     * <p>用顶层 {@link JWindow} 浮层 + alpha 渐变，避免阻塞用户操作。
+     * 多次触发会取消上一次并重启计时器。</p>
+     */
+    private void showCopyToast(String message) {
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        if (owner == null) return;
+        // 取消已存在的 toast
+        for (Window w : owner.getOwnedWindows()) {
+            if (w instanceof JWindow && "JsonSyntaxPane.copyToast".equals(w.getName())) {
+                w.dispose();
+            }
+        }
+        JWindow toast = new JWindow(owner);
+        toast.setName("JsonSyntaxPane.copyToast");
+        JLabel label = new JLabel(message);
+        label.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1),
+                BorderFactory.createEmptyBorder(6, 12, 6, 12)));
+        label.setBackground(new Color(0x2E, 0x7D, 0x32, 230));
+        label.setForeground(Color.WHITE);
+        label.setOpaque(true);
+        label.setFont(label.getFont().deriveFont(Font.PLAIN, 11f));
+        toast.add(label);
+        toast.pack();
+        // 定位到面板右下角内 8px 偏移
+        java.awt.Rectangle paneBounds = this.getBounds();
+        java.awt.Point paneLoc = SwingUtilities.convertPoint(this, 0, 0, owner);
+        int tx = paneLoc.x + paneBounds.width - toast.getWidth() - 12;
+        int ty = paneLoc.y + paneBounds.height - toast.getHeight() - 12;
+        toast.setLocation(Math.max(paneLoc.x, tx), Math.max(paneLoc.y, ty));
+        toast.setAlwaysOnTop(true);
+        toast.setVisible(true);
+        // 1.5s 后自动消失
+        Timer timer = new Timer(1500, e -> {
+            toast.dispose();
+        });
+        timer.setRepeats(false);
+        timer.start();
     }
 
     // ── Ctrl+滚轮 缩放 ──────────────────────────────────────

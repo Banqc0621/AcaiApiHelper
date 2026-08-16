@@ -52,13 +52,25 @@ public final class UiStyle {
 
     // ── 可选 accent 主题：跟随 IDE 明暗模式，并提供明确高对比度方案 ──
     /**
-     * accent 主题枚举：提供 2 套可选 accent 色（默认蓝 / 翠绿），
+     * accent 主题枚举：提供 5 套可选 accent 色（默认蓝 / 翠绿 / 暖橙 / 紫罗兰 / 高对比度），
      * 配合 {@link com.intellij.ui.JBColor} 在明暗主题下自动切换。
+     *
      * <p>用于主操作按钮（"发送" / "AI 助手"）的背景色、关键 tab 边框等强语义高亮。</p>
+     *
+     * <h3>主题清单（v2.0.0 扩展）</h3>
+     * <ul>
+     *   <li>{@link #BLUE}  —— 默认蓝,稳重型,适合大多数开发场景</li>
+     *   <li>{@link #GREEN} —— 翠绿,清新自然,与「通过/成功」语义一致</li>
+     *   <li>{@link #ORANGE}—— 暖橙,v2.0.0 新增,提升主操作视觉重量</li>
+     *   <li>{@link #PURPLE}—— 紫罗兰,v2.0.0 新增,与 AI 助手语义呼应</li>
+     *   <li>{@link #HIGH_CONTRAST} —— 高对比度,无障碍场景(白底黑字/黑底黄字)</li>
+     * </ul>
      */
     public enum AccentColor {
         BLUE  ("默认蓝", 0x15, 0x65, 0xC0, 0x42, 0xA5, 0xF5),
         GREEN ("翠绿",   0x2E, 0x7D, 0x32, 0x66, 0xBB, 0x6A),
+        ORANGE("暖橙",   0xE6, 0x5C, 0x00, 0xFF, 0x98, 0x4D),
+        PURPLE("紫罗兰", 0x6A, 0x1B, 0x9A, 0xB3, 0x9D, 0xDB),
         HIGH_CONTRAST("高对比度", 0x00, 0x00, 0x00, 0xFF, 0xD6, 0x00);
 
         public final String displayName;
@@ -260,6 +272,43 @@ public final class UiStyle {
         btn.putClientProperty(LOADING_CURSOR, null);
     }
 
+    /**
+     * v2.0.0 新增:通用「忙碌态」开关。封装 startLoading/endLoading 的一对操作,
+     * 用 try-with-resources 即可在任意代码块后自动恢复按钮。
+     *
+     * <p>典型用法:
+     * <pre>{@code
+     *   try (UiStyle.ButtonBusy busy = UiStyle.busy(sendButton, "发送中")) {
+     *       doNetworkCall();
+     *   } // 自动恢复
+     * }</pre>
+     *
+     * <p>注意:不在 busy 范围(异常抛出/return)里时,务必配合 try-with-resources 或显式
+     * 调用 {@link #endLoading} 以恢复按钮,否则按钮会卡在禁用态。</p>
+     */
+    public static ButtonBusy busy(JButton btn, String prefix) {
+        startLoading(btn, prefix);
+        return new ButtonBusy(btn);
+    }
+
+    /**
+     * v2.0.0 新增:AutoCloseable 包装器,配合 try-with-resources 自动恢复按钮。
+     * 优先使用 {@link #busy(JButton, String)} 获取。
+     */
+    public static final class ButtonBusy implements AutoCloseable {
+        private final JButton btn;
+        private boolean closed = false;
+
+        private ButtonBusy(JButton btn) { this.btn = btn; }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            endLoading(btn, null);
+        }
+    }
+
     /** 把 RGB 各通道按 ratio 缩放，<1 变深，>1 变浅；clamp 到 0-255 */
     private static Color shift(Color c, float ratio) {
         if (c == null) return null;
@@ -392,9 +441,110 @@ public final class UiStyle {
                 JBUI.Borders.emptyTop(6));
     }
 
+    // ── 状态色（明暗主题双值，一伦优化 #13）──
+    /** 成功色：通过/已完成 */
+    public static final JBColor COLOR_SUCCESS = new JBColor(
+            new Color(0x2E, 0x7D, 0x32),
+            new Color(0x81, 0xC7, 0x84));
+    /** 警告色：进行中/注意 */
+    public static final JBColor COLOR_WARNING = new JBColor(
+            new Color(0xE6, 0x5C, 0x00),
+            new Color(0xFF, 0xB7, 0x4D));
+    /** 错误色：失败/异常 */
+    public static final JBColor COLOR_ERROR = new JBColor(
+            new Color(0xC6, 0x28, 0x28),
+            new Color(0xEF, 0x9A, 0x9A));
+    /** 信息色：就绪/默认 */
+    public static final JBColor COLOR_INFO = new JBColor(
+            new Color(0x15, 0x65, 0xC0),
+            new Color(0x64, 0xB5, 0xF6));
+
     /** 给 JLabel 设置次要文字风格（灰色小字） */
     public static void hint(JLabel label) {
         label.setFont(label.getFont().deriveFont(Font.PLAIN, FONT_HINT));
         label.setForeground(JBColor.GRAY);
+    }
+
+    /**
+     * 一伦优化 #13：把 JLabel 染上指定语义色（成功/警告/错误/信息），与 hint() 互不冲突。
+     * <p>注意：颜色不是唯一含义 —— 调用方应同时改文字前缀（"✓ 通过"/"✗ 失败"），保证色盲用户也能识别。</p>
+     */
+    public static void setSemanticColor(JLabel label, SemanticColor type) {
+        if (label == null || type == null) return;
+        label.setForeground(type.color());
+    }
+
+    /** 语义色枚举：用于状态栏、徽章、提示标签 */
+    public enum SemanticColor {
+        INFO, SUCCESS, WARNING, ERROR;
+
+        public JBColor color() {
+            switch (this) {
+                case SUCCESS: return COLOR_SUCCESS;
+                case WARNING: return COLOR_WARNING;
+                case ERROR:   return COLOR_ERROR;
+                default:      return COLOR_INFO;
+            }
+        }
+    }
+
+    /**
+     * 一伦优化 #13：状态栏 JLabel 工厂 —— 默认就绪态、info 色、4 边 4px 留白。
+     * <p>配合 {@link #setStatus} 在「就绪/进行中/成功/失败」四态间切换，避免每个面板
+     * 各自写一坨 setText + setForeground + setBorder。</p>
+     */
+    public static JBLabel statusLabel() {
+        JBLabel label = new JBLabel("就绪");
+        label.setBorder(JBUI.Borders.empty(4, 6, 4, 6));
+        setSemanticColor(label, SemanticColor.INFO);
+        return label;
+    }
+
+    /**
+     * 一伦优化 #13：把状态栏切到指定语义态（文字前缀 + 颜色双通道，满足色盲可读性）。
+     *
+     * @param label    状态标签（由 {@link #statusLabel} 创建）
+     * @param text     状态文字（建议带前缀：✓ / ✗ / ⚠ / ℹ）
+     * @param type     语义色
+     */
+    public static void setStatus(JLabel label, String text, SemanticColor type) {
+        if (label == null) return;
+        if (text != null) label.setText(text);
+        setSemanticColor(label, type);
+    }
+
+    /**
+     * 一伦优化 #14：占位提示工具 —— Swing JTextField 无原生 placeholder，
+     * 通过 FocusListener 在空文本时显示/隐藏灰色占位文案。
+     *
+     * <p>IDEA 平台的 JBTextField 也支持同名方法，本工具会优先调用；失败时降级到 FocusListener 方案。</p>
+     */
+    public static void attachPlaceholder(JTextField field, String placeholder) {
+        if (field == null || placeholder == null || placeholder.isEmpty()) return;
+        try {
+            // 尝试走平台属性（IDEA 2022.3+ JBTextField 已支持）
+            field.getClass().getMethod("setPlaceholderText", String.class).invoke(field, placeholder);
+            return;
+        } catch (Throwable ignore) {
+            // 反射失败 → 走下方 FocusListener 兜底
+        }
+        final Color original = field.getForeground();
+        final Color phColor = JBColor.GRAY;
+        field.setForeground(phColor);
+        field.setText(placeholder);
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) {
+                if (placeholder.equals(field.getText())) {
+                    field.setText("");
+                    field.setForeground(original);
+                }
+            }
+            @Override public void focusLost(java.awt.event.FocusEvent e) {
+                if (field.getText().isEmpty()) {
+                    field.setText(placeholder);
+                    field.setForeground(phColor);
+                }
+            }
+        });
     }
 }

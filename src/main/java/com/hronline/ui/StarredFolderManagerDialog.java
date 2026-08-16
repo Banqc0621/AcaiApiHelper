@@ -21,7 +21,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
-import javax.swing.border.EmptyBorder;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.datatransfer.DataFlavor;
@@ -58,7 +57,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
     private Tree tree;
     private DefaultTreeModel treeModel;
     private DefaultMutableTreeNode root;
-    private final JLabel statusLabel = new JBLabel("就绪");
+    private final JLabel statusLabel = UiStyle.statusLabel();
 
     /** apiKey(uniqueKey) -> ApiDefinition 解析表，用于把存储的 key 还原成接口对象 */
     private final Map<String, ApiDefinition> apiByKey = new LinkedHashMap<>();
@@ -125,17 +124,16 @@ public class StarredFolderManagerDialog extends DialogWrapper {
         JBScrollPane scroll = new JBScrollPane(tree);
         panel.add(scroll, BorderLayout.CENTER);
 
-        statusLabel.setBorder(new EmptyBorder(4, 6, 4, 6));
         panel.add(statusLabel, BorderLayout.SOUTH);
 
         return panel;
     }
 
     private JButton toolButton(String text, Icon icon, Runnable action) {
-        JButton b = new JButton(text, icon);
+        // 一伦优化 #13：工具栏按钮统一走 ghostButton（无边框、悬停高亮、符合 IDEA 工具栏风格）
+        JButton b = UiStyle.ghostButton(text, icon, e -> action.run());
         b.setToolTipText(text);
         b.setFocusable(false);
-        b.addActionListener(e -> action.run());
         return b;
     }
 
@@ -184,7 +182,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 if (folderService.getStatus(auo.folderId, auo.api.uniqueKey()).shouldHighlightRed()) failed++;
             }
         }
-        statusLabel.setText("共 " + folders + " 个文件夹 · " + apis + " 个接口 · " + failed + " 个失败标红");
+        UiStyle.setStatus(statusLabel, "共 " + folders + " 个文件夹 · " + apis + " 个接口 · " + failed + " 个失败标红", UiStyle.SemanticColor.INFO);
     }
 
     // ==================== 节点包装 ====================
@@ -303,8 +301,10 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 .collect(Collectors.toList());
         if (folders.isEmpty()) return;
         String[] names = folders.stream().map(StarredFolder::getName).toArray(String[]::new);
-        Object choice = JOptionPane.showInputDialog(tree, "复制到哪个文件夹？", "复制接口",
-                JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
+        // 一伦优化 #13：JOptionPane → IDEA 原生 Messages（更轻量、与项目其他对话框一致）
+        String choice = Messages.showEditableChooseDialog(
+                "复制到哪个文件夹？", "复制接口", Messages.getQuestionIcon(),
+                names, names[0], null);
         if (choice == null) return;
         int ret = Arrays.asList(names).indexOf(choice);
         if (ret < 0 || ret >= folders.size()) return;
@@ -321,8 +321,9 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 .collect(Collectors.toList());
         if (folders.isEmpty()) return;
         String[] names = folders.stream().map(StarredFolder::getName).toArray(String[]::new);
-        Object choice = JOptionPane.showInputDialog(tree, "移动到哪个文件夹？", "移动接口",
-                JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
+        String choice = Messages.showEditableChooseDialog(
+                "移动到哪个文件夹？", "移动接口", Messages.getQuestionIcon(),
+                names, names[0], null);
         if (choice == null) return;
         int ret = Arrays.asList(names).indexOf(choice);
         if (ret < 0 || ret >= folders.size()) return;
@@ -347,7 +348,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
         ParamsEditor editor = new ParamsEditor(project, editable);
         if (editor.showAndGet()) {
             folderService.setParams(auo.folderId, api.uniqueKey(), editor.getResult());
-            statusLabel.setText("已保存参数：" + api.getUrl());
+            UiStyle.setStatus(statusLabel, "✓ 已保存参数：" + api.getUrl(), UiStyle.SemanticColor.SUCCESS);
         }
     }
 
@@ -369,7 +370,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
         if (ret != Messages.YES) return;
 
         final String folderId = f.getId();
-        statusLabel.setText("AI 生成参数中（0/" + targets.size() + "）…");
+        UiStyle.setStatus(statusLabel, "⚠ AI 生成参数中（0/" + targets.size() + "）…", UiStyle.SemanticColor.WARNING);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             int ok = 0, fail = 0;
             for (int i = 0; i < targets.size(); i++) {
@@ -389,7 +390,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                     ok++;
                     final int okNow = ok;
                     SwingUtilities.invokeLater(() ->
-                            statusLabel.setText("AI 生成参数中（" + idx + "/" + targets.size() + "）… 已成功 " + okNow));
+                            UiStyle.setStatus(statusLabel, "⚠ AI 生成参数中（" + idx + "/" + targets.size() + "）… 已成功 " + okNow, UiStyle.SemanticColor.WARNING));
                 } catch (Exception ex) {
                     fail++;
                 }
@@ -397,7 +398,12 @@ public class StarredFolderManagerDialog extends DialogWrapper {
             final int okF = ok, failF = fail;
             SwingUtilities.invokeLater(() -> {
                 rebuildTree();
-                statusLabel.setText("AI 生成完成：成功 " + okF + " · 失败 " + failF);
+                UiStyle.SemanticColor finalType = (failF == 0)
+                        ? UiStyle.SemanticColor.SUCCESS
+                        : UiStyle.SemanticColor.WARNING;
+                UiStyle.setStatus(statusLabel,
+                        (failF == 0 ? "✓ AI 生成完成：成功 " : "⚠ AI 生成完成：成功 ") + okF + " · 失败 " + failF,
+                        finalType);
             });
         });
     }
@@ -417,7 +423,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
 
         final String folderId = f.getId();
         final String baseUrl = settings.getBaseUrl();
-        statusLabel.setText("批量测试中（0/" + targets.size() + "）…");
+        UiStyle.setStatus(statusLabel, "⚠ 批量测试中（0/" + targets.size() + "）…", UiStyle.SemanticColor.WARNING);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             int passed = 0, failed = 0;
             for (int i = 0; i < targets.size(); i++) {
@@ -442,12 +448,17 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 if (status.isPassed()) passed++; else failed++;
                 final int pNow = passed, fNow = failed;
                 SwingUtilities.invokeLater(() ->
-                        statusLabel.setText("批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow));
+                        UiStyle.setStatus(statusLabel, "⚠ 批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow, UiStyle.SemanticColor.WARNING));
             }
             final int passedF = passed, failedF = failed;
             SwingUtilities.invokeLater(() -> {
                 rebuildTree();
-                statusLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
+                UiStyle.SemanticColor finalType = (failedF == 0)
+                        ? UiStyle.SemanticColor.SUCCESS
+                        : UiStyle.SemanticColor.ERROR;
+                UiStyle.setStatus(statusLabel,
+                        (failedF == 0 ? "✓ 批量测试完成：通过 " : "✗ 批量测试完成：通过 ") + passedF + " · 失败 " + failedF,
+                        finalType);
             });
         });
     }
@@ -649,6 +660,8 @@ public class StarredFolderManagerDialog extends DialogWrapper {
             list.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
             applyFilter("");
             searchField.addActionListener(e -> applyFilter(searchField.getText()));
+            // 一伦优化 #14：搜索框加 placeholder 提示
+            UiStyle.attachPlaceholder(searchField, "搜索 URL / 名称…");
         }
 
         private void applyFilter(String text) {
