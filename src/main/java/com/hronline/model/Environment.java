@@ -35,7 +35,7 @@ public class Environment {
     // ================================================================
 
     public static Environment dev() {
-        Environment env = new Environment("开发环境", "http://localhost:8080");
+        Environment env = new Environment("dev", "http://localhost:8080");
         env.setDescription("本地开发环境");
         env.getVariables().put("token", "dev-token-xxx");
         env.getGlobalHeaders().put("Authorization", "Bearer {{token}}");
@@ -43,7 +43,7 @@ public class Environment {
     }
 
     public static Environment test() {
-        Environment env = new Environment("测试环境", "http://test.example.com");
+        Environment env = new Environment("test", "http://localhost:8080");
         env.setDescription("测试/SIT环境");
         env.getVariables().put("token", "test-token-xxx");
         env.getGlobalHeaders().put("Authorization", "Bearer {{token}}");
@@ -51,7 +51,7 @@ public class Environment {
     }
 
     public static Environment production() {
-        Environment env = new Environment("生产环境", "https://api.example.com");
+        Environment env = new Environment("prod", "http://localhost:8080");
         env.setDescription("生产环境");
         env.getVariables().put("token", "");
         env.getGlobalHeaders().put("Authorization", "Bearer {{token}}");

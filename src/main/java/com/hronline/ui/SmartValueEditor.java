@@ -35,12 +35,12 @@ class SmartValueEditor extends DefaultCellEditor {
     private final JComboBox<String> enumCombo = new JComboBox<>();
     /** 文件参数编辑面板：按钮 + 路径显示 */
     private final JPanel filePanel = new JPanel(new BorderLayout(4, 0));
-    private final JButton fileChooseBtn = new JButton("📎 选择文件");
+    private final JButton fileChooseBtn = new JButton("选择文件", AllIcons.Actions.Upload);
     private final JLabel fileLabel = new JLabel("（未选择）");
     /** JSON/Body 多值编辑面板：文本框 + 展开按钮 */
     private final JPanel jsonPanel = new JPanel(new BorderLayout(2, 0));
     private final JTextField jsonTextField = new JTextField();
-    private final JButton jsonExpandBtn = new JButton("📝");
+    private final JButton jsonExpandBtn = new JButton(AllIcons.Actions.ShowAsTree);
 
     private final Project project;
     private final JTable paramTable;
@@ -72,6 +72,7 @@ class SmartValueEditor extends DefaultCellEditor {
 
         fileChooseBtn.setFont(fileChooseBtn.getFont().deriveFont(Font.PLAIN, 11f));
         fileChooseBtn.setMargin(new Insets(1, 6, 1, 6));
+        fileChooseBtn.setIconTextGap(4);
         fileChooseBtn.addActionListener(e -> chooseFileAction());
         filePanel.setOpaque(true);
         filePanel.add(fileChooseBtn, BorderLayout.WEST);
@@ -80,6 +81,7 @@ class SmartValueEditor extends DefaultCellEditor {
         jsonExpandBtn.setFont(jsonExpandBtn.getFont().deriveFont(Font.PLAIN, 11f));
         jsonExpandBtn.setMargin(new Insets(1, 4, 1, 4));
         jsonExpandBtn.setToolTipText("点击展开多行编辑器（支持JSON格式化）");
+        jsonExpandBtn.setIconTextGap(0);
         jsonExpandBtn.addActionListener(e -> {
             String edited = showMultilineJsonEditor(jsonTextField.getText());
             if (edited != null) {
@@ -101,7 +103,9 @@ class SmartValueEditor extends DefaultCellEditor {
         if (vf != null) {
             String path = vf.getPath();
             String fileName = vf.getName();
-            fileLabel.setText("📎 " + fileName);
+            fileLabel.setText(fileName);
+            fileLabel.setIcon(AllIcons.Actions.Upload);
+            fileLabel.setIconTextGap(4);
             fileLabel.setToolTipText(path);
             currentValue = path;
             if (currentTable != null && currentRow >= 0) {
@@ -114,6 +118,8 @@ class SmartValueEditor extends DefaultCellEditor {
                     JLabel lbl = attachmentPathLabels.get(name);
                     if (lbl != null) {
                         lbl.setText(fileName);
+                        lbl.setIcon(AllIcons.Actions.Upload);
+                        lbl.setIconTextGap(4);
                         lbl.setForeground(JBColor.foreground());
                         lbl.setToolTipText(path);
                     }
@@ -140,10 +146,13 @@ class SmartValueEditor extends DefaultCellEditor {
                 String raw = valStr.startsWith("📎") ? valStr.substring(1).trim() : valStr;
                 int sep = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
                 String fileName = sep >= 0 ? raw.substring(sep + 1) : raw;
-                fileLabel.setText("📎 " + fileName);
+                fileLabel.setText(fileName);
+                fileLabel.setIcon(AllIcons.Actions.Upload);
+                fileLabel.setIconTextGap(4);
                 fileLabel.setToolTipText(raw);
             } else {
                 fileLabel.setText("（未选择）");
+                fileLabel.setIcon(null);
                 fileLabel.setToolTipText(null);
             }
             fileLabel.setFont(new Font(Font.DIALOG, Font.PLAIN, 12));
@@ -225,8 +234,7 @@ class SmartValueEditor extends DefaultCellEditor {
         dialog.add(scroll, BorderLayout.CENTER);
 
         JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 4));
-        JButton fmtBtn = new JButton("格式化JSON", AllIcons.Actions.PrettyPrint);
-        fmtBtn.addActionListener(ev -> {
+        JButton fmtBtn = UiStyle.button("格式化JSON", AllIcons.Actions.PrettyPrint, ev -> {
             try {
                 var elem = JsonParser.parseString(area.getText().trim());
                 area.setText(gson.toJson(elem));
@@ -234,15 +242,12 @@ class SmartValueEditor extends DefaultCellEditor {
                 Messages.showWarningDialog(dialog, "JSON格式错误: " + ex.getMessage(), "格式化失败");
             }
         });
-        JButton okBtn = new JButton("确定", AllIcons.Actions.Commit);
-        okBtn.putClientProperty("JButton.buttonType", "default");
-        JButton cancelBtn = new JButton("取消");
         final String[] result = {null};
-        okBtn.addActionListener(ev -> {
+        JButton okBtn = UiStyle.primaryButton("确定", AllIcons.Actions.Commit, ev -> {
             result[0] = area.getText();
             dialog.dispose();
         });
-        cancelBtn.addActionListener(ev -> dialog.dispose());
+        JButton cancelBtn = UiStyle.button("取消", null, ev -> dialog.dispose());
         btnBar.add(fmtBtn);
         btnBar.add(okBtn);
         btnBar.add(cancelBtn);

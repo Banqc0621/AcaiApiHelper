@@ -2,6 +2,7 @@ package com.hronline.ui;
 
 import com.hronline.chain.ApiDependency;
 import com.hronline.model.ApiDefinition;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
@@ -88,13 +89,10 @@ public class DependencyGraphDialog extends DialogWrapper {
 
         // 按钮栏
         JPanel buttonBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        JButton addBtn = new JButton("添加依赖");
-        JButton deleteBtn = new JButton("删除选中行");
+        JButton addBtn = UiStyle.primaryButton("添加依赖", AllIcons.General.Add, e -> addDependency());
+        JButton deleteBtn = UiStyle.button("删除选中行", AllIcons.General.Remove, e -> deleteSelectedRow());
         buttonBar.add(addBtn);
         buttonBar.add(deleteBtn);
-
-        addBtn.addActionListener(e -> addDependency());
-        deleteBtn.addActionListener(e -> deleteSelectedRow());
 
         panel.add(buttonBar, BorderLayout.SOUTH);
 

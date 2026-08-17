@@ -82,7 +82,20 @@ public class ApiDefinition {
     public void setHttpMethod(String httpMethod) { this.httpMethod = httpMethod; }
 
     public String getUrl() { return url; }
-    public void setUrl(String url) { this.url = url; }
+    public void setUrl(String url) {
+        // 归一化：保证所有写入的 URL 都以前导 / 开头，避免扫描器/手动添加/外部导入时出现"users"这种残缺路径
+        if (url != null && !url.isEmpty()) {
+            String s = url;
+            if (!s.startsWith("/")) s = "/" + s;
+            // 折叠重复 /
+            while (s.contains("//")) s = s.replace("//", "/");
+            // 去尾部 /（保留根 /）
+            if (s.length() > 1 && s.endsWith("/")) s = s.substring(0, s.length() - 1);
+            this.url = s;
+        } else {
+            this.url = url == null ? "" : url;
+        }
+    }
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }

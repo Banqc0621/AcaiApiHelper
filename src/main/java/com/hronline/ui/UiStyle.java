@@ -183,6 +183,29 @@ public final class UiStyle {
     }
 
     /**
+     * 一轮优化 R6：把若干按钮的 preferred/minimum/maximum 高度统一到同一像素，
+     * 避免「次操作 roundRect 描边按钮 + 主操作 accent 按钮」在同行 baseline 错位 1-2px。
+     *
+     * @param height 目标高度（px）
+     * @param comps  任意多个 AbstractButton 组件
+     */
+    public static void uniformHeight(int height, javax.swing.AbstractButton... comps) {
+        if (comps == null) return;
+        for (javax.swing.AbstractButton b : comps) {
+            if (b == null) continue;
+            Dimension d = b.getPreferredSize();
+            d.height = height;
+            b.setPreferredSize(d);
+            Dimension m = b.getMinimumSize();
+            m.height = height;
+            b.setMinimumSize(m);
+            Dimension x = b.getMaximumSize();
+            x.height = height;
+            b.setMaximumSize(x);
+        }
+    }
+
+    /**
      * 一轮优化 #9：把 accent 主题色应用到一个按钮上。
      * <p>使用 {@code setBackground}/{@code setForeground} 直接着色，
      * 跳过 LaF 渲染差异，保证明暗主题下都看得见。</p>
@@ -248,14 +271,32 @@ public final class UiStyle {
      * <p>配套 {@link #endLoading(JButton, String)} 恢复。</p>
      */
     public static void startLoading(JButton btn, String prefix) {
+        startLoading(btn, prefix, false);
+    }
+
+    /**
+     * 一伦优化 v10：「纯图标按钮」加载态 —— 不改 setText（避免破坏纯图标观感），
+     * 仅禁用按钮 + 切 WAIT 光标，并通过 tooltip 提供反馈。
+     */
+    public static void startLoading(JButton btn, String prefix, boolean iconOnly) {
         if (btn == null) return;
         if (btn.getClientProperty(LOADING_TEXT) == null) {
             btn.putClientProperty(LOADING_TEXT, btn.getText());
             btn.putClientProperty(LOADING_CURSOR, btn.getCursor());
+            if (iconOnly) {
+                btn.putClientProperty("__loading_tooltip", btn.getToolTipText());
+            }
         }
-        btn.setText((prefix == null ? "" : prefix) + "  ⟳ …");
-        btn.setEnabled(false);
-        btn.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        if (iconOnly) {
+            // 纯图标按钮：禁用 + 切光标 + 改 tooltip 文字提示（不 setText）
+            btn.setEnabled(false);
+            btn.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            btn.setToolTipText(prefix == null ? "处理中…" : prefix);
+        } else {
+            btn.setText((prefix == null ? "" : prefix) + "  ⟳ …");
+            btn.setEnabled(false);
+            btn.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        }
     }
 
     /** 结束 loading：恢复原文本 + 启用按钮。 */
@@ -263,13 +304,19 @@ public final class UiStyle {
         if (btn == null) return;
         Object prev = btn.getClientProperty(LOADING_TEXT);
         Object previousCursor = btn.getClientProperty(LOADING_CURSOR);
-        btn.setText(prev instanceof String ? (String) prev : (fallbackText == null ? "" : fallbackText));
+        Object prevTooltip = btn.getClientProperty("__loading_tooltip");
+        if (prevTooltip != null) {
+            btn.setToolTipText((String) prevTooltip);
+        } else {
+            btn.setText(prev instanceof String ? (String) prev : (fallbackText == null ? "" : fallbackText));
+        }
         btn.setEnabled(true);
         btn.setCursor(previousCursor instanceof Cursor
                 ? (Cursor) previousCursor
                 : Cursor.getDefaultCursor());
         btn.putClientProperty(LOADING_TEXT, null);
         btn.putClientProperty(LOADING_CURSOR, null);
+        btn.putClientProperty("__loading_tooltip", null);
     }
 
     /**
@@ -335,6 +382,97 @@ public final class UiStyle {
         btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
         if (listener != null) btn.addActionListener(listener);
         return btn;
+    }
+
+    /**
+     * 一伦优化 v6：分段控制器（segmented control）。
+     * <p>把"互斥的 N 个状态"做成单行单选按钮组，比下拉框更直观，比多个独立按钮更紧凑。
+     * 适用于 body 尺寸切换、视图模式切换等场景。</p>
+     * <p>外观：单像素描边圆角矩形；选中态用浅色背景 + 加粗文字，未选态透明。统一行高 26px，
+     * 字号 {@link #FONT_HINT}，相邻段间无间隙，整组与同行的 ghostButton 视觉等高。</p>
+     *
+     * @param labels   每个段的显示文本
+     * @param selected 默认选中索引（0-based）
+     * @param onChange 选中回调，参数为新索引
+     * @return 一个含 {@code ButtonGroup} 状态管理的 JPanel；同时可通过 {@code panel.putClientProperty("segmented")}
+     *         拿到 JPanel 引用，需要"编程式切换选中"时使用 {@code segmented.setSelectedIndex}。
+     */
+    public static JPanel segmentedControl(String[] labels, int selected, java.util.function.IntConsumer onChange) {
+        JPanel group = new JPanel();
+        group.setLayout(new BoxLayout(group, BoxLayout.X_AXIS));
+        group.setOpaque(true);
+        group.setBackground(JBColor.namedColor("Panel.background", new Color(0xF7, 0xF8, 0xFA)));
+        // 用统一描边 + 内边距形成"胶囊"感
+        group.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                JBUI.Borders.empty(1)));
+        ButtonGroup bg = new ButtonGroup();
+        JToggleButton[] toggles = new JToggleButton[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            JToggleButton t = new JToggleButton(labels[i]);
+            t.setFont(t.getFont().deriveFont(Font.PLAIN, FONT_HINT));
+            t.setFocusPainted(false);
+            t.setBorderPainted(false);
+            t.setContentAreaFilled(false);
+            t.setOpaque(true);
+            t.setMargin(new Insets(0, 10, 0, 10));
+            t.setPreferredSize(new Dimension(0, 24));
+            t.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            final int idx = i;
+            t.addActionListener(e -> {
+                if (t.isSelected()) {
+                    refreshSegmented(toggles, idx);
+                    if (onChange != null) onChange.accept(idx);
+                }
+            });
+            toggles[i] = t;
+            bg.add(t);
+            group.add(t);
+        }
+        if (selected >= 0 && selected < toggles.length) {
+            toggles[selected].setSelected(true);
+        }
+        refreshSegmented(toggles, Math.max(0, Math.min(selected, toggles.length - 1)));
+        // 提供编程式切换入口
+        group.putClientProperty("segmented", new SegmentedAccessor(toggles));
+        return group;
+    }
+
+    /** 刷新 segmented control 的视觉态：选中用浅色背景 + 加粗 + 主色文字；未选透明 + 灰色。 */
+    private static void refreshSegmented(JToggleButton[] toggles, int selected) {
+        Color selBg = JBColor.namedColor("Button.selectBackground", new Color(0xE3, 0xF2, 0xFD));
+        Color normalBg = JBColor.namedColor("Panel.background", new Color(0xF7, 0xF8, 0xFA));
+        Color primary = new JBColor(new Color(0x15, 0x65, 0xC0), new Color(0x64, 0xB5, 0xF6));
+        for (int i = 0; i < toggles.length; i++) {
+            JToggleButton t = toggles[i];
+            if (i == selected) {
+                t.setBackground(selBg);
+                t.setForeground(primary);
+                t.setFont(t.getFont().deriveFont(Font.BOLD, FONT_HINT));
+            } else {
+                t.setBackground(normalBg);
+                t.setForeground(JBColor.GRAY);
+                t.setFont(t.getFont().deriveFont(Font.PLAIN, FONT_HINT));
+            }
+        }
+    }
+
+    /** segmented control 编程式切换入口 */
+    public static final class SegmentedAccessor {
+        private final JToggleButton[] toggles;
+        private SegmentedAccessor(JToggleButton[] toggles) { this.toggles = toggles; }
+        public void setSelectedIndex(int idx) {
+            if (idx < 0 || idx >= toggles.length) return;
+            if (toggles[idx].isSelected()) {
+                refreshSegmented(toggles, idx);
+            } else {
+                toggles[idx].setSelected(true); // 触发 ActionListener
+            }
+        }
+        public int getSelectedIndex() {
+            for (int i = 0; i < toggles.length; i++) if (toggles[i].isSelected()) return i;
+            return -1;
+        }
     }
 
     // ── 表格 ──
@@ -544,6 +682,52 @@ public final class UiStyle {
                     field.setText(placeholder);
                     field.setForeground(phColor);
                 }
+            }
+        });
+    }
+
+    // ── 文本框美化（v9：圆角描边 + focus 主色边框）──
+
+    private static final String TF_STYLE_ATTACHED = "__tf_style_attached";
+
+    /**
+     * 一伦优化 v9：把任意 {@link JTextField} 升级为「圆角描边 + focus 主色高亮」观感。
+     * <ul>
+     *   <li>默认 1px 浅灰描边 + 2px 内边距（呼吸感）</li>
+     *   <li>Focus 切换到 accent 主色描边，明暗主题都跟 accent 自适应</li>
+     *   <li>背景跟随 IDE TextField.background 主题色，避免与 LaF 冲突</li>
+     *   <li>支持设置占位文案（与 {@link #setPlaceholder} 配合）</li>
+     * </ul>
+     */
+    public static void applyTextFieldStyle(JTextField field) {
+        applyTextFieldStyle(field, COLOR_PRIMARY);
+    }
+
+    public static void applyTextFieldStyle(JTextField field, JBColor focusBorder) {
+        if (field == null) return;
+        if (Boolean.TRUE.equals(field.getClientProperty(TF_STYLE_ATTACHED))) return;
+        field.putClientProperty(TF_STYLE_ATTACHED, Boolean.TRUE);
+
+        Color normalBorder = JBColor.border();
+        JBColor focusCol = focusBorder == null ? COLOR_PRIMARY : focusBorder;
+
+        // 复合边框：外层 1px 圆角描边 + 内层 0,4,0,4 留白
+        field.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(normalBorder, 1, true),
+                JBUI.Borders.empty(2, 6, 2, 6)));
+        field.setBackground(JBColor.namedColor("TextField.background", Color.WHITE));
+        field.setOpaque(true);
+
+        field.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusGained(java.awt.event.FocusEvent e) {
+                javax.swing.border.Border outer = BorderFactory.createLineBorder(focusCol, 1, true);
+                field.setBorder(BorderFactory.createCompoundBorder(
+                        outer, JBUI.Borders.empty(2, 6, 2, 6)));
+            }
+            @Override public void focusLost(java.awt.event.FocusEvent e) {
+                javax.swing.border.Border outer = BorderFactory.createLineBorder(normalBorder, 1, true);
+                field.setBorder(BorderFactory.createCompoundBorder(
+                        outer, JBUI.Borders.empty(2, 6, 2, 6)));
             }
         });
     }

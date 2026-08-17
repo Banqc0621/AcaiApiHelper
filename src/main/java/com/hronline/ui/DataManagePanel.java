@@ -53,12 +53,6 @@ final class DataManagePanel {
         panel.setPreferredSize(new Dimension(540, 320));
         panel.setBorder(JBUI.Borders.empty(4, 2, 2, 2));
 
-        // 顶部说明
-        JLabel hint = new JLabel("选择需要执行的操作，点击卡片即可触发");
-        UiStyle.hint(hint);
-        hint.setBorder(JBUI.Borders.empty(0, 2, 0, 0));
-        panel.add(hint, BorderLayout.NORTH);
-
         // 卡片列表容器
         JPanel list = new JPanel();
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));

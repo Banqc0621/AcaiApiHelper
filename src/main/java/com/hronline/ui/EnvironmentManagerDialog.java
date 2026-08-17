@@ -5,6 +5,7 @@ import com.hronline.settings.RestAutoLabSettingsState;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -55,14 +56,14 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             this.selectedEnvironment = this.environments.get(0);
         }
         setTitle("环境管理");
-        setSize(800, 550);
+        setSize(800, 470);
         init();
     }
 
     @Override
     public @Nullable JComponent createCenterPanel() {
         JPanel panel = new JPanel(new BorderLayout(8, 0));
-        panel.setPreferredSize(new Dimension(780, 500));
+        panel.setPreferredSize(new Dimension(780, 420));
 
         // === Left: environment list ===
         JPanel leftPanel = new JPanel(new BorderLayout(0, 4));
@@ -164,7 +165,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         });
         varBtnPanel.add(addVarBtn);
         varBtnPanel.add(delVarBtn);
-        varBtnPanel.add(new JBLabel("💡 在请求中使用 {{变量名}} 引用"));
+        varBtnPanel.add(new JBLabel("提示：在请求中使用 {{变量名}} 引用"));
         varPanel.add(varBtnPanel, BorderLayout.SOUTH);
         tabs.addTab("环境变量", varPanel);
 
@@ -183,7 +184,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         });
         headerBtnPanel.add(addHdrBtn);
         headerBtnPanel.add(delHdrBtn);
-        headerBtnPanel.add(new JBLabel("💡 Header值中也可以使用 {{变量名}}"));
+        headerBtnPanel.add(new JBLabel("提示：Header 值中也可以使用 {{变量名}}"));
         headerPanel.add(headerBtnPanel, BorderLayout.SOUTH);
         tabs.addTab("全局请求头", headerPanel);
 
@@ -263,7 +264,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
     private void addNewEnvironment() {
         saveCurrentEdits();
-        Environment newEnv = new Environment("新环境" + (environments.size() + 1), "http://localhost:8080");
+        Environment newEnv = new Environment("env" + (environments.size() + 1), "http://localhost:8080");
         newEnv.setDescription("新建环境");
         environments.add(newEnv);
         refreshEnvList();
@@ -275,9 +276,17 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         Environment selected = envList.getSelectedValue();
         if (selected == null) return;
         if (environments.size() <= 1) {
-            JOptionPane.showMessageDialog(getContentPanel(), "至少保留一个环境", "无法删除", JOptionPane.WARNING_MESSAGE);
+            // v2.0.0:统一用 IDEA 原生 Messages(跟随主题+图标),替换 JOptionPane 模态窗口
+            Messages.showWarningDialog(getContentPanel(), "至少保留一个环境", "无法删除");
             return;
         }
+        // v2.0.0:删除是 destructive 操作,加 yes/no 二次确认,默认聚焦"取消"防误删
+        int confirm = Messages.showYesNoDialog(
+                getContentPanel(),
+                "确定删除环境 \"" + selected.getName() + "\" 吗?\n该操作不可撤销。",
+                "删除环境",
+                Messages.getWarningIcon());
+        if (confirm != Messages.YES) return;
         environments.remove(selected);
         refreshEnvList();
         envList.setSelectedIndex(0);

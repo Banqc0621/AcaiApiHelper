@@ -13,7 +13,6 @@ import com.hronline.scanner.ApiScannerService;
 import com.hronline.scanner.StarredFolderService;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.hronline.util.ApiDocExporter;
-import com.hronline.util.CurlUtil;
 import com.hronline.util.PostmanCollectionExporter;
 import com.hronline.util.TestDataExporter;
 import com.intellij.icons.AllIcons;
@@ -371,7 +370,7 @@ public class ApiTreePanel extends JPanel {
 
         // 导出选中接口（支持多选）
         group.addSeparator();
-        AnAction exportMdAction = new AnAction("📄 导出 Markdown（多选）",
+        AnAction exportMdAction = new AnAction("导出 Markdown（多选）",
                 "将选中的接口（含最近测试数据）导出为 Markdown 文档", AllIcons.ToolbarDecorator.Export) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -380,7 +379,7 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(exportMdAction);
 
-        AnAction exportPostmanAction = new AnAction("📤 导出 Postman JSON（多选）",
+        AnAction exportPostmanAction = new AnAction("导出 Postman JSON（多选）",
                 "将选中的接口导出为 Postman/Apifox 可直接导入的 JSON", AllIcons.ToolbarDecorator.Export) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -391,7 +390,7 @@ public class ApiTreePanel extends JPanel {
 
         // 依赖链操作
         group.addSeparator();
-        AnAction chainTestAction = new AnAction("🔗 依赖链批量测试（多选）",
+        AnAction chainTestAction = new AnAction("依赖链批量测试（多选）",
                 "自动检测接口依赖，按依赖顺序批量测试并传递响应值", AllIcons.Actions.Execute) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -400,7 +399,7 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(chainTestAction);
 
-        AnAction chainAiGenAction = new AnAction("🔗 依赖链AI生成参数（多选）",
+        AnAction chainAiGenAction = new AnAction("依赖链 AI 生成参数（多选）",
                 "为选中接口生成参数并标注依赖自动填充项", AllIcons.Actions.Lightning) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -427,20 +426,24 @@ public class ApiTreePanel extends JPanel {
      * 组装面板布局
      */
     private void setupLayout() {
-        JPanel topContainer = new JPanel(new BorderLayout(0, 3));
-        topContainer.setBorder(JBUI.Borders.empty(4, 6));
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
+        topContainer.setBorder(JBUI.Borders.empty(6, 6, 4, 6));
+        topContainer.setOpaque(false);
 
-        // 顶部：导入能力前置工具栏（"扫描/导入" 任务：一轮优化把 扫描/导入 入口上移到工具栏）
-        topContainer.add(createTopToolbar(), BorderLayout.NORTH);
+        // 顶部：分类 + 设置 单行（createTopToolbar 已含全部按钮）
+        JPanel topRow = createTopToolbar();
+        topRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        topContainer.add(topRow);
 
-        // 中部：过滤器 + 搜索框
-        JPanel middleContainer = new JPanel(new BorderLayout(0, 3));
-        middleContainer.add(createFilterPanel(), BorderLayout.NORTH);
-
-        // 配置搜索框
+        // 搜索框：保持存在（原"右侧列表中的文本框"用户希望保留并美化）
         searchField.getTextEditor().getEmptyText().setText("搜索接口路径、名称、Controller或描述...");
         searchField.setFont(searchField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        middleContainer.add(searchField, BorderLayout.SOUTH);
+        searchField.setAlignmentX(Component.LEFT_ALIGNMENT);
+        searchField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+        // 顶部留 6px 呼吸
+        topContainer.add(Box.createVerticalStrut(6));
+        topContainer.add(searchField);
 
         // 搜索框实时过滤
         searchField.addDocumentListener(new DocumentAdapter() {
@@ -449,7 +452,6 @@ public class ApiTreePanel extends JPanel {
                 applyFilters();
             }
         });
-        topContainer.add(middleContainer, BorderLayout.CENTER);
 
         add(topContainer, BorderLayout.NORTH);
 
@@ -504,50 +506,103 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * 创建顶部"扫描"工具栏。
-     * <p>一轮优化（#1）：把扫描入口从右侧调试面板上移到左侧接口树顶部，
-     * 让用户进入插件后第一眼就能看到这个高频动作。cURL 导入在右键菜单中提供（不在工具栏占位）。</p>
+     * 创建顶部工具栏。
+     * <p>一伦优化 v9：四按钮 <b>固定靠左</b>，右侧剩余空间由弹性空白吸收——
+     * 拖动左侧分割条变宽时，按钮位置不变，避免被集体向右推。</p>
      */
     private JPanel createTopToolbar() {
-        JToolBar bar = new JToolBar();
-        bar.setFloatable(false);
-        bar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+        // 单行容器：四按钮固定靠左，右侧自动撑满
+        // [全量] [收藏] [最新] [⚙] ................
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+        row.setOpaque(false);
+        // 关键：让 row 自身宽度与父容器一致，按钮保持 preferred 宽度，不会被 BoxLayout 拉伸
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        JButton scanBtn = new JButton("扫描API", AllIcons.Actions.Refresh);
-        scanBtn.setToolTipText("重新扫描项目中的所有API接口");
-        scanBtn.putClientProperty("JButton.buttonType", "roundRect");
-        scanBtn.setFont(scanBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        scanBtn.setFocusPainted(false);
-        scanBtn.setMargin(new Insets(2, 10, 2, 10));
-        UiStyle.attachInteractionFeedback(scanBtn);
-        scanBtn.addActionListener(e -> {
-            ApiScannerService.getInstance(project).scanProjectApisAsync();
-            statsLabel.setText("● 正在扫描API...");
+        // 分类按钮（全量 / 收藏 / 最新）— 固定靠左
+        filterGroup.add(btnAll);
+        filterGroup.add(btnStarred);
+        filterGroup.add(btnLatest);
+        for (JToggleButton btn : new JToggleButton[]{btnAll, btnStarred, btnLatest}) {
+            styleFilterButton(btn);
+            row.add(btn);
+            // 按钮之间留 4px 呼吸
+            row.add(Box.createHorizontalStrut(4));
+        }
+        btnAll.setSelected(true);
+        btnAll.addActionListener(e -> {
+            currentFilter = FILTER_ALL;
+            // 「全量」点击时若缓存为空，主动触发一次扫描
+            triggerScanIfNeeded("全量");
+            applyFilters();
         });
-        bar.add(scanBtn);
+        btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
+        btnLatest.addActionListener(e -> {
+            currentFilter = FILTER_LATEST;
+            // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
+            triggerScanIfNeeded("最新");
+            triggerLatestFilter();
+        });
 
-        bar.add(Box.createHorizontalGlue());
+        // 设置齿轮：紧贴「最新」右侧（与分类按钮同基线 26-28px）
+        JButton settingsBtn = new JButton(AllIcons.General.Settings);
+        settingsBtn.setToolTipText(null);
+        settingsBtn.putClientProperty("JButton.buttonType", "borderless");
+        settingsBtn.setFocusPainted(false);
+        // 与分类按钮等高（26px），让整行 baseline 一致；用 roundRect 占位以防 hover 时 outline 错位
+        settingsBtn.putClientProperty("JButton.buttonType", "roundRect");
+        settingsBtn.setPreferredSize(new Dimension(30, 26));
+        settingsBtn.setMinimumSize(new Dimension(30, 26));
+        settingsBtn.setMaximumSize(new Dimension(30, 26));
+        settingsBtn.setMargin(new Insets(2, 4, 2, 4));
+        settingsBtn.setIconTextGap(0);
+        settingsBtn.setHorizontalTextPosition(SwingConstants.CENTER);
+        settingsBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        settingsBtn.addActionListener(e -> {
+            if (debuggerPanel == null) {
+                Messages.showErrorDialog(project, "调试面板尚未初始化，请重新打开 RestAutoLab 工具窗口。", "无法打开管理面板");
+                return;
+            }
+            debuggerPanel.openEnvAndDataManageDialog();
+        });
+        row.add(settingsBtn);
 
-        JButton moreBtn = new JButton("…");
-        moreBtn.setToolTipText("环境、数据与收藏列表管理");
-        moreBtn.putClientProperty("JButton.buttonType", "borderless");
-        moreBtn.setFont(moreBtn.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
-        moreBtn.setFocusPainted(false);
-        moreBtn.setMargin(new Insets(2, 8, 2, 8));
-        moreBtn.addActionListener(e -> showMoreMenu(moreBtn));
-        bar.add(moreBtn);
+        // 弹性空白放在最后 —— 吸收右侧剩余空间，按钮组始终固定靠左
+        row.add(Box.createHorizontalGlue());
 
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.add(bar, BorderLayout.CENTER);
-        return wrapper;
+        return row;
     }
 
-    /** 左侧统一的更多操作入口：环境/数据/前置脚本/变量覆盖/AI 配置 集中入口。 */
+    /**
+     * 一伦优化 v7：「全量」「最新」切换时若接口列表为空或缓存已失效，主动触发一次扫描，
+     * 替代被移除的独立「扫描API」按钮。这样分类按钮本身就承担了扫描入口职责。
+     */
+    private void triggerScanIfNeeded(String reason) {
+        if (allApis.isEmpty()) {
+            ApiScannerService.getInstance(project).scanProjectApisAsync();
+            statsLabel.setText("● 正在扫描API（" + reason + "）...");
+        }
+    }
+
+    /**
+     * 一伦优化 R4：左侧统一的更多操作入口只剩「环境 & 数据」一个菜单项。
+     * <p>原"前置脚本&变量覆盖"、"AI 配置"、"导出"子菜单（R3 引入）已统一合并到
+     * {@link EnvAndDataManageDialog} 内作为 Tab 呈现：
+     * <ul>
+     *   <li>前置脚本 → 弹窗的"前置脚本" Tab</li>
+     *   <li>AI 配置 → 弹窗的"AI 配置" Tab</li>
+     *   <li>导出（cURL / Markdown / HTML 报告）→ 这些是低频且结果型动作，
+     *       已迁到右侧调试面板顶部的「导出」按钮下（避免和左侧"…"弹层互相干扰）</li>
+     * </ul>
+     * </p>
+     */
     private void showMoreMenu(JButton anchor) {
         JPopupMenu menu = new JPopupMenu();
 
         JMenuItem envData = new JMenuItem("环境 & 数据", AllIcons.General.Settings);
-        envData.setToolTipText("管理环境、变量、全局请求头和测试数据");
+        envData.setToolTipText("管理环境、变量、全局请求头、AI 配置、前置脚本与测试数据");
         envData.addActionListener(e -> {
             if (debuggerPanel == null) {
                 Messages.showErrorDialog(project, "调试面板尚未初始化，请重新打开 RestAutoLab 工具窗口。", "无法打开管理面板");
@@ -556,60 +611,17 @@ public class ApiTreePanel extends JPanel {
             debuggerPanel.openEnvAndDataManageDialog();
         });
         menu.add(envData);
-        menu.addSeparator();
-
-        JMenuItem preRequest = new JMenuItem("前置脚本 & 变量覆盖", AllIcons.General.Settings);
-        preRequest.setToolTipText("编辑当前接口的请求级前置脚本和变量覆盖值");
-        preRequest.addActionListener(e -> {
-            if (debuggerPanel == null) {
-                Messages.showErrorDialog(project, "调试面板尚未初始化。", "无法打开前置配置");
-                return;
-            }
-            debuggerPanel.openPreRequestConfigDialog();
-        });
-        menu.add(preRequest);
-
-        JMenuItem aiConfig = new JMenuItem("AI 配置", AllIcons.Actions.Lightning);
-        aiConfig.setToolTipText("管理 AI 服务器、API Key、模型与提示词（也可在 Settings 中维护）");
-        aiConfig.addActionListener(e -> {
-            if (debuggerPanel == null) {
-                Messages.showErrorDialog(project, "调试面板尚未初始化。", "无法打开 AI 配置");
-                return;
-            }
-            debuggerPanel.openAiConfigDialog();
-        });
-        menu.add(aiConfig);
 
         menu.show(anchor, 0, anchor.getHeight());
     }
 
     /**
-     * 创建过滤器面板 - 紧凑的分段按钮组
+     * 创建过滤器面板 —— 一伦优化 v7：分类按钮已合并到 {@link #createTopToolbar()}，
+     * 保留此方法仅为兼容历史调用方，不再构建独立 UI。
      */
     private JPanel createFilterPanel() {
         JPanel filterPanel = new JPanel(new BorderLayout());
-
-        JPanel buttonRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0));
-        buttonRow.setBorder(JBUI.Borders.emptyBottom(3));
-        filterGroup.add(btnAll);
-        filterGroup.add(btnStarred);
-        filterGroup.add(btnLatest);
-
-        // 三个过滤器均为单选切换：全量 / 收藏（文件夹视图） / 最新
-        for (JToggleButton btn : new JToggleButton[]{btnAll, btnStarred, btnLatest}) {
-            styleFilterButton(btn);
-            buttonRow.add(btn);
-        }
-
-        // 默认选中"全量"
-        btnAll.setSelected(true);
-
-        // 过滤器按钮点击事件
-        btnAll.addActionListener(e -> { currentFilter = FILTER_ALL; applyFilters(); });
-        btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
-        btnLatest.addActionListener(e -> { currentFilter = FILTER_LATEST; triggerLatestFilter(); });
-
-        filterPanel.add(buttonRow, BorderLayout.WEST);
+        filterPanel.setOpaque(false);
         return filterPanel;
     }
 
@@ -1178,10 +1190,16 @@ public class ApiTreePanel extends JPanel {
             init();
             list.setCellRenderer((l, f, idx, sel, focus) -> {
                 boolean in = isAllInFolder(f);
-                String prefix = in ? "✓ " : "📁 ";
+                String prefix = in ? "✓ " : "";
                 int total = f.getApiKeys() == null ? 0 : f.getApiKeys().size();
                 String suffix = "  (" + total + " 个)";
                 JBLabel label = new JBLabel(prefix + f.getName() + suffix);
+                if (in) {
+                    label.setIcon(AllIcons.Actions.Checked);
+                } else {
+                    label.setIcon(AllIcons.Nodes.Folder);
+                }
+                label.setIconTextGap(6);
                 label.setOpaque(true);
                 if (sel) {
                     label.setBackground(UIManager.getColor("Tree.selectionBackground"));
@@ -1950,7 +1968,7 @@ public class ApiTreePanel extends JPanel {
             grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
         }
         for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
-            preview.append("📁 <b>").append(escapeHtml(e.getKey())).append("</b> (")
+            preview.append("<b>").append(escapeHtml(e.getKey())).append("</b> (")
                     .append(e.getValue().size()).append(")<br/>");
             for (ApiDefinition api : e.getValue()) {
                 String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
@@ -1983,7 +2001,7 @@ public class ApiTreePanel extends JPanel {
                         "已导出 " + selected.size() + " 个接口到:\n" + outputPath,
                         "导出成功");
             } catch (Exception ex) {
-                Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.API_DOC, ex);
             }
         }, ModalityState.defaultModalityState());
     }
@@ -2015,7 +2033,7 @@ public class ApiTreePanel extends JPanel {
             grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
         }
         for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
-            preview.append("📁 <b>").append(escapeHtml(e.getKey())).append("</b> (")
+            preview.append("<b>").append(escapeHtml(e.getKey())).append("</b> (")
                     .append(e.getValue().size()).append(")<br/>");
             for (ApiDefinition api : e.getValue()) {
                 String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
@@ -2050,7 +2068,7 @@ public class ApiTreePanel extends JPanel {
                                 + "\n\n导入方式：Postman/Apifox → Import → File → 选择此 JSON",
                         "导出成功");
             } catch (Exception ex) {
-                Messages.showErrorDialog(project, "导出失败: " + ex.getMessage(), "错误");
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.POSTMAN_COLLECTION, ex);
             }
         }, ModalityState.defaultModalityState());
     }

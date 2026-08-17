@@ -456,7 +456,8 @@ public class ApiDocExporter {
             if (hasSchema) {
                 appendResponseFieldRowsFromSchema(md, schema, "");
             } else {
-                appendResponseParamRows(md, retType, 0);
+                // Fallback：未拿到 schema 时，也尝试从 body 参数的 children 中复用（对请求体即响应体的简单情形有帮助）
+                appendResponseParamRows(md, retType, bodyParams, 0);
             }
             md.append("\n");
 
@@ -465,7 +466,7 @@ public class ApiDocExporter {
             md.append("```json\n");
             md.append(hasSchema
                     ? synthesizeExampleFromSchema(retType, schema)
-                    : synthesizeExampleForType(retType));
+                    : synthesizeExampleFromType(retType, bodyParams));
             md.append("\n```\n\n");
         }
 
@@ -680,8 +681,11 @@ public class ApiDocExporter {
     /**
      * 递归输出响应参数表行。
      * <p>支持深度限制（maxDepth=3），避免对未知的嵌套对象无限展开。</p>
+     * <p>若提供了 bodyParams，会先尝试用 body 中已有的 ApiParameter 字段树进行展开；
+     * 这样在扫描器未生成 responseSchema 但 Body 与响应同构时也能展示嵌套字段。</p>
      */
-    private static void appendResponseParamRows(StringBuilder md, String type, int depth) {
+    private static void appendResponseParamRows(StringBuilder md, String type,
+                                                List<ApiParameter> bodyParams, int depth) {
         if (depth > 3) {
             md.append("| `…` | ").append(escapeMd(type)).append(" | 嵌套对象 |\n");
             return;
@@ -699,7 +703,7 @@ public class ApiDocExporter {
             md.append("| `data` | List<").append(inner).append("> | 返回数据 |\n");
             if (!isPrimitiveType(inner)) {
                 md.append("| `data[].id` | Long | 列表项 ID |\n");
-                appendResponseParamRows(md, inner, depth + 1);
+                appendResponseParamRows(md, inner, null, depth + 1);
             }
             return;
         }
@@ -713,6 +717,9 @@ public class ApiDocExporter {
             md.append("| `data.size` | Long | 页大小 |\n");
             md.append("| `data.current` | Long | 当前页 |\n");
             md.append("| `data.records` | List<").append(inner).append("> | 数据列表 |\n");
+            if (!isPrimitiveType(inner)) {
+                appendResponseParamRows(md, inner, null, depth + 1);
+            }
             return;
         }
         // 通用 Result<T> 包装或领域对象
@@ -734,19 +741,87 @@ public class ApiDocExporter {
                 md.append("| `message` | String | 返回信息 |\n");
                 md.append("| `data` | List<").append(e).append("> | 返回数据 |\n");
             } else {
-                md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                md.append("| `message` | String | 返回信息 |\n");
-                md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
-                // 给几个常见字段提示
-                if (inner.endsWith("User") || inner.endsWith("UserDTO") || inner.endsWith("UserVO")) {
-                    md.append("| `data.id` | Long | 主键 |\n");
-                    md.append("| `data.name` | String | 名称 |\n");
+                // 关键修复：若 bodyParams 与返回类型同名（或近似），复用其子字段树
+                List<ApiParameter> reuse = findMatchingBodyParams(inner, bodyParams);
+                if (reuse != null && !reuse.isEmpty()) {
+                    md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
+                    md.append("| `message` | String | 返回信息 |\n");
+                    md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
+                    appendBodyParamsTable(md, reuse, "data");
+                } else {
+                    md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
+                    md.append("| `message` | String | 返回信息 |\n");
+                    md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
+                    // 给几个常见字段提示
+                    if (inner.endsWith("User") || inner.endsWith("UserDTO") || inner.endsWith("UserVO")) {
+                        md.append("| `data.id` | Long | 主键 |\n");
+                        md.append("| `data.name` | String | 名称 |\n");
+                    } else {
+                        // 尝试递归展开一层（即便没有 bodyParams，DTO 内也可能能命中基础类型）
+                        appendResponseParamRows(md, inner, null, depth + 1);
+                    }
                 }
             }
             return;
         }
-        // 兜底
-        md.append("| - | ").append(escapeMd(t)).append(" | 复杂对象（字段未在扫描器中识别） |\n");
+        // 兜底：尝试匹配 bodyParams
+        List<ApiParameter> reuse = findMatchingBodyParams(t, bodyParams);
+        if (reuse != null && !reuse.isEmpty()) {
+            appendBodyParamsTable(md, reuse, "");
+        } else {
+            md.append("| - | ").append(escapeMd(t)).append(" | 复杂对象（字段未在扫描器中识别） |\n");
+        }
+    }
+
+    /**
+     * 在 bodyParams 中查找与给定类型名匹配的 ApiParameter 字段树。
+     * <p>匹配规则：body 的类型名或单字段的 type/名称与 typeSimple 相等（大小写不敏感、忽略泛型）。</p>
+     * <p>典型用途：响应类型 = 请求体类型（如分页查询接口），可在 fallback 路径中复用 body 字段树。</p>
+     */
+    private static List<ApiParameter> findMatchingBodyParams(String typeName, List<ApiParameter> bodyParams) {
+        if (bodyParams == null || bodyParams.isEmpty() || typeName == null || typeName.isEmpty()) return null;
+        String simple = extractSimpleName(typeName).toLowerCase();
+        if (simple.isEmpty()) return null;
+        for (ApiParameter p : bodyParams) {
+            if (p.getType() == null) continue;
+            String pSimple = extractSimpleName(p.getType()).toLowerCase();
+            if (pSimple.equals(simple) && !p.getChildren().isEmpty()) {
+                return p.getChildren();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 兼容旧调用：仅基于类型名生成响应参数表行（不引用 body）。
+     */
+    private static void appendResponseParamRows(StringBuilder md, String type, int depth) {
+        appendResponseParamRows(md, type, null, depth);
+    }
+
+    /**
+     * 兼容旧调用：仅基于类型名生成响应示例 JSON（不引用 body）。
+     */
+    private static String synthesizeExampleFromType(String type, List<ApiParameter> bodyParams) {
+        // 尝试从 bodyParams 中复用（针对返回类型 = 请求体类型的简单接口）
+        if (bodyParams != null && !bodyParams.isEmpty()) {
+            String t = type == null ? "" : type.trim();
+            String inner;
+            boolean wrapped = false;
+            if (t.startsWith("Result<") || t.startsWith("R<")) {
+                inner = extractGenericInner(t);
+                wrapped = true;
+            } else if (t.endsWith("DTO") || t.endsWith("VO") || t.endsWith("Entity")) {
+                inner = t;
+            } else {
+                inner = t;
+            }
+            List<ApiParameter> reuse = findMatchingBodyParams(inner, bodyParams);
+            if (reuse != null && !reuse.isEmpty()) {
+                return synthesizeExampleFromSchema(inner, reuse);
+            }
+        }
+        return synthesizeExampleForType(type);
     }
 
     private static boolean isPrimitiveType(String t) {
@@ -760,7 +835,7 @@ public class ApiDocExporter {
                 || low.endsWith("localtime") || low.equals("number") || low.equals("object");
     }
 
-    /** 构造请求示例 JSON（含 path/query/body） */
+    /** 构造请求示例 JSON（含 path/query/body），嵌套对象按真实缩进展开 */
     private static String buildRequestExample(ApiDefinition api, List<ApiParameter> body,
                                               List<ApiParameter> query, List<ApiParameter> path) {
         if (body == null || body.isEmpty()) {
@@ -778,15 +853,34 @@ public class ApiDocExporter {
             return sb.toString();
         }
         StringBuilder sb = new StringBuilder("{");
-        boolean first = true;
-        for (ApiParameter p : body) {
-            if (!first) sb.append(",");
-            sb.append("\n  \"").append(p.getName()).append("\": ").append(getExampleValueForType(p));
-            first = false;
-        }
-        if (!first) sb.append("\n");
-        sb.append("}");
+        appendRequestBodyJson(sb, body, 1);
+        sb.append("\n}");
         return sb.toString();
+    }
+
+    /**
+     * 递归追加请求体 JSON 段，缩进按嵌套深度递增。
+     */
+    private static void appendRequestBodyJson(StringBuilder sb, List<ApiParameter> fields, int indentLevel) {
+        if (fields == null || fields.isEmpty()) {
+            sb.append("}");
+            return;
+        }
+        String indent = repeatStr("  ", indentLevel);
+        String childIndent = repeatStr("  ", indentLevel + 1);
+        int count = 0;
+        for (ApiParameter p : fields) {
+            if (count > 0) sb.append(",");
+            sb.append("\n").append(childIndent).append("\"").append(p.getName()).append("\": ");
+            if (!p.getChildren().isEmpty()) {
+                sb.append("{");
+                appendRequestBodyJson(sb, p.getChildren(), indentLevel + 1);
+            } else {
+                sb.append(getExampleValueForType(p));
+            }
+            count++;
+        }
+        sb.append("\n").append(indent).append("}");
     }
 
     private static String getExampleValueForType(ApiParameter p) {
@@ -822,6 +916,34 @@ public class ApiDocExporter {
                 appendBodyParamsTable(md, p.getChildren(), name);
             }
         }
+    }
+
+    // ================================================================
+    // 模板导出便捷方法（供 TemplateEngine 调用）
+    // ================================================================
+
+    /**
+     * 供模板占位符 ${api.requestExample} 使用：返回单接口的请求示例 JSON 字符串。
+     */
+    public static String buildRequestExampleForTemplate(ApiDefinition api) {
+        if (api == null) return "{}";
+        return buildRequestExample(api, api.bodyParameters(), api.queryParameters(), api.pathParameters());
+    }
+
+    /**
+     * 供模板占位符 ${api.responseExample} 使用：返回单接口的响应示例 JSON 字符串。
+     */
+    public static String buildResponseExampleForTemplate(ApiDefinition api) {
+        if (api == null) return "{}";
+        String retType = api.getResponseBodyType();
+        if (retType == null || retType.isBlank() || retType.equalsIgnoreCase("void")) {
+            return "null";
+        }
+        List<ApiParameter> schema = api.getResponseSchema();
+        if (schema != null && !schema.isEmpty()) {
+            return synthesizeExampleFromSchema(retType, schema);
+        }
+        return synthesizeExampleFromType(retType, api.bodyParameters());
     }
 
     private static String generateJsonExample(ApiDefinition api) {

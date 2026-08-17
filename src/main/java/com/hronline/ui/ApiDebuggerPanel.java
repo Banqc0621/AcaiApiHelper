@@ -10,6 +10,7 @@ import com.hronline.scanner.StarredFolderService;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.hronline.util.ApiDocExporter;
 import com.hronline.util.CurlUtil;
+import com.hronline.util.TemplateEngine;
 import com.hronline.util.ReportExporter;
 import com.hronline.util.SimpleDiff;
 import com.hronline.util.TestDataExporter;
@@ -26,7 +27,6 @@ import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
-import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.JBColor;
@@ -43,7 +43,6 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import java.awt.*;
-import java.awt.event.KeyEvent;
 import java.io.IOException;
 import java.util.*;
 import java.util.List;
@@ -67,8 +66,9 @@ public class ApiDebuggerPanel extends JPanel {
     // ── UI控件 ──
     private final ComboBox<String> methodCombo = new ComboBox<>(RestAutoLabConstants.HTTP_METHOD_NAMES);
     private final JBTextField urlField = new JBTextField();
-    private final JButton sendButton = new JButton("发送", AllIcons.Actions.Execute);
-    private final JButton stopButton = new JButton("停止", AllIcons.Actions.Suspend);
+    /** 一伦优化 v10：发送/停止按钮改为纯图标（无文字），只保留 tooltip 提示。 */
+    private final JButton sendButton = new JButton(AllIcons.Actions.Execute);
+    private final JButton stopButton = new JButton(AllIcons.Actions.Suspend);
     private final JBTextField baseUrlField = new JBTextField();
     private final JBLabel activeEnvInfoLabel = new JBLabel("当前环境: -");
     private final JBTextArea preRequestScriptArea = new JBTextArea(4, 32);
@@ -85,7 +85,7 @@ public class ApiDebuggerPanel extends JPanel {
 
     /** 附件面板：仅在当前接口含文件参数时显示，每个文件参数一行：选择按钮 + 已选路径 */
     private final JPanel attachmentPanel = new JPanel();
-    private final JLabel attachmentTitle = new JLabel("📎 文件参数（用于 multipart/form-data 上传）");
+    private final JLabel attachmentTitle = new JLabel("文件参数（用于 multipart/form-data 上传）");
     /** key=参数名, value=当前选择的本地文件绝对路径（用户未选择时为空） */
     private final Map<String, String> attachmentPaths = new LinkedHashMap<>();
     /** key=参数名, value=对应的参数控件（用于在 updateAttachmentPanel 时清空重建） */
@@ -97,16 +97,25 @@ public class ApiDebuggerPanel extends JPanel {
     /** 最近一次注入的环境级请求头名称，用于切换环境时精准移除旧值。 */
     private final Set<String> appliedGlobalHeaderNames = new LinkedHashSet<>();
 
-    // ── 请求体编辑器（v2.0.0：失焦折叠 / 获焦展开 + Ctrl+Z/Y 撤销重做）──
-    /** body 编辑器折叠时的行数（默认紧凑，给响应区让出垂直空间） */
-    private static final int BODY_ROWS_COLLAPSED = 6;
-    /** body 编辑器获焦展开后的行数 */
+    // ── 请求体编辑器（v3.0：3 态显式切换 — 紧凑 / 标准 / 展开）──
+    /** 紧凑态行数（最小可视高度，避免抢响应区空间） */
+    private static final int BODY_ROWS_COMPACT = 3;
+    /** 标准态行数（默认） */
+    private static final int BODY_ROWS_STANDARD = 8;
+    /** 展开态行数（编辑大段 JSON 时） */
     private static final int BODY_ROWS_EXPANDED = 18;
-    private final JBTextArea bodyEditor = new JBTextArea(BODY_ROWS_COLLAPSED, 60);
+    private static final String[] BODY_SIZE_LABELS = {"紧凑", "标准", "展开"};
+    private int currentBodySizeIndex = 1; // 默认标准态
+    private final JBTextArea bodyEditor = new JBTextArea(BODY_ROWS_STANDARD, 60);
     /** body 编辑器的滚动容器引用：展开 / 折叠时 revalidate + repaint */
     private JBScrollPane bodyScrollPane;
     /** body 编辑器撤销管理器（支持 Ctrl+Z / Ctrl+Y） */
     private final javax.swing.undo.UndoManager bodyUndoManager = new javax.swing.undo.UndoManager();
+    /**
+     * 一伦优化 v6：body 尺寸 segmented control（紧凑 / 标准 / 展开）。
+     * 取代旧版"尺寸 · xxx"按钮：单行单选，所见即所得，状态变化时 body 编辑器同步伸缩。
+     */
+    private JPanel bodySizeSegmented;
 
     // ── 响应区（v2.0.0：JsonSyntaxPane 提供语法高亮 + Ctrl+滚轮缩放 + 右键菜单）──
     private final JBTextArea responseArea = new JBTextArea();
@@ -186,11 +195,11 @@ public class ApiDebuggerPanel extends JPanel {
     private void setupUI() {
         setBorder(UiStyle.contentBorder());
 
-        // 上层：当前环境、接口级前置脚本和变量覆盖
-        JPanel northPanel = new JPanel(new BorderLayout(0, 4));
-        northPanel.add(createToolbar(), BorderLayout.NORTH);
-        northPanel.add(createPreRequestPanel(), BorderLayout.CENTER);
-        add(northPanel, BorderLayout.NORTH);
+        // 一伦优化：右面板顶部 2 行布局
+        //   Row 1: 环境 / 服务基础地址
+        //   Row 2: 请求方法 / 路径 / 发送 / 停止
+        // 前置脚本/变量覆盖/AI 配置/导出/历史 等"低频/配置类"功能统一到左侧"…"弹层。
+        add(createRequestTopPanel(), BorderLayout.NORTH);
 
         // 一伦优化 #5：右面板拆为「请求配置层（顶部，可拖动）+ 响应展示层（底部）」双层布局。
         // 请求层使用原 TabbedPane（去掉"响应"Tab），响应层常驻底部，可拖动分割条调比例。
@@ -198,10 +207,12 @@ public class ApiDebuggerPanel extends JPanel {
         tabbedPane.addTab("参数", createParamsTab());
         tabbedPane.addTab("请求头", createHeadersTab());
         tabbedPane.addTab("请求体", createBodyTab());
-        tabbedPane.addTab("断言", createAssertionsTab());
+        // 一伦优化 v4：从第一性原理出发，删除"断言"Tab（断言通过状态码 / 期望字段管理更轻量，
+        // 单次调试对断言诉求弱；批量测试已有"允许的状态码"统一控制）。后续若要恢复，可放回"测试"位置。
         tabbedPane.addTab("历史", createHistoryTab());
-        tabbedPane.addTab("测试", createTestTab());
-        tabbedPane.addTab("AI生成", createAiTab());
+        // 一伦优化 v4：合并"AI 生成"与"测试"两个 Tab 为一个 "AI 助手" Tab，
+        // 场景下拉 + 助手按钮（弹出生成 / 测试当前）一站式完成。
+        tabbedPane.addTab("AI 助手", createAiTab());
         JScrollPane requestScroll = new JBScrollPane(tabbedPane);
         requestScroll.setBorder(JBUI.Borders.empty());
         requestScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
@@ -209,14 +220,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         JPanel responsePanel = createResponsePanel();
 
-        // 下层：方法、URL、参数、发送/停止与响应
-        JPanel requestPanel = new JPanel(new BorderLayout(0, 4));
-        requestPanel.add(createTopPanel(), BorderLayout.NORTH);
-        requestPanel.add(requestScroll, BorderLayout.CENTER);
-
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        splitter.setFirstComponent(requestPanel);
+        splitter.setFirstComponent(requestScroll);
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
         splitter.setHonorComponentsMinimumSize(false);
@@ -238,10 +244,12 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * v2.0.0：请求体编辑器交互增强
+     * v3.0：请求体编辑器交互
      * <ul>
      *   <li>Ctrl+Z / Ctrl+Y 撤销 / 重做</li>
-     *   <li>获焦自动展开（BODY_ROWS_EXPANDED），失焦自动折叠（BODY_ROWS_COLLAPSED）</li>
+     *   <li>3 态显式切换：紧凑（3 行）/ 标准（8 行）/ 展开（18 行）
+     *       —— 改用工具栏按钮显式切换，<b>彻底移除</b>原来的 focus 抖动（focusGained 展开 / focusLost 折叠），
+     *       避免输入时窗口高度持续抖动影响排版观感</li>
      * </ul>
      */
     private void initBodyEditorInteractions() {
@@ -272,52 +280,113 @@ public class ApiDebuggerPanel extends JPanel {
                 if (bodyUndoManager.canRedo()) bodyUndoManager.redo();
             }
         });
-
-        // 获焦展开 / 失焦折叠（避免抢用户正在编辑的内容，仅在行数不同时调整）
-        bodyEditor.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override public void focusGained(java.awt.event.FocusEvent e) {
-                if (bodyEditor.getRows() != BODY_ROWS_EXPANDED) {
-                    bodyEditor.setRows(BODY_ROWS_EXPANDED);
-                    if (bodyScrollPane != null) {
-                        bodyScrollPane.revalidate();
-                        bodyScrollPane.repaint();
-                    }
-                }
-            }
-            @Override public void focusLost(java.awt.event.FocusEvent e) {
-                if (bodyEditor.getRows() != BODY_ROWS_COLLAPSED) {
-                    bodyEditor.setRows(BODY_ROWS_COLLAPSED);
-                    if (bodyScrollPane != null) {
-                        bodyScrollPane.revalidate();
-                        bodyScrollPane.repaint();
-                    }
-                }
-            }
-        });
     }
 
     /**
-     * 创建顶部工具栏 - 环境切换与请求结果导出快捷操作
-     * <p>拆为上下两排，避免单行过长：</p>
+     * v3.0：把 body 编辑器切到指定行数（紧凑 / 标准 / 展开），并刷新容器避免父布局未感知高度变化。
+     * <p>由工具栏上的 segmented control 触发；不依赖焦点状态，避免边输边跳。</p>
+     */
+    private void setBodySize(int rows) {
+        if (bodyEditor.getRows() != rows) {
+            bodyEditor.setRows(rows);
+        }
+        if (bodyScrollPane != null) {
+            bodyScrollPane.revalidate();
+            bodyScrollPane.repaint();
+        }
+        // 同步 segmented 选中态（编程式切换避免递归触发）
+        if (bodySizeSegmented != null) {
+            int target = currentBodySizeIndex;
+            UiStyle.SegmentedAccessor accessor =
+                    (UiStyle.SegmentedAccessor) bodySizeSegmented.getClientProperty("segmented");
+            if (accessor != null && accessor.getSelectedIndex() != target) {
+                accessor.setSelectedIndex(target);
+            }
+        }
+    }
+
+    /** v3.0：3 态循环切换（紧凑 → 标准 → 展开 → 紧凑 ...） */
+    private void cycleBodySize() {
+        currentBodySizeIndex = (currentBodySizeIndex + 1) % BODY_SIZE_LABELS.length;
+        int rows = switch (currentBodySizeIndex) {
+            case 0 -> BODY_ROWS_COMPACT;
+            case 2 -> BODY_ROWS_EXPANDED;
+            default -> BODY_ROWS_STANDARD;
+        };
+        setBodySize(rows);
+    }
+
+    /**
+     * 一伦优化 v10：右面板顶部「请求头部」灵动化重构 —— ui-ux-pro-max-skill 审美 v4。
+     * <p>关键改动：</p>
      * <ul>
-     *   <li>第 1 行：当前环境下拉</li>
-     *   <li>第 2 行：导出cURL / 导出文档 / 导出报告（清Cookie 已挪到请求头右键）</li>
+     *   <li><b>环境 / 接口分两列上下</b>：上行=环境路径（环境下拉 + baseUrl），
+     *       下行=接口路径（方法 chip + urlField + 发送/停止按钮），
+     *       段间用 1px 浅灰水平线分隔，告别"一条长长横排"的拥挤感</li>
+     *   <li><b>发送/停止按钮只保留图标</b>：去掉"发送"/"停止"文字，仅保留图标；
+     *       tooltip 保留文字提示，符合 ui-ux-pro-max icon-only button 规则</li>
+     *   <li><b>文本框美化</b>：baseUrl / urlField 都接入 {@link UiStyle#applyTextFieldStyle}
+     *       —— 圆角描边 + focus 主色高亮 + 内边距留白</li>
+     *   <li><b>环境/接口两段都自带「⛓ 环境」「接口」小标签</b>：一眼可辨，告别"两个文本框一前一后挤一起"</li>
+     *   <li><b>等宽字体全程</b>：URL / baseUrl 全部 Font.MONOSPACED</li>
+     *   <li><b>所有控件 baseline 28-30px</b>：触摸目标 ≥28px（满足 ui-ux-pro-max 触摸交互规则）</li>
      * </ul>
      */
-    private JPanel createToolbar() {
-        // ============== 第 1 行：当前环境（扫描和管理入口统一放在左侧面板） ==============
-        JToolBar toolbar1 = new JToolBar();
-        toolbar1.setFloatable(false);
-        toolbar1.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
+    private JPanel createRequestTopPanel() {
+        // ── 整块卡片（Y_AXIS 上下两段：环境行 / 接口行） ──
+        JPanel card = new JPanel();
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBackground(JBColor.namedColor("Panel.background", new Color(0xF7, 0xF8, 0xFA)));
+        card.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                JBUI.Borders.empty(6, 8, 6, 8)));
+        card.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 76));
 
-        JBLabel envLabel = new JBLabel("环境: ");
-        UiStyle.hint(envLabel);
-        toolbar1.add(envLabel);
+        // ── 上段：环境路径（环境下拉 + baseUrl 文本框） ──
+        JPanel envRow = createEnvRow();
+        envRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.add(envRow);
 
-        // 环境选择下拉框
+        // ── 上下段之间：水平细分隔线 ──
+        card.add(Box.createVerticalStrut(6));
+        card.add(createHorizontalDivider());
+        card.add(Box.createVerticalStrut(6));
+
+        // ── 下段：接口路径（方法 chip + urlField + 发送/停止按钮） ──
+        JPanel apiRow = createApiRow();
+        apiRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.add(apiRow);
+
+        return card;
+    }
+
+    /** 一伦优化 v10：构建「环境路径」行 —— ⛓ 环境 [下拉] [baseUrl]。 */
+    private JPanel createEnvRow() {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+
+        // ⛓ 链图标
+//        JLabel envIcon = new JLabel(AllIcons.General.Web);
+//        envIcon.setToolTipText(null);
+//        envIcon.setVerticalAlignment(SwingConstants.CENTER);
+//        envIcon.setAlignmentY(Component.CENTER_ALIGNMENT);
+//        row.add(envIcon);
+//        row.add(Box.createHorizontalStrut(6));
+
+        // "环境"小标签
+        JBLabel envLabel = new JBLabel("环境");
+        envLabel.setFont(envLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
+        envLabel.setForeground(JBColor.GRAY);
+        envLabel.setAlignmentY(Component.CENTER_ALIGNMENT);
+        row.add(envLabel);
+        row.add(Box.createHorizontalStrut(6));
+
+        // 环境下拉
         envCombo = new JComboBox<>();
-        // 自定义渲染器：当前选中项（即激活环境）前显示 ✓，其余不显示。
-        // 不再依赖 Environment.active 字段（该字段为冗余状态，切换时未同步刷新会导致 ✓ 停留错误）。
         envCombo.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -325,7 +394,6 @@ public class ApiDebuggerPanel extends JPanel {
                 super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
                 if (value instanceof Environment) {
                     Environment env = (Environment) value;
-                    // index == -1 表示当前下拉框选中项（编辑框显示）；列表项则仅高亮选中行
                     boolean isComboSelection = (index == -1);
                     boolean isListSelected = isSelected && index >= 0;
                     if (isComboSelection || isListSelected) {
@@ -338,10 +406,13 @@ public class ApiDebuggerPanel extends JPanel {
             }
         });
         refreshEnvCombo();
-        envCombo.setPreferredSize(new Dimension(140, 26));
+        envCombo.setPreferredSize(new Dimension(100, 28));
+        envCombo.setMinimumSize(new Dimension(100, 28));
+        envCombo.setMaximumSize(new Dimension(88, 28));
+        envCombo.setFont(envCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         envCombo.setToolTipText("切换环境配置");
+        envCombo.setAlignmentY(Component.CENTER_ALIGNMENT);
         envCombo.addActionListener(e -> {
-            // 重建下拉框（refreshEnvCombo）期间触发的选择事件忽略，避免误切环境
             if (suppressEnvComboAction) return;
             Environment selected = (Environment) envCombo.getSelectedItem();
             if (selected != null) {
@@ -352,51 +423,134 @@ public class ApiDebuggerPanel extends JPanel {
                 statusLabel.setText("● 已切换到环境: " + selected.getName());
             }
         });
-        toolbar1.add(envCombo);
+        row.add(envCombo);
+        row.add(Box.createHorizontalStrut(6));
 
-        // ============== 第 2 行：导出cURL / 导出文档 / 导出报告 / 清Cookie ==============
-        // 一伦优化 #2：原"导入"按钮已挪到左侧接口树右键菜单（ApiTreePanel → 导入cURL），
-        // 不再在本工具栏占位，腾出空间给更常用的导出与清Cookie。
-        JToolBar toolbar2 = new JToolBar();
-        toolbar2.setFloatable(false);
-        toolbar2.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
+        // baseUrl 文本框（圆角描边美化 + focus 主色）
+        baseUrlField.setText(RestAutoLabSettingsState.getInstance(project).getBaseUrl());
+        baseUrlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_BODY));
+        baseUrlField.setToolTipText("服务基础地址，如 http://localhost:8080");
+        baseUrlField.setAlignmentY(Component.CENTER_ALIGNMENT);
+        UiStyle.applyTextFieldStyle(baseUrlField);
+        // baseUrl 文本框：固定合理宽度，不再无限拉长
+        baseUrlField.setMinimumSize(new Dimension(180, 28));
+        baseUrlField.setPreferredSize(new Dimension(320, 28));
+        baseUrlField.setMaximumSize(new Dimension(410, 28));
+        row.add(baseUrlField);
 
-        JButton exportBtn = new JButton("导出cURL", AllIcons.ToolbarDecorator.Export);
-        exportBtn.setToolTipText("导出为cURL命令");
-        exportBtn.putClientProperty("JButton.buttonType", "roundRect");
-        exportBtn.setFont(exportBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        exportBtn.setFocusPainted(false);
-        exportBtn.addActionListener(e -> exportCurl());
-        toolbar2.add(exportBtn);
+        return row;
+    }
 
-        JButton exportDocBtn = new JButton("导出文档", AllIcons.Actions.Download);
-        exportDocBtn.setToolTipText("导出API文档(Markdown)");
-        exportDocBtn.putClientProperty("JButton.buttonType", "roundRect");
-        exportDocBtn.setFont(exportDocBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        exportDocBtn.setFocusPainted(false);
-        exportDocBtn.addActionListener(e -> exportApiDoc());
-        toolbar2.add(exportDocBtn);
+    /** 一伦优化 v10：构建「接口路径」行 —— 接口 [方法] [urlField] [发送] [停止]。 */
+    private JPanel createApiRow() {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
 
-        JButton exportReportBtn = new JButton("导出报告", AllIcons.Actions.Dump);
-        exportReportBtn.setToolTipText("导出HTML测试报告");
-        exportReportBtn.putClientProperty("JButton.buttonType", "roundRect");
-        exportReportBtn.setFont(exportReportBtn.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        exportReportBtn.setFocusPainted(false);
-        exportReportBtn.addActionListener(e -> exportLastReport());
-        toolbar2.add(exportReportBtn);
+        // "接口"小标签
+        JBLabel apiLabel = new JBLabel("接口");
+        apiLabel.setFont(apiLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
+        apiLabel.setForeground(JBColor.GRAY);
+        apiLabel.setAlignmentY(Component.CENTER_ALIGNMENT);
+        row.add(apiLabel);
+        row.add(Box.createHorizontalStrut(6));
 
-        // 一伦优化 #8：原"清Cookie"按钮从主工具栏移除，挪到『请求头』Tab 的右键菜单
-        // （点击请求头区域 → 右键 → 清空 Cookie），与请求头使用场景对齐
+        // 方法彩色 chip
+        methodCombo.setPreferredSize(new Dimension(88, 28));
+        methodCombo.setMinimumSize(new Dimension(80, 28));
+        methodCombo.setMaximumSize(new Dimension(110, 28));
+        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        methodCombo.setRenderer(new HttpMethodCellRenderer());
+        methodCombo.setAlignmentY(Component.CENTER_ALIGNMENT);
+        methodCombo.addItemListener(e -> {
+            if (e.getStateChange() != java.awt.event.ItemEvent.SELECTED) return;
+            if (currentApi == null) return;
+            Object item = e.getItem();
+            if (!(item instanceof String)) return;
+            String newMethod = (String) item;
+            if (newMethod.equals(currentApi.getHttpMethod())) return;
 
-        // ============== 外层：垂直 BoxLayout 包裹两行 ==============
-        JPanel wrapper = new JPanel();
-        wrapper.setLayout(new BoxLayout(wrapper, BoxLayout.Y_AXIS));
-        toolbar1.setAlignmentX(Component.LEFT_ALIGNMENT);
-        toolbar2.setAlignmentX(Component.LEFT_ALIGNMENT);
-        wrapper.add(toolbar1);
-        wrapper.add(toolbar2);
+            currentApi.setHttpMethod(newMethod);
 
-        return wrapper;
+            if ("POST".equals(newMethod) || "PUT".equals(newMethod) || "PATCH".equals(newMethod)) {
+                bodyEditor.setText(generateDefaultBody(currentApi));
+            } else {
+                bodyEditor.setText("");
+            }
+
+            statusLabel.setText("● 已切换方法: " + newMethod + " - " + currentApi.displayLabel());
+        });
+        row.add(methodCombo);
+        row.add(Box.createHorizontalStrut(6));
+
+        // urlField（圆角描边美化 + focus 主色 + 等宽字体）
+        urlField.setEditable(false);
+        urlField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_BODY));
+        urlField.setBackground(JBColor.namedColor("TextField.background", Color.WHITE));
+        urlField.setAlignmentY(Component.CENTER_ALIGNMENT);
+        UiStyle.applyTextFieldStyle(urlField);
+        // urlField：用 Glue 弹性扩展，撑满 baseUrl 与按钮之间的剩余空间
+        urlField.setMinimumSize(new Dimension(200, 28));
+        urlField.setPreferredSize(new Dimension(360, 28));
+        urlField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+        row.add(urlField);
+        row.add(Box.createHorizontalGlue());
+
+        // 发送按钮（主操作 accent 填充）—— 纯图标无文字
+        sendButton.setPreferredSize(new Dimension(32, 28));
+        sendButton.setMinimumSize(new Dimension(32, 28));
+        sendButton.setMaximumSize(new Dimension(32, 28));
+        sendButton.setMargin(new Insets(2, 2, 2, 2));
+        sendButton.setIconTextGap(0);
+        sendButton.setToolTipText("发送请求到当前接口 (Ctrl+Enter)");
+        sendButton.setAlignmentY(Component.CENTER_ALIGNMENT);
+        sendButton.setFocusPainted(false);
+        UiStyle.applyAccent(sendButton,
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        UiStyle.attachInteractionFeedback(sendButton);
+        row.add(sendButton);
+        row.add(Box.createHorizontalStrut(4));
+
+        // 停止按钮（ghost 圆角描边）—— 纯图标无文字
+        stopButton.setPreferredSize(new Dimension(32, 28));
+        stopButton.setMinimumSize(new Dimension(32, 28));
+        stopButton.setMaximumSize(new Dimension(32, 28));
+        stopButton.setMargin(new Insets(2, 2, 2, 2));
+        stopButton.setIconTextGap(0);
+        stopButton.setToolTipText("停止当前单次请求");
+        stopButton.setEnabled(false);
+        stopButton.putClientProperty("JButton.buttonType", "roundRect");
+        stopButton.setFocusPainted(false);
+        stopButton.setAlignmentY(Component.CENTER_ALIGNMENT);
+        UiStyle.attachInteractionFeedback(stopButton);
+        row.add(stopButton);
+
+        return row;
+    }
+
+    /** 一伦优化 v7：构建一条 1×20 浅灰垂直分隔线（保留旧调用）。 */
+    private JPanel createVerticalDivider() {
+        JPanel div = new JPanel();
+        div.setOpaque(true);
+        div.setBackground(JBColor.border());
+        div.setPreferredSize(new Dimension(1, 20));
+        div.setMaximumSize(new Dimension(1, 20));
+        div.setMinimumSize(new Dimension(1, 20));
+        return div;
+    }
+
+    /** 一伦优化 v10：构建一条 280×1 浅灰水平分隔线，用于环境行 / 接口行之间分组。 */
+    private JPanel createHorizontalDivider() {
+        JPanel div = new JPanel();
+        div.setOpaque(true);
+        div.setBackground(JBColor.border());
+        div.setPreferredSize(new Dimension(Integer.MAX_VALUE, 1));
+        div.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
+        div.setMinimumSize(new Dimension(100, 1));
+        div.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return div;
     }
 
     /** 刷新环境下拉框 */
@@ -451,6 +605,15 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /** 上层接口级配置：明确展示生效环境，并提供安全前置脚本与变量覆盖。 */
+    /**
+     * 一伦优化 R4：暴露前置脚本&变量覆盖面板供 {@link EnvAndDataManageDialog} 嵌入为 Tab。
+     * <p>原 {@link #createPreRequestPanel()} 保持 private，由本方法在外部调用时返回同一实例。
+     * 面板内 DocumentListener 已是实时持久化，无需 onCommit 回调。</p>
+     */
+    public JPanel getPreRequestPanel() {
+        return createPreRequestPanel();
+    }
+
     private JPanel createPreRequestPanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(UiStyle.cardBorder(4, 6));
@@ -544,81 +707,6 @@ public class ApiDebuggerPanel extends JPanel {
         return values;
     }
 
-    private JPanel createTopPanel() {
-        JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.emptyBottom(8),
-                JBUI.Borders.customLine(JBColor.border(), 0, 0, 1, 0)));
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.insets = new Insets(4, 4, 4, 4);
-
-        // 单行布局: Base URL + 方法 + URL + 发送 + 停止
-        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0.0;
-        baseUrlField.setText(RestAutoLabSettingsState.getInstance(project).getBaseUrl());
-        baseUrlField.setFont(baseUrlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
-        baseUrlField.setToolTipText("服务基础地址，如 http://localhost:8080");
-        baseUrlField.setPreferredSize(new Dimension(200, 28));
-        baseUrlField.setMinimumSize(UiStyle.minSize(120, 28));
-        panel.add(baseUrlField, gbc);
-
-        gbc.gridx = 1; gbc.weightx = 0.0;
-        methodCombo.setPreferredSize(UiStyle.minSize(110, 28));
-        methodCombo.setMinimumSize(UiStyle.minSize(110, 28));
-        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
-        methodCombo.setRenderer(new HttpMethodCellRenderer());
-        // 选中方法后联动更新 currentApi 与请求体（POST/PUT/PATCH 生成默认 body，其余清空）
-        methodCombo.addItemListener(e -> {
-            if (e.getStateChange() != java.awt.event.ItemEvent.SELECTED) return;
-            if (currentApi == null) return;
-            Object item = e.getItem();
-            if (!(item instanceof String)) return;
-            String newMethod = (String) item;
-            if (newMethod.equals(currentApi.getHttpMethod())) return;
-
-            currentApi.setHttpMethod(newMethod);
-
-            if ("POST".equals(newMethod) || "PUT".equals(newMethod) || "PATCH".equals(newMethod)) {
-                bodyEditor.setText(generateDefaultBody(currentApi));
-            } else {
-                bodyEditor.setText("");
-            }
-
-            statusLabel.setText("● 已切换方法: " + newMethod + " - " + currentApi.displayLabel());
-        });
-        panel.add(methodCombo, gbc);
-
-        gbc.gridx = 2; gbc.weightx = 1.0;
-        urlField.setEditable(false);
-        urlField.setFont(urlField.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
-        urlField.setBackground(JBColor.namedColor("TextField.background", Color.WHITE));
-        panel.add(urlField, gbc);
-
-        gbc.gridx = 3; gbc.weightx = 0.0;
-        sendButton.putClientProperty("JButton.buttonType", "default");
-        sendButton.setMargin(new Insets(4, 14, 4, 14));
-        sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
-        sendButton.setFocusPainted(false);
-        sendButton.setToolTipText("发送请求到当前接口");
-        // 一轮优化 #9/#12：发送按钮应用 accent 主题和统一交互反馈
-        UiStyle.applyAccent(sendButton,
-                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
-        UiStyle.attachInteractionFeedback(sendButton);
-        panel.add(sendButton, gbc);
-
-        gbc.gridx = 4; gbc.weightx = 0.0;
-        stopButton.putClientProperty("JButton.buttonType", "roundRect");
-        stopButton.setMargin(new Insets(4, 12, 4, 12));
-        stopButton.setFont(stopButton.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
-        stopButton.setFocusPainted(false);
-        stopButton.setToolTipText("停止当前单次请求");
-        stopButton.setEnabled(false);
-        UiStyle.attachInteractionFeedback(stopButton);
-        panel.add(stopButton, gbc);
-
-        return panel;
-    }
-
     private JPanel createParamsTab() {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.empty(4));
@@ -674,21 +762,35 @@ public class ApiDebuggerPanel extends JPanel {
 
         panel.add(new JBScrollPane(paramTable), BorderLayout.CENTER);
 
-        // 底部工具栏 - 单行紧凑布局
+        // 一伦优化 v4：tab 顶部 [+/−/AI] 行动行 + 附件面板（仅在有文件参数时显示）
+        JPanel northContainer = new JPanel();
+        northContainer.setLayout(new BoxLayout(northContainer, BoxLayout.Y_AXIS));
+
+        JPanel actionBar = createTabActionBar(
+                "添加自定义参数",
+                "删除选中的参数",
+                e -> addCustomParameter(),
+                e -> removeSelectedParameter());
+        actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
+        northContainer.add(actionBar);
+
+        // 附件面板（文件参数）—— 紧随行动行：仅当接口含文件参数时由 updateAttachmentPanel 填充
+        attachmentPanel.setLayout(new BoxLayout(attachmentPanel, BoxLayout.Y_AXIS));
+        attachmentPanel.setBorder(JBUI.Borders.empty(4, 4, 8, 4));
+        attachmentPanel.setBackground(JBColor.namedColor("Panel.background", new Color(250, 250, 250)));
+        attachmentPanel.setVisible(false);
+        attachmentPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        northContainer.add(attachmentPanel);
+
+        panel.add(northContainer, BorderLayout.NORTH);
+
+        // 底部工具栏 - 「清空值 / 全部」等低频动作保留在底部
         JPanel bottomBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        
-        JButton addBtn = iconButton("添加", AllIcons.General.Add, e -> addCustomParameter());
-        addBtn.setToolTipText("添加自定义参数");
-        JButton delBtn = iconButton("删除", AllIcons.General.Remove, e -> removeSelectedParameter());
-        delBtn.setToolTipText("删除选中的参数");
         JButton clearBtn = iconButton("清空值", AllIcons.Actions.GC, e -> clearParameterValues());
         clearBtn.setToolTipText("清空所有参数的值");
-        
-        bottomBar.add(addBtn);
-        bottomBar.add(delBtn);
         bottomBar.add(clearBtn);
         bottomBar.add(Box.createHorizontalStrut(12));
-        
+
         // 筛选按钮
         JButton filterAllBtn = iconButton("全部", null, e -> filterParamsByLocation(null));
         filterAllBtn.setToolTipText("显示所有参数");
@@ -696,13 +798,6 @@ public class ApiDebuggerPanel extends JPanel {
         bottomBar.add(filterAllBtn);
 
         panel.add(bottomBar, BorderLayout.SOUTH);
-
-        // 附件面板（文件参数）—— 挂在 NORTH：仅当接口含文件参数时由 updateAttachmentPanel 填充
-        attachmentPanel.setLayout(new BoxLayout(attachmentPanel, BoxLayout.Y_AXIS));
-        attachmentPanel.setBorder(JBUI.Borders.empty(4, 4, 8, 4));
-        attachmentPanel.setBackground(JBColor.namedColor("Panel.background", new Color(250, 250, 250)));
-        attachmentPanel.setVisible(false);
-        panel.add(attachmentPanel, BorderLayout.NORTH);
 
         return panel;
     }
@@ -735,8 +830,10 @@ public class ApiDebuggerPanel extends JPanel {
         }
 
         // 标题
-        JLabel title = new JLabel("📎 文件参数（" + fileParams.size() + " 个）— 必须选择本地文件，否则不会带上文件内容");
+        JLabel title = new JLabel("文件参数（" + fileParams.size() + " 个）— 必须选择本地文件，否则不会带上文件内容");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 12f));
+        title.setIcon(AllIcons.Actions.Upload);
+        title.setIconTextGap(6);
         title.setBorder(JBUI.Borders.empty(2, 2, 6, 2));
         attachmentPanel.add(title);
 
@@ -769,8 +866,10 @@ public class ApiDebuggerPanel extends JPanel {
                 if (vf != null) {
                     String path = vf.getPath();
                     attachmentPaths.put(p.getName(), path);
-                    // v2.0.0：附件区也显示「📎 文件名」，与参数表值列渲染器保持一致
-                    pathLabel.setText("📎 " + fileNameOf(path));
+                    // v3.0：附件区使用 AllIcons.Actions.Upload 与按钮图标统一（不再用 emoji 📎）
+                    pathLabel.setText(fileNameOf(path));
+                    pathLabel.setIcon(AllIcons.Actions.Upload);
+                    pathLabel.setIconTextGap(4);
                     pathLabel.setForeground(UiStyle.JSON_KEY);
                     pathLabel.setToolTipText(path);
                     LOG.info("[附件] 选择文件成功 => 参数=" + p.getName() + ", 路径=" + path);
@@ -782,6 +881,7 @@ public class ApiDebuggerPanel extends JPanel {
             clearBtn.addActionListener(e -> {
                 attachmentPaths.put(p.getName(), "");
                 pathLabel.setText("（未选择）");
+                pathLabel.setIcon(null);
                 pathLabel.setForeground(JBColor.gray);
                 pathLabel.setToolTipText("选择本地文件后显示文件名（悬浮查看完整路径）");
                 syncFilePathToParamTable(p.getName(), "");
@@ -833,16 +933,16 @@ public class ApiDebuggerPanel extends JPanel {
         headerTable.setComponentPopupMenu(buildHeaderTablePopup());
         panel.add(new JBScrollPane(headerTable), BorderLayout.CENTER);
 
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        JButton addBtn = iconButton("添加", AllIcons.General.Add, e ->
-                headerTableModel.addRow(new Object[]{"", ""}));
-        JButton delBtn = iconButton("删除", AllIcons.General.Remove, e -> {
-            int row = headerTable.getSelectedRow();
-            if (row >= 0) headerTableModel.removeRow(row);
-        });
-        btnPanel.add(addBtn);
-        btnPanel.add(delBtn);
-        panel.add(btnPanel, BorderLayout.SOUTH);
+        // 一伦优化 v4：tab 顶部 [+/−/AI] 行动行
+        JPanel actionBar = createTabActionBar(
+                "添加请求头",
+                "删除选中的请求头",
+                e -> headerTableModel.addRow(new Object[]{"", ""}),
+                e -> {
+                    int row = headerTable.getSelectedRow();
+                    if (row >= 0) headerTableModel.removeRow(row);
+                });
+        panel.add(actionBar, BorderLayout.NORTH);
 
         return panel;
     }
@@ -855,11 +955,11 @@ public class ApiDebuggerPanel extends JPanel {
     private JPopupMenu buildHeaderTablePopup() {
         JPopupMenu menu = new JPopupMenu();
 
-        JMenuItem addItem = new JMenuItem("➕ 添加请求头", AllIcons.General.Add);
+        JMenuItem addItem = new JMenuItem("添加请求头", AllIcons.General.Add);
         addItem.addActionListener(e -> headerTableModel.addRow(new Object[]{"", ""}));
         menu.add(addItem);
 
-        JMenuItem delItem = new JMenuItem("➖ 删除选中行", AllIcons.General.Remove);
+        JMenuItem delItem = new JMenuItem("删除选中行", AllIcons.General.Remove);
         delItem.addActionListener(e -> {
             int row = headerTable.getSelectedRow();
             if (row >= 0) headerTableModel.removeRow(row);
@@ -869,47 +969,110 @@ public class ApiDebuggerPanel extends JPanel {
         menu.addSeparator();
 
         // 清空 Cookie：与原工具栏"清Cookie"按钮行为完全一致
-        JMenuItem clearCookieItem = new JMenuItem("🍪 清空 Cookie", AllIcons.Actions.GC);
+        JMenuItem clearCookieItem = new JMenuItem("清空 Cookie", AllIcons.Actions.GC);
         clearCookieItem.addActionListener(e -> {
             HttpExecutorService.getInstance(project).clearCookies();
             if (cookieStatusLabel != null) {
                 cookieStatusLabel.setText("Cookie: 已清空");
             }
-            statusLabel.setText("● Cookie已清空");
+            statusLabel.setText("Cookie 已清空");
         });
         menu.add(clearCookieItem);
 
         return menu;
     }
 
+    /**
+     * 一伦优化 v6：body tab 整体灵动化 —— 解决"3 态伸缩都难看"的问题。
+     * <ul>
+     *   <li><b>segmented control 取代文字按钮</b>：紧凑 / 标准 / 展开 三档做成单行单选胶囊，
+     *       所见即所得，点击立即生效，状态直观</li>
+     *   <li><b>编辑器视觉基线对齐</b>：把 body 编辑器包入带圆角描边 + 浅底色的 cardPanel，
+     *       与请求头卡 / 响应卡视觉重量一致；padding 4px 留出输入呼吸感</li>
+     *   <li><b>工具行分组</b>：左 = 内容操作（插入/清空/AI），右 = 尺寸切换；用 Box.createHorizontalGlue 撑开</li>
+     *   <li><b>行高随状态平滑变化</b>：紧凑 3 行（节省空间）/ 标准 8 行（默认）/ 展开 18 行（编辑大段 JSON）</li>
+     * </ul>
+     */
     private JPanel createBodyTab() {
-        JPanel panel = new JPanel(new BorderLayout(0, 4));
+        JPanel panel = new JPanel(new BorderLayout(0, 6));
         panel.setBorder(JBUI.Borders.empty(4));
 
-        // v3: Body格式选择器
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        topBar.add(new JBLabel("格式:"));
+        // ── 顶部工具行：左 = 内容操作（+/−/AI），右 = 尺寸 segmented ──
+        JPanel actionBar = createTabActionBar(
+                "插入当前接口的默认请求体",
+                "清空请求体",
+                e -> {
+                    if (currentApi == null) {
+                        Messages.showWarningDialog(project, "请先选择一个API接口", "提示");
+                        return;
+                    }
+                    bodyEditor.setText(generateDefaultBody(currentApi));
+                },
+                e -> bodyEditor.setText(""));
+        // 在 AI 按钮后追加 segmented control，用 glue 撑到右侧
+        actionBar.add(Box.createHorizontalGlue());
+
+        JLabel sizeLabel = new JLabel("尺寸");
+        sizeLabel.setFont(sizeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        sizeLabel.setForeground(JBColor.GRAY);
+        actionBar.add(sizeLabel);
+        actionBar.add(Box.createHorizontalStrut(6));
+
+        // segmented control：紧凑 / 标准 / 展开，初始 = 标准（index=1）
+        bodySizeSegmented = UiStyle.segmentedControl(
+                BODY_SIZE_LABELS, currentBodySizeIndex, idx -> {
+                    if (idx == currentBodySizeIndex) return;
+                    currentBodySizeIndex = idx;
+                    int rows = switch (idx) {
+                        case 0 -> BODY_ROWS_COMPACT;
+                        case 2 -> BODY_ROWS_EXPANDED;
+                        default -> BODY_ROWS_STANDARD;
+                    };
+                    setBodySize(rows);
+                });
+        actionBar.add(bodySizeSegmented);
+        panel.add(actionBar, BorderLayout.NORTH);
+
+        // ── 中部：body 格式 + cookie 状态 + 编辑器 ──
+        JPanel center = new JPanel(new BorderLayout(0, 4));
+
+        // 格式行
+        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        JBLabel fmtLabel = new JBLabel("格式");
+        fmtLabel.setFont(fmtLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        fmtLabel.setForeground(JBColor.GRAY);
+        topBar.add(fmtLabel);
         bodyFormatCombo = new JComboBox<>(new String[]{"JSON", "x-www-form-urlencoded", "Raw"});
-        bodyFormatCombo.setPreferredSize(new Dimension(160, 26));
+        bodyFormatCombo.setPreferredSize(new Dimension(180, 28));
+        bodyFormatCombo.setFont(bodyFormatCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         topBar.add(bodyFormatCombo);
 
+        topBar.add(Box.createHorizontalStrut(16));
         cookieStatusLabel = new JBLabel("Cookie: (无)");
         UiStyle.hint(cookieStatusLabel);
-        topBar.add(Box.createHorizontalStrut(20));
         topBar.add(cookieStatusLabel);
 
-        panel.add(topBar, BorderLayout.NORTH);
+        center.add(topBar, BorderLayout.NORTH);
 
+        // 编辑器卡片：浅底 + 圆角描边，与请求头卡片视觉一致
         bodyEditor.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
         // v2.0.0：长 JSON 不自动换行（水平滚动查看），与响应区观感一致
         bodyEditor.setLineWrap(false);
         bodyEditor.setWrapStyleWord(false);
         bodyEditor.setTabSize(2);
-        bodyEditor.setRows(BODY_ROWS_COLLAPSED);
-        bodyScrollPane = new JBScrollPane(bodyEditor);
-        panel.add(bodyScrollPane, BorderLayout.CENTER);
+        bodyEditor.setRows(BODY_ROWS_STANDARD);
+        // 编辑器四周 4px 留白，让视觉边界清晰
+        bodyEditor.setMargin(new Insets(4, 6, 4, 6));
 
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        bodyScrollPane = new JBScrollPane(bodyEditor);
+        bodyScrollPane.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                JBUI.Borders.empty(2)));
+        center.add(bodyScrollPane, BorderLayout.CENTER);
+        panel.add(center, BorderLayout.CENTER);
+
+        // ── 底部：格式化 / 清空 按钮 ──
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatJson());
         JButton clrBtn = iconButton("清空", AllIcons.Actions.GC, e -> bodyEditor.setText(""));
         btnPanel.add(fmtBtn);
@@ -972,27 +1135,27 @@ public class ApiDebuggerPanel extends JPanel {
         // 默认显示文本视图
         responseCardLayout.show(responseContentPanel, "text");
 
-        // === 底部操作按钮 ===
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        // === 底部操作按钮（v3.0：去掉 emoji 前缀、统一 iconTextGap=6、字色与字号一致）===
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
 
-        JButton viewToggleBtn = iconButton("🌳 树形视图", AllIcons.Actions.ShowAsTree, e -> toggleResponseView());
-        viewToggleBtn.setToolTipText("🌳 在文本/树形视图间切换");
+        JButton viewToggleBtn = iconButton("树形视图", AllIcons.Actions.ShowAsTree, e -> toggleResponseView());
+        viewToggleBtn.setToolTipText("在文本 / 树形视图间切换");
 
-        JButton fmtBtn = iconButton("📋 格式化", AllIcons.Actions.PrettyPrint, e -> formatResponseJson());
-        fmtBtn.setToolTipText("📋 格式化JSON响应（美化显示）");
+        JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatResponseJson());
+        fmtBtn.setToolTipText("格式化 JSON 响应（美化显示）");
 
-        JButton copyBtn = iconButton("📄 复制", AllIcons.Actions.Copy, e -> copyResponseToClipboard());
-        copyBtn.setToolTipText("📄 复制响应内容到剪贴板");
+        JButton copyBtn = iconButton("复制", AllIcons.Actions.Copy, e -> copyResponseToClipboard());
+        copyBtn.setToolTipText("复制响应内容到剪贴板");
 
-        JButton clearBtn = iconButton("🗑️ 清空", AllIcons.Actions.GC, e -> {
+        JButton clearBtn = iconButton("清空", AllIcons.Actions.GC, e -> {
             responseArea.setText("");
             responsePane.setTextAndHighlight("");
             responseViewTree = false;
         });
-        clearBtn.setToolTipText("🗑️ 清空响应内容");
+        clearBtn.setToolTipText("清空响应内容");
 
-        JBLabel hintLabel = new JBLabel("💡 提示: 切换『树形视图』可折叠展开JSON节点；状态/耗时按级别自动着色");
-        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.ITALIC, UiStyle.FONT_TINY));
+        JBLabel hintLabel = new JBLabel("提示：切换『树形视图』可折叠展开 JSON 节点；状态/耗时按级别自动着色");
+        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         hintLabel.setForeground(JBColor.GRAY);
 
         btnPanel.add(viewToggleBtn);
@@ -1015,51 +1178,6 @@ public class ApiDebuggerPanel extends JPanel {
         return sep;
     }
 
-    private JPanel createTestTab() {
-        JPanel panel = new JPanel(new BorderLayout(0, 4));
-        panel.setBorder(JBUI.Borders.empty(4));
-
-        // 顶部按钮栏 - 精简设计，只保留核心操作
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        
-        // 批量测试按钮（可切换开始/停止）
-        batchTestBtn = iconButton(" 批量测试", AllIcons.Actions.Execute, e -> toggleBatchTest());
-        batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
-        batchTestBtn.putClientProperty("JButton.buttonType", "default");
-        btnPanel.add(batchTestBtn);
-        
-        // 单接口测试按钮
-        JButton runCurBtn = iconButton("测试当前", AllIcons.Actions.Execute, e -> runCurrentTest());
-        runCurBtn.setToolTipText("测试当前选中的API接口，结果以JSON格式展示");
-        btnPanel.add(runCurBtn);
-        
-        // 清空结果按钮
-        JButton clearBtn = iconButton("清空", AllIcons.Actions.GC, e -> {
-            testResultArea.setText("");
-            statusLabel.setText("● 测试结果已清空");
-        });
-        clearBtn.setToolTipText("清空测试结果区域");
-        btnPanel.add(clearBtn);
-        
-        panel.add(btnPanel, BorderLayout.NORTH);
-
-        // 进度条
-        testProgressBar.setVisible(false);
-        testProgressBar.setStringPainted(true);
-        testProgressBar.setPreferredSize(new Dimension(-1, 20));
-        panel.add(testProgressBar, BorderLayout.SOUTH);
-
-        // 测试结果区域
-        testResultArea.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
-        testResultArea.setEditable(false);
-        testResultArea.setLineWrap(true);
-        testResultArea.setWrapStyleWord(true);
-        testResultArea.setText("点击「批量测试」测试所有API，或「测试当前」测试单个接口\n测试结果将以JSON格式展示\n\n等待操作...\n");
-        panel.add(new JBScrollPane(testResultArea), BorderLayout.CENTER);
-
-        return panel;
-    }
-
     /**
      * 切换批量测试状态（开始/停止）
      */
@@ -1077,51 +1195,47 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private JPanel createAiTab() {
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(JBUI.Borders.empty(8));
+        JPanel panel = new JPanel(new BorderLayout(0, 4));
+        panel.setBorder(JBUI.Borders.empty(4));
 
-        // === 配置状态栏（卡片样式） ===
-        JPanel statusCard = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        // ── 顶部：AI 配置 + 场景 + 操作按钮（一行紧凑） ──
+        JPanel topBar = new JPanel();
+        topBar.setLayout(new BoxLayout(topBar, BoxLayout.Y_AXIS));
+        topBar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+
+        // AI 配置状态（卡片样式，仅一行）
+        JPanel statusCard = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         statusCard.setAlignmentX(Component.LEFT_ALIGNMENT);
-        statusCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
-        // 一伦优化 #10：用 cardBorder(6, 10) 统一描边 + 留白
-        statusCard.setBorder(UiStyle.cardBorder(6, 10));
+        statusCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        statusCard.setBorder(UiStyle.cardBorder(4, 8));
 
-        JBLabel configStatusLabel = new JBLabel("🤖 AI配置:");
+        JBLabel configStatusLabel = new JBLabel("AI 配置");
         configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
         statusCard.add(configStatusLabel);
 
         aiConfigInfoLabel = new JBLabel(getAiConfigSummary());
         UiStyle.hint(aiConfigInfoLabel);
         statusCard.add(aiConfigInfoLabel);
+        topBar.add(statusCard);
+        topBar.add(Box.createVerticalStrut(4));
 
-        // 一伦优化 #7：原"配置"按钮已移除，AI 配置统一去 Settings → Tools → RestAutoLab → AI 模型配置
-        JBLabel configHint = new JBLabel("（在 Settings → Tools → " + RestAutoLabConstants.PLUGIN_NAME
-                + " → AI 模型配置 中维护）");
-        configHint.setFont(configHint.getFont().deriveFont(Font.ITALIC, UiStyle.FONT_TINY));
-        configHint.setForeground(JBColor.GRAY);
-        statusCard.add(configHint);
-
-        panel.add(statusCard);
-        panel.add(Box.createVerticalStrut(8));
-
-        // === 生成控制区（单行紧凑） ===
-        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        // 操作按钮行：场景 + AI 助手(下拉) + 批量测试
+        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         controlPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        controlPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 50));
+        controlPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
 
-        JBLabel scenarioLabel = new JBLabel("📊 场景:");
+        JBLabel scenarioLabel = new JBLabel("场景");
         UiStyle.hint(scenarioLabel);
         controlPanel.add(scenarioLabel);
 
-        scenarioCombo.setPreferredSize(new Dimension(130, 26));
+        scenarioCombo.setPreferredSize(new Dimension(110, 26));
         scenarioCombo.setFont(scenarioCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         scenarioCombo.setToolTipText("选择本次 AI 生成场景：正常/边界/异常");
         controlPanel.add(scenarioCombo);
 
-        JButton aiAssistantBtn = iconButton("🤖 AI 生成 / 测试", AllIcons.Actions.Lightning, null);
-        aiAssistantBtn.setToolTipText("统一执行 AI 参数生成或使用当前参数测试接口");
+        // AI 助手按钮（一键下拉：生成参数 / 测试当前）
+        JButton aiAssistantBtn = iconButton("AI 助手", AllIcons.Actions.Lightning, null);
+        aiAssistantBtn.setToolTipText("AI 生成参数 / 测试当前接口");
         aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
         UiStyle.applyAccent(aiAssistantBtn,
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
@@ -1129,18 +1243,42 @@ public class ApiDebuggerPanel extends JPanel {
         aiAssistantBtn.addActionListener(e -> showAiAssistantMenu(aiAssistantBtn));
         controlPanel.add(aiAssistantBtn);
 
-        panel.add(controlPanel);
-        panel.add(Box.createVerticalStrut(8));
+        // 批量测试按钮（一伦优化 v4：从原「测试」Tab 上浮到「AI 助手」Tab，与生成/测试同处一目了然）
+        batchTestBtn = iconButton("批量测试", AllIcons.Actions.Execute, e -> toggleBatchTest());
+        batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
+        batchTestBtn.putClientProperty("JButton.buttonType", "roundRect");
+        controlPanel.add(batchTestBtn);
 
-        // === 使用提示（替代此前的 AI 日志面板） ===
-        JBLabel hint = new JBLabel("<html><div style='color:gray;font-size:11px;'>"
-                + "💡 生成完成后参数会自动填入『参数』Tab，状态栏会显示『生成完成 (AI, N 个参数)』。"
-                + "</div></html>");
-        hint.setAlignmentX(Component.LEFT_ALIGNMENT);
-        hint.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
-        hint.setBorder(JBUI.Borders.empty(8, 12, 4, 4));
-        panel.add(hint);
-        panel.add(Box.createVerticalGlue());
+        // 单接口测试按钮（保留作为快速入口）
+        JButton runCurBtn = iconButton("测试当前", AllIcons.Actions.Execute, e -> runCurrentTest());
+        runCurBtn.setToolTipText("使用当前参数测试当前接口");
+        controlPanel.add(runCurBtn);
+
+        // 清空结果
+        JButton clearBtn = iconButton("清空", AllIcons.Actions.GC, e -> {
+            testResultArea.setText("");
+            statusLabel.setText("● 测试结果已清空");
+        });
+        clearBtn.setToolTipText("清空下方测试结果区域");
+        controlPanel.add(clearBtn);
+
+        topBar.add(controlPanel);
+        panel.add(topBar, BorderLayout.NORTH);
+
+        // ── 中部：测试结果 + 进度条（沿用原「测试」Tab 的 testResultArea / testProgressBar） ──
+        JPanel center = new JPanel(new BorderLayout(0, 2));
+        testProgressBar.setVisible(false);
+        testProgressBar.setStringPainted(true);
+        testProgressBar.setPreferredSize(new Dimension(-1, 18));
+        center.add(testProgressBar, BorderLayout.NORTH);
+
+        testResultArea.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
+        testResultArea.setEditable(false);
+        testResultArea.setLineWrap(true);
+        testResultArea.setWrapStyleWord(true);
+        testResultArea.setText("点击「AI 助手」生成参数，或「批量测试」/「测试当前」执行请求。\n测试结果将以 JSON 格式展示。\n\n等待操作...\n");
+        center.add(new JBScrollPane(testResultArea), BorderLayout.CENTER);
+        panel.add(center, BorderLayout.CENTER);
 
         return panel;
     }
@@ -1151,7 +1289,7 @@ public class ApiDebuggerPanel extends JPanel {
     private void showAiAssistantMenu(JButton invoker) {
         JPopupMenu menu = new JPopupMenu();
 
-        JMenuItem genItem = new JMenuItem("⚡ AI 生成参数（当前场景）", AllIcons.Actions.Lightning);
+        JMenuItem genItem = new JMenuItem("AI 生成参数（当前场景）", AllIcons.Actions.Lightning);
         genItem.addActionListener(ev -> {
             AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
             generateAiParameters(s);
@@ -1160,7 +1298,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         menu.addSeparator();
 
-        JMenuItem testItem = new JMenuItem("🧪 测试当前接口（使用当前参数）", AllIcons.Actions.Execute);
+        JMenuItem testItem = new JMenuItem("测试当前接口（使用当前参数）", AllIcons.Actions.Execute);
         testItem.addActionListener(ev -> sendRequest());
         menu.add(testItem);
 
@@ -1190,6 +1328,67 @@ public class ApiDebuggerPanel extends JPanel {
     private JButton iconButton(String text, Icon icon, java.awt.event.ActionListener listener) {
         // 统一用 roundRect 圆角描边风格，告别「方块中间有字」的生硬观感
         return UiStyle.button(text, icon, listener);
+    }
+
+    /**
+     * 一伦优化 v4：tab 顶部「+/−/AI」行动行 — 放在每个 tab 顶部 NORTH。
+     * <p>目的：把"添加行 / 删除选中行 / 跳到 AI 生成"三个高频动作压到一行，
+     * 不用滚到底部工具栏，也不用在每个 tab 单独维护一套按钮。</p>
+     *
+     * <ul>
+     *   <li>「+」：调用 {@code addAction}（各 tab 自定义：参数表 addRow / 请求头 addRow / body 插入默认内容）</li>
+     *   <li>「−」：调用 {@code removeAction}（各 tab 自定义：参数表 removeSelected / 请求头 removeSelected / body 清空）</li>
+     *   <li>「AI」：调 {@link #generateAiParameters}（使用 AI 助手 tab 当前选中场景），完成后自动切到 AI 助手 tab 显示结果。
+     *       生成会回填参数表 + body，headers 不动（生成逻辑本身不处理 headers）。</li>
+     * </ul>
+     */
+    private JPanel createTabActionBar(String addTooltip, String removeTooltip,
+                                      java.awt.event.ActionListener addAction,
+                                      java.awt.event.ActionListener removeAction) {
+        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        bar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+
+        JButton addBtn = iconButton("+", AllIcons.General.Add, e -> {
+            if (addAction != null) addAction.actionPerformed(e);
+        });
+        addBtn.setToolTipText(addTooltip);
+        addBtn.setMargin(new Insets(2, 10, 2, 10));
+
+        JButton delBtn = iconButton("−", AllIcons.General.Remove, e -> {
+            if (removeAction != null) removeAction.actionPerformed(e);
+        });
+        delBtn.setToolTipText(removeTooltip);
+        delBtn.setMargin(new Insets(2, 10, 2, 10));
+
+        JButton aiBtn = iconButton("AI", AllIcons.Actions.Lightning, e -> aiGenerateAndSwitch());
+        aiBtn.setToolTipText("按 AI 助手当前场景生成参数，填入参数表与请求体，并切到 AI 助手 Tab");
+        aiBtn.setMargin(new Insets(2, 10, 2, 10));
+        aiBtn.putClientProperty("JButton.buttonType", "default");
+        UiStyle.applyAccent(aiBtn,
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        UiStyle.attachInteractionFeedback(aiBtn);
+
+        bar.add(addBtn);
+        bar.add(delBtn);
+        bar.add(Box.createHorizontalStrut(8));
+        bar.add(aiBtn);
+        return bar;
+    }
+
+    /**
+     * 触发 AI 生成（按当前 scenarioCombo 选择），生成完毕后自动切到「AI 助手」Tab 显示结果。
+     */
+    private void aiGenerateAndSwitch() {
+        AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
+        generateAiParameters(s);
+        // 切到 AI 助手 Tab（最后一项 = AI 助手）。generateAiParameters 是异步执行,
+        // 切 Tab 立即发生，用户能看到 "AI生成中..." 状态与结果区。
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            if ("AI 助手".equals(tabbedPane.getTitleAt(i))) {
+                tabbedPane.setSelectedIndex(i);
+                break;
+            }
+        }
     }
 
     private void setupActions() {
@@ -1268,7 +1467,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 添加请求体参数（文件参数占位，等用户在附件面板选择）
         for (ApiParameter param : api.bodyParameters()) {
             String defaultVal = param.isFile()
-                    ? "📎 请在右侧'文件参数'区选择本地文件"
+                    ? "请在右侧'文件参数'区选择本地文件"
                     : param.generateDefaultValue();
             paramTableModel.addRow(new Object[]{
                     param.getName(),
@@ -1387,7 +1586,7 @@ public class ApiDebuggerPanel extends JPanel {
         final List<ResponseAssertion> requestAssertions = new ArrayList<>(currentAssertions);
         final long requestId = requestSequence.incrementAndGet();
 
-        UiStyle.startLoading(sendButton, "发送中");
+        UiStyle.startLoading(sendButton, "发送中…", true);
         stopButton.setEnabled(true);
         statusLabel.setText("○ 请求发送中...");
 
@@ -1459,7 +1658,7 @@ public class ApiDebuggerPanel extends JPanel {
         long ms = result.getDurationMs();
         int size = result.getResponseBody() == null ? 0 : result.getResponseBody().length();
 
-        // 状态：HTML 徽章，色码背景 + 状态码大字 + 状态文本
+        // v3.0：状态徽章用 UiStyle 语义色 + 圆角徽章（统一设计 token，去掉 raw hex）
         JBColor sc = statusColor(code);
         String scHex = String.format("#%02X%02X%02X", sc.getRGB() & 0xFF, (sc.getRGB() >> 8) & 0xFF, (sc.getRGB() >> 16) & 0xFF);
         responseStatusLabel.setText("<html><span style='background-color:" + scHex
@@ -1467,16 +1666,16 @@ public class ApiDebuggerPanel extends JPanel {
                 + statusGlyph(code) + " " + code + " " + httpStatusText(code)
                 + "</span></html>");
 
-        // 耗时：色码 + 数值 + 分级标签
+        // 耗时：色码 + 数值 + 分级标签（v3.0：标签与数值用同一基色，色盲友好）
         JBColor tc = timeColor(ms);
         String tcHex = String.format("#%02X%02X%02X", tc.getRGB() & 0xFF, (tc.getRGB() >> 8) & 0xFF, (tc.getRGB() >> 16) & 0xFF);
-        String speedTag = ms < 200 ? "(快)" : ms < 800 ? "(正常)" : ms < 2000 ? "(慢)" : "(极慢)";
+        String speedTag = ms < 200 ? "（快）" : ms < 800 ? "（正常）" : ms < 2000 ? "（慢）" : "（极慢）";
         responseTimeLabel.setText("<html><span style='color:gray'>耗时</span> <b style='color:" + tcHex + "'>"
-                + ms + " ms</b> <span style='color:gray'>" + speedTag + "</span></html>");
+                + ms + " ms</b> <span style='color:" + tcHex + "'>" + speedTag + "</span></html>");
 
-        // 大小：字段弱化 + 值
+        // 大小：字段弱化 + 值（v3.0：去掉括号内冗余显示，与耗时标签对齐）
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>"
-                + formatBytes(size) + "</b> <span style='color:gray'>(" + size + " chars)</span></html>");
+                + formatBytes(size) + "</b></html>");
 
         String body = result.getResponseBody() == null ? "" : result.getResponseBody();
         responseArea.setText(body);
@@ -2188,18 +2387,33 @@ public class ApiDebuggerPanel extends JPanel {
 
     /**
      * 显示AI配置对话框
-     * <p>一伦优化：左侧"…"按钮统一入口时也用此方法，方法提升为 public 以便外部触发。</p>
+     * <p>一伦优化 R4：行为保持不变，UI 构造委托给 {@link #createAiConfigPanel()}。
+     * "环境&数据"对话框也通过 {@code createAiConfigPanel()} 把它作为 Tab 嵌入。</p>
      */
     public void showAiConfigDialog() {
+        JComponent content = createAiConfigPanel();
+        JDialog dialog = new JDialog((Frame) null, "AI 配置", true);
+        dialog.setResizable(true);
+        dialog.setMinimumSize(UiStyle.minSize(560, 400));
+        dialog.setContentPane(content);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    /**
+     * 一伦优化 R4：构造 AI 配置面板（不含外层 JDialog）。
+     * <p>供 {@link EnvAndDataManageDialog} 作为 Tab 嵌入使用。
+     * 面板自包含"保存"按钮，点击后写入 Settings；调用方不必关心关闭逻辑。</p>
+     */
+    public JComponent createAiConfigPanel() {
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         JBTextField urlField = new JBTextField(settings.getAiServerUrl(), 35);
         urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
 
-        // API Key 输入框：默认密文显示，支持小眼睛切换明文
         JBPasswordField keyField = new JBPasswordField();
         keyField.setText(settings.getAiToken());
         keyField.setToolTipText("Bearer Token 值（无需带 'Bearer ' 前缀，插件会自动加）；留空表示使用本地模型");
-        // 小眼睛切换按钮：明文/密文
         JButton toggleKeyBtn = new JButton(AllIcons.Actions.Preview);
         toggleKeyBtn.setToolTipText("显示/隐藏 API Key 内容");
         toggleKeyBtn.putClientProperty("JButton.buttonType", "square");
@@ -2209,11 +2423,11 @@ public class ApiDebuggerPanel extends JPanel {
         toggleKeyBtn.addActionListener(e -> {
             keyVisible[0] = !keyVisible[0];
             if (keyVisible[0]) {
-                keyField.setEchoChar((char) 0);  // 明文显示
+                keyField.setEchoChar((char) 0);
                 toggleKeyBtn.setIcon(AllIcons.Actions.Cancel);
                 toggleKeyBtn.setToolTipText("点击隐藏 API Key");
             } else {
-                keyField.setEchoChar('\u2022');  // 圆点密文
+                keyField.setEchoChar('\u2022');
                 toggleKeyBtn.setIcon(AllIcons.Actions.Preview);
                 toggleKeyBtn.setToolTipText("点击显示 API Key");
             }
@@ -2229,14 +2443,12 @@ public class ApiDebuggerPanel extends JPanel {
         modelField.setEditable(true);
         modelField.setSelectedItem(settings.getAiModel());
         modelField.setToolTipText("选择或输入模型名称，如 Qwen3.5-35B-A3B");
-        
+
         JCheckBox localModelCheck = new JCheckBox("本地模型（API Key 自动填为 Bearer 占位）");
-        // 判定本地模型：token 为空，或 token 为字面量 "Bearer"
         localModelCheck.setSelected(RestAutoLabConstants.isLocalModelToken(settings.getAiToken()));
         localModelCheck.setToolTipText("<html>勾选后 API Key 字段自动填入字面量 <b>Bearer</b> 并禁用编辑。<br>"
                 + "调用时发送 <code>Authorization: Bearer Bearer</code>，满足 vLLM/Qwen 等网关要求。<br>"
                 + "云端模型请取消勾选，并填入真实的 API Key 值。</html>");
-        // 勾选时自动填 "Bearer" 并禁用；取消勾选时清空让用户填真实 token
         if (localModelCheck.isSelected()) {
             keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
         }
@@ -2255,7 +2467,6 @@ public class ApiDebuggerPanel extends JPanel {
         keyField.setEnabled(!localModelCheck.isSelected());
         toggleKeyBtn.setEnabled(!localModelCheck.isSelected());
 
-        // 自定义系统提示词
         JBTextArea systemPromptArea = new JBTextArea(settings.getAiSystemPrompt());
         systemPromptArea.setLineWrap(true);
         systemPromptArea.setWrapStyleWord(true);
@@ -2263,7 +2474,6 @@ public class ApiDebuggerPanel extends JPanel {
         JScrollPane systemPromptScroll = new JScrollPane(systemPromptArea);
         systemPromptScroll.setPreferredSize(new Dimension(460, 100));
 
-        // 自定义用户提示词模板（支持占位符）
         JBTextArea userPromptArea = new JBTextArea(settings.getAiUserPromptTemplate());
         userPromptArea.setLineWrap(true);
         userPromptArea.setWrapStyleWord(true);
@@ -2271,17 +2481,12 @@ public class ApiDebuggerPanel extends JPanel {
         JScrollPane userPromptScroll = new JScrollPane(userPromptArea);
         userPromptScroll.setPreferredSize(new Dimension(460, 160));
 
-        JButton resetPromptBtn = new JButton("恢复默认提示词");
-        resetPromptBtn.setToolTipText("将系统/用户提示词还原为内置默认值");
-        resetPromptBtn.addActionListener(e -> {
+        JButton resetPromptBtn = UiStyle.button("恢复默认提示词", AllIcons.Actions.Refresh, e -> {
             systemPromptArea.setText(RestAutoLabConstants.AI_SYSTEM_PROMPT);
             userPromptArea.setText(RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
         });
+        resetPromptBtn.setToolTipText("将系统/用户提示词还原为内置默认值");
 
-        // 使用自定义 ScrollableGridBagPanel：实现 Scrollable 并令
-        // getScrollableTracksViewportWidth()=true，JScrollPane 据此把视口宽度
-        // 强制设为 form 宽度，GridBagLayout 的 weightx=1 / fill=HORIZONTAL
-        // 才能真正随对话框右边缘拉伸，输入框和小眼睛(BorderLayout.EAST)才会跟随右移。
         JPanel form = new ScrollableGridBagPanel();
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.fill = GridBagConstraints.HORIZONTAL;
@@ -2289,28 +2494,28 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.anchor = GridBagConstraints.WEST;
 
         gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0;
-        JBLabel urlLabel = new JBLabel("🌐 服务器URL:");
+        JBLabel urlLabel = new JBLabel("服务器 URL");
         urlLabel.setFont(urlLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(urlLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
         form.add(urlField, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0;
-        JBLabel keyLabel = new JBLabel("🔑 API Key(Bearer):");
+        JBLabel keyLabel = new JBLabel("API Key (Bearer)");
         keyLabel.setFont(keyLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(keyLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
         form.add(keyFieldPanel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0;
-        JBLabel apiPathLabel = new JBLabel("🛤️ API 路径:");
+        JBLabel apiPathLabel = new JBLabel("API 路径");
         apiPathLabel.setFont(apiPathLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(apiPathLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
         form.add(apiPathField, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0;
-        JBLabel modelLabel = new JBLabel("🤖 模型:");
+        JBLabel modelLabel = new JBLabel("模型");
         modelLabel.setFont(modelLabel.getFont().deriveFont(Font.BOLD, 11f));
         form.add(modelLabel, gbc);
         gbc.gridx = 1; gbc.weightx = 1;
@@ -2319,7 +2524,6 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
         form.add(localModelCheck, gbc);
 
-        // 提示文字
         JBLabel hintLabel = new JBLabel("<html><i>"
                 + "云端模型：取消勾选'本地模型'，API Key 填真实 token（如 4702f55c...），无需带 'Bearer ' 前缀；<br>"
                 + "本地部署（vLLM/Qwen/Ollama）：勾选'本地模型'，API Key 自动填为 <b>Bearer</b> 占位。"
@@ -2329,18 +2533,16 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.gridy = 5;
         form.add(hintLabel, gbc);
 
-        // ── AI 提示词自定义分区 ──
         gbc.gridy = 6; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
         JSeparator sep1 = new JSeparator();
         form.add(sep1, gbc);
 
         gbc.gridy = 7; gbc.fill = GridBagConstraints.NONE;
-        JBLabel promptHeader = new JBLabel("📝 AI 提示词自定义");
+        JBLabel promptHeader = new JBLabel("AI 提示词自定义");
         promptHeader.setFont(promptHeader.getFont().deriveFont(Font.BOLD, 12f));
         promptHeader.setForeground(JBColor.BLUE);
         form.add(promptHeader, gbc);
 
-        // 系统提示词 - 可折叠标题（默认折叠）
         final boolean[] systemPromptExpanded = {false};
         JButton systemPromptToggle = new JButton("▸ 系统提示词 (System Prompt)");
         systemPromptToggle.setContentAreaFilled(false);
@@ -2352,14 +2554,12 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.gridy = 8; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1; gbc.weighty = 0;
         form.add(systemPromptToggle, gbc);
 
-        // 系统提示词内容（默认折叠隐藏）
         JPanel systemPromptContent = new JPanel(new BorderLayout());
         systemPromptContent.add(systemPromptScroll, BorderLayout.CENTER);
         systemPromptContent.setVisible(false);
         gbc.gridy = 9; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.35;
         form.add(systemPromptContent, gbc);
 
-        // 用户提示词 - 可折叠标题（默认折叠）
         final boolean[] userPromptExpanded = {false};
         JButton userPromptToggle = new JButton("▸ 用户提示词模板 (User Prompt)");
         userPromptToggle.setContentAreaFilled(false);
@@ -2371,7 +2571,6 @@ public class ApiDebuggerPanel extends JPanel {
         gbc.gridy = 10; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
         form.add(userPromptToggle, gbc);
 
-        // 用户提示词内容（默认折叠隐藏）
         JPanel userPromptContent = new JPanel(new BorderLayout());
         userPromptContent.add(userPromptScroll, BorderLayout.CENTER);
         userPromptContent.setVisible(false);
@@ -2382,41 +2581,45 @@ public class ApiDebuggerPanel extends JPanel {
         JBLabel placeholderHint = new JBLabel("<html><font color='#888888' size='2'>占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
         form.add(placeholderHint, gbc);
 
-        // 内容较多，套滚动面板防止超出屏幕高度。
-        // 因 form 实现了 Scrollable.getScrollableTracksViewportWidth()=true，
-        // 视口宽度会强制传给 form，水平方向无需滚动条，输入框随对话框宽度伸缩。
         JScrollPane formScroll = new JScrollPane(form);
         formScroll.setBorder(null);
         formScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
-        // 使用 JDialog 替代 JOptionPane，支持自由拉伸收缩（上下左右都可调）
-        JDialog dialog = new JDialog((Frame) null, "AI 配置", true);
-        dialog.setResizable(true);
-        dialog.setMinimumSize(UiStyle.minSize(560, 400));  // 最小尺寸保底
-
-        // 按钮面板：恢复默认提示词(左) + 确定/取消(右) 同一排，减小上下高度
-        JPanel btnPanel = new JPanel(new BorderLayout());
-        JPanel leftBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        // 按钮面板：恢复默认(左) + 保存(右)
+        // 一伦优化：左右两侧按钮使用同一行高（BoxLayout Y_AXIS + 固定高度组件），
+        // 保证「恢复默认」与「保存」水平 baseline 严格对齐，视觉上不左右错位。
+        JButton saveBtn = UiStyle.primaryButton("保存", AllIcons.Actions.Commit, null);
+        JPanel btnPanel = new JPanel();
+        btnPanel.setLayout(new BoxLayout(btnPanel, BoxLayout.X_AXIS));
+        btnPanel.setBorder(JBUI.Borders.empty(4, 4, 4, 4));
+        // 左侧：恢复默认（圆角描边风格 + 图标 + 文字）
+        JPanel leftBtnPanel = new JPanel();
+        leftBtnPanel.setLayout(new BoxLayout(leftBtnPanel, BoxLayout.X_AXIS));
+        leftBtnPanel.setOpaque(false);
         leftBtnPanel.add(resetPromptBtn);
-        JPanel rightBtnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
-        JButton okBtn = new JButton("确定");
-        JButton cancelBtn = new JButton("取消");
-        rightBtnPanel.add(okBtn);
-        rightBtnPanel.add(cancelBtn);
-        btnPanel.add(leftBtnPanel, BorderLayout.WEST);
-        btnPanel.add(rightBtnPanel, BorderLayout.EAST);
+        // 弹性间隔把保存推到最右
+        leftBtnPanel.add(Box.createHorizontalGlue());
+        btnPanel.add(leftBtnPanel);
+        btnPanel.add(Box.createHorizontalGlue());
+        // 右侧：保存（主色按钮）
+        JPanel rightBtnPanel = new JPanel();
+        rightBtnPanel.setLayout(new BoxLayout(rightBtnPanel, BoxLayout.X_AXIS));
+        rightBtnPanel.setOpaque(false);
+        rightBtnPanel.add(saveBtn);
+        btnPanel.add(rightBtnPanel);
+        // 统一按钮高度，避免不同 margin 造成 baseline 错位
+        UiStyle.uniformHeight(resetPromptBtn, saveBtn, 28);
 
-        // 主布局：滚动面板在中间，按钮栏在底部
         JPanel contentPane = new JPanel(new BorderLayout(0, 8));
         contentPane.setBorder(JBUI.Borders.empty(8));
         contentPane.add(formScroll, BorderLayout.CENTER);
         contentPane.add(btnPanel, BorderLayout.SOUTH);
 
-        dialog.setContentPane(contentPane);
-        dialog.pack();
-        dialog.setLocationRelativeTo(this);  // 居中显示
-
-        // 折叠/展开 互斥逻辑：系统提示词与用户提示词同一时间只能展开一个
+        // 折叠/展开 互斥
+        Runnable reflow = () -> {
+            contentPane.revalidate();
+            contentPane.repaint();
+        };
         systemPromptToggle.addActionListener(e -> {
             boolean willExpand = !systemPromptExpanded[0];
             systemPromptExpanded[0] = willExpand;
@@ -2427,9 +2630,7 @@ public class ApiDebuggerPanel extends JPanel {
                 userPromptToggle.setText("▸ 用户提示词模板 (User Prompt)");
                 userPromptContent.setVisible(false);
             }
-            form.revalidate();
-            form.repaint();
-            dialog.pack();
+            reflow.run();
         });
         userPromptToggle.addActionListener(e -> {
             boolean willExpand = !userPromptExpanded[0];
@@ -2441,33 +2642,23 @@ public class ApiDebuggerPanel extends JPanel {
                 systemPromptToggle.setText("▸ 系统提示词 (System Prompt)");
                 systemPromptContent.setVisible(false);
             }
-            form.revalidate();
-            form.repaint();
-            dialog.pack();
+            reflow.run();
         });
 
-        // 结果标记
-        final boolean[] okPressed = {false};
-
-        // 按钮事件：确定时先校验，校验通过才关闭对话框并保存
-        okBtn.addActionListener(e -> {
+        saveBtn.addActionListener(e -> {
             String serverUrl = urlField.getText().trim();
             String apiKey = new String(keyField.getPassword()).trim();
             String apiPath = apiPathField.getText().trim();
             String model = String.valueOf(modelField.getSelectedItem()).trim();
 
             if (serverUrl.isBlank()) {
-                Messages.showWarningDialog(dialog, "服务器URL不能为空", "配置错误");
+                Messages.showWarningDialog(contentPane, "服务器URL不能为空", "配置错误");
                 urlField.requestFocusInWindow();
                 return;
             }
-            // API 路径允许为空保存（留空时请求直接打到服务器URL根路径）；
-            // 非空时仅补前导斜杠，保证路径格式规范
             if (!apiPath.isBlank() && !apiPath.startsWith("/")) {
                 apiPath = "/" + apiPath;
             }
-
-            // 校验通过，保存配置
             settings.setAiServerUrl(serverUrl);
             settings.setAiToken(localModelCheck.isSelected()
                     ? RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
@@ -2476,28 +2667,14 @@ public class ApiDebuggerPanel extends JPanel {
             settings.setAiSystemPrompt(systemPromptArea.getText());
             settings.setAiUserPromptTemplate(userPromptArea.getText());
 
-            okPressed[0] = true;
-            dialog.dispose();
-
-            // 刷新 AI 配置摘要标签，使面板上显示的 URL/模型 与刚保存的配置一致
             aiConfigInfoLabel.setText(getAiConfigSummary());
             statusLabel.setText("● AI配置已更新");
-
             Messages.showInfoMessage(project,
                     "AI配置已成功保存！\n\n服务器: " + serverUrl + "\nAPI 路径: " + apiPath
                             + "\n模型: " + model, "保存成功");
         });
-        cancelBtn.addActionListener(e -> dialog.dispose());
 
-        // ESC 键关闭对话框
-        dialog.getRootPane().registerKeyboardAction(
-                e -> dialog.dispose(),
-                KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
-                JComponent.WHEN_IN_FOCUSED_WINDOW);
-        dialog.getRootPane().setDefaultButton(okBtn);
-
-        dialog.setVisible(true);
-        // 保存逻辑已在 okBtn 事件中完成，此处无需重复处理
+        return contentPane;
     }
 
     // ================================================================
@@ -2576,10 +2753,10 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * v2.0.0 值列渲染器。
+     * v2.0.0 值列渲染器（v3.0：去掉 emoji 📎，统一用 SVG 图标）。
      * <ul>
-     *   <li>文件类型参数（File/MultipartFile 或 FILE 位置）：显示「📎 文件名」，完整路径放 tooltip；
-     *       未选择时灰色显示「（未选择）」。</li>
+     *   <li>文件类型参数（File/MultipartFile 或 FILE 位置）：左侧加 AllIcons.Actions.Upload 小图标 + 文件名，
+     *       完整路径放 tooltip；未选择时灰色显示「（未选择）」。</li>
      *   <li>普通值：原样显示，长值用 tooltip 辅助查看。</li>
      * </ul>
      * <p>数据层仍保留完整路径（HttpExecutorService 依赖路径构建 multipart），此处仅做展示层美化。</p>
@@ -2592,6 +2769,7 @@ public class ApiDebuggerPanel extends JPanel {
             setHorizontalAlignment(LEFT);
             setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
             setIcon(null);
+            setIconTextGap(4);
 
             String paramType = table.getValueAt(row, 1) instanceof String t ? t : "";
             String paramLoc = table.getValueAt(row, 2) instanceof String l ? l : "";
@@ -2604,7 +2782,8 @@ public class ApiDebuggerPanel extends JPanel {
                     if (!isSelected) setForeground(JBColor.GRAY);
                 } else {
                     String raw = valStr.startsWith("📎") ? valStr.substring(1).trim() : valStr;
-                    setText("📎 " + fileNameOf(raw));
+                    setText(fileNameOf(raw));
+                    setIcon(AllIcons.Actions.Upload);
                     setToolTipText(raw);
                     if (!isSelected) setForeground(UiStyle.JSON_KEY);
                 }
@@ -2666,7 +2845,7 @@ public class ApiDebuggerPanel extends JPanel {
     
     // SmartValueEditor 已抽取为独立文件 SmartValueEditor.java（v2.0.0：文件选择 + 多行JSON编辑器 + 枚举提示）
 
-    /** JSON树节点渲染器 - 按值类型上色 + 类型徽章 */
+    /** JSON树节点渲染器 - 按值类型上色 + 类型徽章（v3.0：图标统一用 AllIcons.Json.*，与设计系统规范一致） */
     private class JsonTreeNodeRenderer extends javax.swing.tree.DefaultTreeCellRenderer {
         @Override
         public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel,
@@ -2687,10 +2866,10 @@ public class ApiDebuggerPanel extends JPanel {
             if (text.equals("root") || text.equals("Response") || text.equals("(无响应)")) {
                 setIcon(AllIcons.Json.Object);
                 setForeground(JBColor.foreground());
-                setText("📦 " + escapeHtml(text));
+                setText(text);
             } else if (text.matches("\\[\\d+\\].*")) {
                 // 数组元素节点："[0]" 或 "[0]: value"
-                setIcon(AllIcons.Nodes.Folder);
+                setIcon(AllIcons.Json.Array);
                 int colon = text.indexOf(":");
                 if (colon > 0) {
                     String key = text.substring(0, colon);
@@ -2720,19 +2899,19 @@ public class ApiDebuggerPanel extends JPanel {
             } else if (text.startsWith("[") && text.endsWith("]")) {
                 // 数组容器节点（buildJsonTree 会用 "[]" 标数组，理论不会出现，但兼容下）
                 setIcon(AllIcons.Json.Array);
-                setText("📚 <b style='color:#1f6feb'>" + escapeHtml(text) + "</b>");
+                setText("<b style='color:#1f6feb'>" + escapeHtml(text) + "</b>");
             } else if (text.contains("(") && text.endsWith(")")) {
                 // 对象/数组容器节点："key (3 items)"
                 int paren = text.indexOf("(");
                 String name = text.substring(0, paren).trim();
                 String count = text.substring(paren);
                 setIcon(text.contains("Array") || name.startsWith("[") ? AllIcons.Json.Array : AllIcons.Json.Object);
-                setText("<html>📂 <b style='color:#1f6feb'>" + escapeHtml(name) + "</b>"
+                setText("<html><b style='color:#1f6feb'>" + escapeHtml(name) + "</b>"
                         + " <span style='color:#888;font-size:10px'>" + escapeHtml(count) + "</span></html>");
             } else {
                 // 普通对象 key 容器（无值的对象/数组），如 "data"、"user" 等
                 setIcon(AllIcons.Json.Object);
-                setText("📂 <b style='color:#1f6feb'>" + escapeHtml(text) + "</b>");
+                setText("<b style='color:#1f6feb'>" + escapeHtml(text) + "</b>");
             }
 
             return this;
@@ -2788,7 +2967,7 @@ public class ApiDebuggerPanel extends JPanel {
             expectedField.setText("");
         });
 
-        JButton aiGenBtn = iconButton("🤖 AI生成断言", AllIcons.Actions.Lightning, e -> generateAiAssertions());
+        JButton aiGenBtn = iconButton("AI 生成断言", AllIcons.Actions.Lightning, e -> generateAiAssertions());
 
         topBar.add(new JBLabel("类型:"));
         topBar.add(assertTypeCombo);
@@ -3113,6 +3292,14 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
 
+    /**
+     * 一伦优化 v4：把"导出 cURL / 文档 / 报告"3 个按钮从右面板顶部工具栏下移到左侧 "..." 弹层。
+     * 这里是给 ApiTreePanel 调用的公开入口，内部直接复用原私有方法。
+     */
+    public void exportCurlFromMenu() { exportCurl(); }
+    public void exportApiDocFromMenu() { exportApiDoc(); }
+    public void exportLastReportFromMenu() { exportLastReport(); }
+
     private void exportCurl() {
         if (currentApi == null) {
             Messages.showWarningDialog(project, "请先选择一个API接口", "提示");
@@ -3187,7 +3374,7 @@ public class ApiDebuggerPanel extends JPanel {
             grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
         }
         for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
-            preview.append("📁 <b>").append(escapeHtml(e.getKey())).append("</b> (")
+            preview.append("<b>").append(escapeHtml(e.getKey())).append("</b> (")
                     .append(e.getValue().size()).append(")<br/>");
             for (ApiDefinition api : e.getValue()) {
                 String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
@@ -3219,7 +3406,85 @@ public class ApiDebuggerPanel extends JPanel {
                 ApiDocExporter.exportSelectedApisWithHistory(selectedApis, history, project.getName(), path);
                 Messages.showInfoMessage(project, "API文档已导出到:\n" + path, "导出成功");
             } catch (IOException e) {
-                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.API_DOC, e);
+            }
+        }, ModalityState.defaultModalityState());
+    }
+
+    /**
+     * 用自定义模板（.docx / .md）导出当前选中的接口文档。
+     * <p>步骤：</p>
+     * <ol>
+     *   <li>选模板文件（FileChooser.chooseFile）</li>
+     *   <li>选输出路径（按模板后缀默认 docx/md）</li>
+     *   <li>调用 {@link TemplateEngine#render} 渲染</li>
+     * </ol>
+     */
+    public void exportApiDocFromTemplate() {
+        ApiScannerService scanner = ApiScannerService.getInstance(project);
+        List<ApiDefinition> allApis = scanner.getCachedApis();
+        if (allApis.isEmpty()) {
+            Messages.showWarningDialog(project, "暂无API，请先扫描", "提示");
+            return;
+        }
+        // 选中的接口
+        List<ApiDefinition> selected = null;
+        if (treePanel != null) {
+            selected = treePanel.getSelectedApisForExport();
+        }
+        if ((selected == null || selected.isEmpty()) && currentApi != null) {
+            selected = new java.util.ArrayList<>();
+            selected.add(currentApi);
+        }
+        if (selected == null || selected.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "未选中任何接口。\n请先在左侧接口树选择 1 个或多个接口，再点击『用模板导出』",
+                    "提示");
+            return;
+        }
+        final List<ApiDefinition> selectedApis = selected;
+
+        // 让用户选模板文件
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String templatePath = TestDataExporter.chooseOpenFile(project,
+                    "选择接口文档模板", "模板文件", "docx", "md", "markdown");
+            if (templatePath == null) return;
+            TemplateEngine.TemplateType type = TemplateEngine.detectType(templatePath);
+            if (type == TemplateEngine.TemplateType.UNKNOWN) {
+                Messages.showErrorDialog(project,
+                        "不支持的模板类型，仅支持 .docx / .md / .markdown",
+                        "模板错误");
+                return;
+            }
+            if (type == TemplateEngine.TemplateType.PDF) {
+                Messages.showErrorDialog(project,
+                        "PDF 模板需要表单域或专用库支持，请改用 .docx 或 .md 模板。\n"
+                                + "如需 PDF 导出，可先用 .md 模板生成后另存。",
+                        "模板不支持");
+                return;
+            }
+            // 推荐输出路径
+            String outExt = type == TemplateEngine.TemplateType.DOCX ? ".docx" : ".md";
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+            String suggestName = "acai-api-template-" + sdf.format(new java.util.Date()) + outExt;
+            String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
+            if (outputPath == null) return;
+            // 若用户没改后缀，按模板后缀修正
+            String lowerOut = outputPath.toLowerCase();
+            if (type == TemplateEngine.TemplateType.DOCX && !lowerOut.endsWith(".docx")) {
+                outputPath = outputPath + ".docx";
+            } else if (type == TemplateEngine.TemplateType.MARKDOWN
+                    && !lowerOut.endsWith(".md") && !lowerOut.endsWith(".markdown")) {
+                outputPath = outputPath + ".md";
+            }
+            try {
+                TemplateEngine.render(templatePath, selectedApis, project.getName(), outputPath);
+                Messages.showInfoMessage(project,
+                        "模板导出成功！\n\n输出文件: " + outputPath
+                                + "\n共填充 " + selectedApis.size() + " 个接口",
+                        "导出成功");
+            } catch (IOException ex) {
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.API_DOC_TEMPLATE, ex);
             }
         }, ModalityState.defaultModalityState());
     }
@@ -3247,7 +3512,7 @@ public class ApiDebuggerPanel extends JPanel {
                 try { Desktop.getDesktop().browse(java.nio.file.Paths.get(path).toUri()); } catch (Exception ignored) {}
             }
         } catch (IOException e) {
-            Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误");
+            ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.TEST_REPORT, e);
         }
     }
 
@@ -3256,56 +3521,31 @@ public class ApiDebuggerPanel extends JPanel {
     // ================================================================
 
     /**
-     * 一伦优化：左侧"…"弹层触发——打开前置脚本与变量覆盖编辑弹窗。
-     * <p>复用 {@link #createPreRequestPanel()} 现有 UI（已有 model 自动持久化），仅在外面包一层
-     * {@link DialogWrapper} 作为模态弹窗。点 OK 仅关闭，不再走 Settings。</p>
+     * 一伦优化 R4：左侧"…"弹层触发——打开前置脚本与变量覆盖编辑弹窗。
+     * <p>现统一收敛到 {@link #openEnvAndDataManageDialog()} 内作为 Tab；
+     * 保留此方法仅为旧调用方兼容（已无引用）。</p>
      */
+    @Deprecated
     public void openPreRequestConfigDialog() {
-        JPanel preReqPanel = createPreRequestPanel();
-        // 去除原 panel 的 cardBorder 以适应弹窗
-        preReqPanel.setBorder(JBUI.Borders.empty(8));
-
-        DialogWrapper dw = new DialogWrapper(project, false) {
-            { init(); setTitle("前置脚本 & 变量覆盖"); setOKButtonText("关闭"); setCancelButtonText(null); }
-
-            @Override
-            protected JComponent createCenterPanel() {
-                return preReqPanel;
-            }
-
-            @Override
-            protected JComponent createSouthPanel() {
-                // 仅显示 OK 按钮（model 已在编辑时实时持久化）
-                JComponent south = super.createSouthPanel();
-                if (south instanceof JPanel p) {
-                    // 移除 Cancel 按钮（如有）
-                    java.awt.Component[] comps = p.getComponents();
-                    for (java.awt.Component c : comps) {
-                        if (c instanceof JButton btn && "Cancel".equals(btn.getText())) {
-                            p.remove(btn);
-                        }
-                    }
-                }
-                return south;
-            }
-        };
-        dw.setSize(720, 460);
-        dw.show();
+        openEnvAndDataManageDialog();
     }
 
     /**
-     * 一伦优化：左侧"…"弹层触发——打开 AI 配置弹窗。
-     * <p>复用 {@link #showAiConfigDialog()}（已提升为 public）。</p>
+     * 一伦优化 R4：左侧"…"弹层触发——打开 AI 配置弹窗。
+     * <p>现统一收敛到 {@link #openEnvAndDataManageDialog()} 内作为 Tab；
+     * 保留此方法仅为旧调用方兼容（已无引用）。</p>
      */
+    @Deprecated
     public void openAiConfigDialog() {
-        showAiConfigDialog();
+        openEnvAndDataManageDialog();
     }
 
     /**
-     * 一伦优化 #3：合并后的「环境 & 数据」入口。
-     * 用一个 JTabbedPane 同时承载环境管理（{@link EnvironmentManagerDialog#createCenterPanel()}）和
-     * 数据管理（{@link DataManagePanel} 卡片列表），关闭后通过 {@link EnvAndDataManageDialog#getPendingDataAction()}
-     * 获取用户点选的导出/导入操作并 invokeLater 执行（Windows 模态兼容）。
+     * 一伦优化 R4：「环境 & 数据」统一入口。
+     * <p>一伦优化 #3 时把"环境"和"数据"合并；R4 进一步把"前置脚本&变量覆盖"、"AI 配置"作为新 Tab 注入，
+     * 让左侧"…"弹层只剩下"环境 & 数据"一个入口。Tab 顺序：环境 / 前置脚本 / AI 配置 / 数据。</p>
+     * <p>关闭后通过 {@link EnvAndDataManageDialog#getPendingDataAction()} 拿到用户在数据 Tab 点选的导出/导入，
+     * 用 invokeLater + defaultModalityState 执行（Windows 模态兼容）。</p>
      */
     public void openEnvAndDataManageDialog() {
         // 配置类操作（AI 设置 · 环境配置 · 测试配置）
@@ -3331,6 +3571,18 @@ public class ApiDebuggerPanel extends JPanel {
                 this::importTestDataAction));
 
         EnvAndDataManageDialog dialog = new EnvAndDataManageDialog(project, configActions, apiDataActions);
+
+        // 一伦优化 R4：注入"前置脚本&变量覆盖"和"AI 配置"两个新 Tab。
+        // 顺序：环境 → 前置脚本 → AI 配置 → 数据
+        // 适配弹窗：去掉 cardBorder 让 panel 平铺
+        JPanel preReqPanel = getPreRequestPanel();
+        preReqPanel.setBorder(JBUI.Borders.empty(8));
+        dialog.addTab("前置脚本", AllIcons.General.Settings, preReqPanel,
+                "接口级前置脚本（仅影响本次请求）和变量覆盖");
+
+        dialog.addTab("AI 配置", AllIcons.Actions.Lightning, createAiConfigPanel(),
+                "AI 服务器、API Key、模型与提示词");
+
         dialog.show();
 
         // 环境 Tab 的 applyChanges 已在 dialog.doOKAction 内统一执行，这里刷新回主面板
@@ -3434,7 +3686,7 @@ public class ApiDebuggerPanel extends JPanel {
                         });
                     } catch (IOException e) {
                         ApplicationManager.getApplication().invokeLater(() ->
-                                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.CONFIG, e));
                     }
                 }
             });
@@ -3466,7 +3718,7 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showInfoMessage(project, result, "导入成功");
             statusLabel.setText("● 配置已导入");
         } catch (IOException e) {
-            Messages.showErrorDialog(project, "导入失败: " + e.getMessage(), "错误");
+            ExportErrorReporter.reportImportFailure(project, ExportErrorReporter.Operation.CONFIG, e);
         }
     }
 
@@ -3512,7 +3764,7 @@ public class ApiDebuggerPanel extends JPanel {
                         });
                     } catch (IOException e) {
                         ApplicationManager.getApplication().invokeLater(() ->
-                                Messages.showErrorDialog(project, "导出失败: " + e.getMessage(), "错误"));
+                                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.TEST_DATA, e));
                     }
                 }
             });
@@ -3554,7 +3806,7 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showInfoMessage(project, result, "导入成功");
             statusLabel.setText("● 接口数据已导入并合并");
         } catch (IOException e) {
-            Messages.showErrorDialog(project, "导入失败: " + e.getMessage(), "错误");
+            ExportErrorReporter.reportImportFailure(project, ExportErrorReporter.Operation.TEST_DATA, e);
         }
     }
 

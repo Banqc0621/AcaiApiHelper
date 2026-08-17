@@ -1672,7 +1672,7 @@ public final class ApiScannerService {
     public ApiDefinition addManualApi(String httpMethod, String url, String name) {
         ApiDefinition api = new ApiDefinition();
         api.setHttpMethod(httpMethod);
-        api.setUrl(url);
+        api.setUrl(normalizePath(url));
         api.setName(name != null ? name : "");
         api.setControllerName("手动添加");
         api.setSource(RestAutoLabConstants.API_SOURCE_MANUAL);

@@ -406,25 +406,50 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         myState.savedProfilesJson.remove(name);
     }
 
-    /** 加载环境列表 */
+    /** 加载环境列表 - 始终保证至少有 dev/test/prod 三个默认环境 */
     public List<Environment> loadEnvironments() {
-        if (myState.environmentsJson == null || myState.environmentsJson.isBlank()) {
-            // 返回默认环境
-            List<Environment> defaults = new ArrayList<>();
-            defaults.add(Environment.dev());
-            defaults.add(Environment.test());
-            defaults.add(Environment.production());
-            // 默认激活开发环境
-            defaults.get(0).setActive(true);
-            return defaults;
+        // 1) 从持久化 json 解析
+        List<Environment> envs = null;
+        if (myState.environmentsJson != null && !myState.environmentsJson.isBlank()) {
+            try {
+                Type listType = new TypeToken<List<Environment>>(){}.getType();
+                envs = gson.fromJson(myState.environmentsJson, listType);
+            } catch (Exception ignore) {
+                envs = null;
+            }
         }
-        try {
-            Type listType = new TypeToken<List<Environment>>(){}.getType();
-            List<Environment> envs = gson.fromJson(myState.environmentsJson, listType);
-            return envs != null ? envs : new ArrayList<>();
-        } catch (Exception e) {
-            return new ArrayList<>();
+
+        // 2) 兜底:持久化空 / 解析失败 / 解析出空列表 -> 补齐 3 个默认
+        //    注意:用户主动删空的情况(已 saveEnvironments 到空列表)也走这条,
+        //    这样每次"刚打开"都能看到 dev/test/prod 三个,保证 UI 始终有默认
+        if (envs == null || envs.isEmpty()) {
+            envs = new ArrayList<>();
+            envs.add(Environment.dev());
+            envs.add(Environment.test());
+            envs.add(Environment.production());
+            // 持久化回 json,后续打开走分支1直接拿到3个
+            myState.environmentsJson = gson.toJson(envs);
         }
+
+        // 3) 兜底:如果列表里的环境 name 都是空 / 缺关键字段,也补齐 3 个默认
+        //    (防止解析出"名字全空"的脏数据,UI 列表展示出空行)
+        boolean allBlank = envs.stream().allMatch(e -> e.getName() == null || e.getName().isBlank());
+        if (allBlank) {
+            envs = new ArrayList<>();
+            envs.add(Environment.dev());
+            envs.add(Environment.test());
+            envs.add(Environment.production());
+            myState.environmentsJson = gson.toJson(envs);
+        }
+
+        // 4) 默认激活 dev (若当前激活的环境在列表里不存在,会由调用方处理)
+        boolean hasActive = envs.stream().anyMatch(Environment::isActive);
+        if (!hasActive && !envs.isEmpty()) {
+            envs.get(0).setActive(true);
+            myState.environmentsJson = gson.toJson(envs);
+        }
+
+        return envs;
     }
 
     /** 保存环境列表 */

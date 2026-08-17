@@ -738,4 +738,33 @@ public class TestDataExporter {
         if (selected == null) return null;
         return selected.getPath() + "/" + suggestName;
     }
+
+    /**
+     * 弹出文件选择对话框，让用户选择一个已存在的模板文件。
+     *
+     * @param project    当前项目
+     * @param title      对话框标题
+     * @param desc       对话框描述
+     * @param extensions 允许的文件扩展名集合（不含点，如 "docx", "md"）
+     * @return 选中文件的绝对路径；用户取消返回 null
+     */
+    public static String chooseOpenFile(Project project, String title, String desc, String... extensions) {
+        FileChooserDescriptor fd = new FileChooserDescriptor(true, false, false, false, false, false);
+        fd.setTitle(title);
+        fd.setDescription(desc);
+        if (extensions != null && extensions.length > 0) {
+            fd.withFileFilter(file -> {
+                String name = file.getName();
+                int dot = name.lastIndexOf('.');
+                if (dot < 0) return false;
+                String ext = name.substring(dot + 1).toLowerCase();
+                for (String e : extensions) {
+                    if (e.equalsIgnoreCase(ext)) return true;
+                }
+                return false;
+            });
+        }
+        VirtualFile selected = FileChooser.chooseFile(fd, project, null);
+        return selected == null ? null : selected.getPath();
+    }
 }
