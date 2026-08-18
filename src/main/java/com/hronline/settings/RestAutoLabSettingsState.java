@@ -406,7 +406,17 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         myState.savedProfilesJson.remove(name);
     }
 
-    /** 加载环境列表 - 始终保证至少有 dev/test/prod 三个默认环境 */
+    /**
+     * 加载环境列表 —— 始终只返回 dev / test / prod 三个默认环境。
+     * <p>规则：</p>
+     * <ol>
+     *   <li>从持久化 json 解析，缺哪个默认环境就补哪个（保留用户已建的，方便回退）</li>
+     *   <li>最终只保留 dev / test / prod 三个，多余的丢弃</li>
+     *   <li>顺序固定：dev → test → prod</li>
+     *   <li>没有任何 active → 把 dev 标激活</li>
+     *   <li>回写 json 持久化</li>
+     * </ol>
+     */
     public List<Environment> loadEnvironments() {
         // 1) 从持久化 json 解析
         List<Environment> envs = null;
@@ -418,38 +428,49 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
                 envs = null;
             }
         }
+        if (envs == null) envs = new ArrayList<>();
 
-        // 2) 兜底:持久化空 / 解析失败 / 解析出空列表 -> 补齐 3 个默认
-        //    注意:用户主动删空的情况(已 saveEnvironments 到空列表)也走这条,
-        //    这样每次"刚打开"都能看到 dev/test/prod 三个,保证 UI 始终有默认
-        if (envs == null || envs.isEmpty()) {
-            envs = new ArrayList<>();
-            envs.add(Environment.dev());
-            envs.add(Environment.test());
-            envs.add(Environment.production());
-            // 持久化回 json,后续打开走分支1直接拿到3个
-            myState.environmentsJson = gson.toJson(envs);
-        }
-
-        // 3) 兜底:如果列表里的环境 name 都是空 / 缺关键字段,也补齐 3 个默认
-        //    (防止解析出"名字全空"的脏数据,UI 列表展示出空行)
-        boolean allBlank = envs.stream().allMatch(e -> e.getName() == null || e.getName().isBlank());
-        if (allBlank) {
+        // 2) 兜底：解析出空列表 / 全部 name 为空 -> 整体替换为 3 个默认
+        boolean allBlank = !envs.isEmpty() && envs.stream()
+                .allMatch(e -> e.getName() == null || e.getName().isBlank());
+        if (envs.isEmpty() || allBlank) {
             envs = new ArrayList<>();
             envs.add(Environment.dev());
             envs.add(Environment.test());
             envs.add(Environment.production());
             myState.environmentsJson = gson.toJson(envs);
-        }
-
-        // 4) 默认激活 dev (若当前激活的环境在列表里不存在,会由调用方处理)
-        boolean hasActive = envs.stream().anyMatch(Environment::isActive);
-        if (!hasActive && !envs.isEmpty()) {
+            // 4) 默认激活 dev
             envs.get(0).setActive(true);
             myState.environmentsJson = gson.toJson(envs);
+            return envs;
         }
 
-        return envs;
+        // 3) 过滤：只保留 dev / test / prod（按固定顺序），从 envs 中取出（保留持久化里的 baseUrl / 变量 / 头）
+        java.util.Map<String, Environment> byName = new java.util.LinkedHashMap<>();
+        for (Environment e : envs) {
+            if (e.getName() != null) byName.put(e.getName().trim(), e);
+        }
+        List<Environment> result = new ArrayList<>();
+        for (String name : java.util.Arrays.asList("dev", "test", "prod")) {
+            Environment e = byName.get(name);
+            if (e == null) {
+                // 缺哪个补哪个
+                if ("dev".equals(name)) e = Environment.dev();
+                else if ("test".equals(name)) e = Environment.test();
+                else e = Environment.production();
+            }
+            result.add(e);
+        }
+
+        // 4) 默认激活 dev
+        boolean hasActive = result.stream().anyMatch(Environment::isActive);
+        if (!hasActive) {
+            for (Environment e : result) {
+                if ("dev".equals(e.getName())) { e.setActive(true); break; }
+            }
+        }
+        myState.environmentsJson = gson.toJson(result);
+        return result;
     }
 
     /** 保存环境列表 */

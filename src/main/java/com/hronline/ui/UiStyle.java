@@ -24,6 +24,8 @@ import java.awt.event.MouseEvent;
 public final class UiStyle {
 
     private static final String INTERACTION_FEEDBACK_ATTACHED = "__interaction_feedback_attached";
+    /** v15 修复：注册 attachInteractionFeedback 时保存的原始背景色，供业务侧（重置按钮态）使用 */
+    public static final String INTERACTION_BASE_BG = "__interaction_base_bg";
     private static final String LOADING_TEXT = "__loading_text";
     private static final String LOADING_CURSOR = "__loading_cursor";
 
@@ -174,7 +176,10 @@ public final class UiStyle {
      */
     public static JButton primaryButton(String text, Icon icon, ActionListener listener, AccentColor accent) {
         JButton btn = button(text, icon, listener);
-        btn.putClientProperty("JButton.buttonType", "default");
+        // 注意:不设 "JButton.buttonType" = "default",
+        // 否则 IntelliJ LaF 的 DefaultButtonUI 会用 LaF 自身的前景色,
+        // 覆盖 setForeground(白色),导致 "保存" 字看不见。
+        // 保留 roundRect 描边样式 + setOpaque(true) 走我们自己的着色,明暗主题都生效。
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
         applyAccent(btn, accent);
         // 一轮优化 #12：主操作按钮自动挂上悬停/按下/禁用三态反馈
@@ -223,17 +228,31 @@ public final class UiStyle {
     /**
      * 给按钮加三态视觉反馈：悬停加深底色，按下再深一档，禁用置灰。
      * <p>只对主操作按钮（已 setOpaque(true)）有效；幽灵按钮 LaF 自带反馈，不必调。</p>
+     *
+     * <h4>v15 修复：mouseReleased 不再"二选一"</h4>
+     * 旧实现：{@code mouseReleased} 在鼠标还停在按钮上时回到 {@code hover}，
+     * 鼠标移出后再由 {@code mouseExited} 回到 {@code base}。
+     * 这导致：用户在按钮上点一次（按下并松开），按钮背景停在 hover 色；
+     * 若此时业务侧（如 {@code sendRequest}）又调用了 {@code setIcon} 切到 spinner，
+     * LaF 重新渲染时会把"hover 残影 + spinner"叠加，视觉上"点过后还发亮"。
+     * <p>修复方案：{@code mouseReleased} 总是回到 {@code base}，
+     * 真正的 hover 态完全由 {@code mouseEntered} / {@code mouseExited} 维护，
+     * 二者职责单一、不会因业务侧 setIcon 而错位。</p>
      */
     public static void attachInteractionFeedback(JButton btn) {
         if (btn == null) return;
         if (Boolean.TRUE.equals(btn.getClientProperty(INTERACTION_FEEDBACK_ATTACHED))) return;
         btn.putClientProperty(INTERACTION_FEEDBACK_ATTACHED, Boolean.TRUE);
 
-        Color base = btn.getBackground();
-        Color baseForeground = btn.getForeground();
-        Color hover = shift(base, 0.92f);
-        Color pressed = shift(base, 0.82f);
-        Color disabled = JBColor.namedColor("Button.disabledText", new Color(0x9E, 0x9E, 0x9E));
+        final Color base = btn.getBackground();
+        final Color baseForeground = btn.getForeground();
+        final Color hover = shift(base, 0.92f);
+        final Color pressed = shift(base, 0.82f);
+        final Color disabled = JBColor.namedColor("Button.disabledText", new Color(0x9E, 0x9E, 0x9E));
+        // v15 修复：把 base 色保存到 clientProperty，业务侧（如 sendRequest → spinner → idle 重置）
+        // 可以拿到真正的 base 色，而不是 hover 态的 currentBackground
+        btn.putClientProperty(INTERACTION_BASE_BG, base);
+        btn.putClientProperty(INTERACTION_BASE_BG + "_fg", baseForeground);
 
         btn.addMouseListener(new MouseInputAdapter() {
             @Override public void mouseEntered(MouseEvent e) {
@@ -250,7 +269,12 @@ public final class UiStyle {
             }
             @Override public void mouseReleased(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                btn.setBackground(btn.getMousePosition() != null ? hover : base);
+                // v15 修复：松开时不再根据 getMousePosition 决定 hover/base，
+                // 一律回到 base。鼠标若仍在按钮上，mouseEntered 已经触发（或在
+                // 同一事件链中紧随其后）会把背景刷到 hover，避免"点过后发亮残留"。
+                btn.setBackground(base);
+                // 强制 repaint 清掉 LaF 可能的旧 hover 残影（特别是刚 setIcon 之后）
+                btn.repaint();
             }
         });
         // 禁用态：底色变灰，文字保留可读性
@@ -264,6 +288,26 @@ public final class UiStyle {
                 btn.setForeground(disabled);
             }
         });
+    }
+
+    /**
+     * 把一个被 {@link #applyAccent(JButton, AccentColor)} 装成实色高亮的按钮，
+     * 改回 IntelliJ LaF 的"幽灵 / borderless"渲染（透明底、无边线、LaF 自带 hover）。
+     * <p>注意：{@link #attachInteractionFeedback(JButton)} 注册的 MouseListener
+     * <b>无法用标准 API 卸载</b>，所以这个方法只适用于：</p>
+     * <ul>
+     *   <li>从未调用过 attachInteractionFeedback 的按钮；或</li>
+     *   <li>按钮即将被丢弃、不再关心 hover 反馈（典型场景：tab 标题里靠 LaF 自带 icon 高亮）。</li>
+     * </ul>
+     */
+    public static void clearAccent(JButton btn) {
+        if (btn == null) return;
+        btn.putClientProperty("JButton.buttonType", "borderless");
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setBackground(new Color(0, 0, 0, 0));
+        btn.setForeground(JBColor.foreground());
     }
 
     /**
@@ -354,6 +398,87 @@ public final class UiStyle {
             closed = true;
             endLoading(btn, null);
         }
+    }
+
+    // ── 自旋 Loading Spinner Icon ──
+
+    /**
+     * 一伦优化 v11：自旋 Loading Spinner —— 用纯 Java2D 画一个 8 段渐变圆弧，
+     * 由 Timer 驱动每 80ms 旋转 45°，轻量且不依赖 IDE 资源。
+     * <p>典型用法：发送按钮点击后 {@code btn.setIcon(spinner)}，
+     * 业务结束后 {@code btn.setIcon(AllIcons.Actions.Execute)} 并 {@code spinner.stop()}。</p>
+     */
+    public static final class LoadingSpinnerIcon implements Icon {
+        private static final int SEGMENTS = 8;
+        private static final int DEFAULT_SIZE = 16;
+        private static final int TICK_MS = 80;
+
+        private final int size;
+        private final Color color;
+        private int angle = 0;
+        private Timer timer;
+
+        public LoadingSpinnerIcon() {
+            this(DEFAULT_SIZE, JBColor.namedColor("Component.accentColor", new JBColor(new Color(0x15, 0x65, 0xC0), new Color(0x64, 0xB5, 0xF6))));
+        }
+
+        public LoadingSpinnerIcon(int size, Color color) {
+            this.size = size;
+            this.color = color;
+        }
+
+        /** 启动自旋 —— 必须在 EDT 调用。重复调用安全。 */
+        public void start() {
+            if (timer != null && timer.isRunning()) return;
+            timer = new Timer(TICK_MS, e -> {
+                angle = (angle + 45) % 360;
+                if (currentComponent != null) currentComponent.repaint();
+            });
+            timer.setRepeats(true);
+            timer.start();
+        }
+
+        /** 停止自旋 —— 必须在 EDT 调用。 */
+        public void stop() {
+            if (timer != null) {
+                timer.stop();
+                timer = null;
+            }
+        }
+
+        public boolean isRunning() {
+            return timer != null && timer.isRunning();
+        }
+
+        private java.awt.Component currentComponent;
+
+        @Override
+        public void paintIcon(java.awt.Component c, java.awt.Graphics g, int x, int y) {
+            currentComponent = c;
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                int cx = x + size / 2;
+                int cy = y + size / 2;
+                int r = size / 2 - 1;
+                int arcSpan = 360 / SEGMENTS;
+                for (int i = 0; i < SEGMENTS; i++) {
+                    float alpha = (float) (SEGMENTS - i) / SEGMENTS; // 远端 30%，近端 100%
+                    int segAngle = (angle + i * arcSpan) % 360;
+                    int startAngle = segAngle - arcSpan / 2;
+                    g2.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), (int) (alpha * 200)));
+                    g2.fillArc(cx - r, cy - r, r * 2, r * 2, startAngle, arcSpan);
+                }
+            } finally {
+                g2.dispose();
+            }
+        }
+
+        @Override
+        public int getIconWidth() { return size; }
+
+        @Override
+        public int getIconHeight() { return size; }
     }
 
     /** 把 RGB 各通道按 ratio 缩放，<1 变深，>1 变浅；clamp 到 0-255 */

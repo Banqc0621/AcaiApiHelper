@@ -2,8 +2,10 @@ package com.hronline.settings;
 
 import com.hronline.RestAutoLabConstants;
 import com.hronline.ui.UiStyle;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
@@ -11,6 +13,7 @@ import com.intellij.ui.components.JBPasswordField;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
+import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.Nullable;
 
@@ -139,10 +142,17 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         promptHeader.setFont(sectionFont);
         JBLabel promptDesc = new JBLabel("<html><font color='#888888' size='2'>自定义系统/用户提示词，用户提示词支持占位符自动注入接口信息</font></html>");
         JBLabel promptHint = new JBLabel("<html><font color='#888888' size='2'>用户提示词占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
-        JButton resetPromptBtn = UiStyle.button("恢复默认提示词", null, e -> {
+        JButton resetPromptBtn = UiStyle.button("恢复默认提示词", AllIcons.Actions.Refresh, e -> {
+            int confirm = Messages.showYesNoDialog(
+                    systemPromptArea,
+                    "确定恢复系统提示词和用户提示词模板为默认值吗?\n当前的自定义内容会丢失。",
+                    "恢复默认提示词",
+                    Messages.getQuestionIcon());
+            if (confirm != Messages.YES) return;
             systemPromptArea.setText(RestAutoLabConstants.AI_SYSTEM_PROMPT);
             userPromptTemplateArea.setText(RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE);
         });
+        resetPromptBtn.setToolTipText("恢复系统/用户提示词到默认内容(当前自定义会丢失)");
 
         // ── Section 3: Git Integration ──
         JBLabel gitHeader = new JBLabel("Git 预提交检查配置");
@@ -183,7 +193,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
                 .addLabeledComponent(new JBLabel("系统提示词 (System Prompt):"), systemPromptScroll, 1, false)
                 .addLabeledComponent(new JBLabel("用户提示词模板 (User Prompt):"), userPromptScroll, 1, false)
                 .addComponent(promptHint, 1)
-                .addComponent(resetPromptBtn, 1)
+                .addComponent(buildPromptBottomBar(resetPromptBtn), 1)
                 .addVerticalGap(16)
 
                 .addComponent(gitHeader)
@@ -269,6 +279,28 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
 
     private static String fieldText(JTextField f) { return f.getText().trim(); }
     private static int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; } }
+
+    /**
+     * AI 提示词区底部按钮行:[恢复默认]
+     * 「恢复默认」靠左(roundRect 描边样式,带 Refresh 图标,加 yes/no 防误操作)
+     * 「保存」由 IDEA 右下角标准 OK/Apply 按钮承担,不在此处重复
+     */
+    private static JPanel buildPromptBottomBar(JButton resetBtn) {
+        JPanel bar = new JPanel();
+        bar.setLayout(new BoxLayout(bar, BoxLayout.X_AXIS));
+        bar.setBorder(JBUI.Borders.emptyTop(4));
+
+        JPanel leftBox = new JPanel();
+        leftBox.setLayout(new BoxLayout(leftBox, BoxLayout.X_AXIS));
+        leftBox.setOpaque(false);
+        leftBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+        leftBox.add(resetBtn);
+
+        bar.add(leftBox);
+        bar.add(Box.createHorizontalGlue());
+
+        return bar;
+    }
     private static String comboSelected(JComboBox<?> c) {
         Object o = c.getSelectedItem();
         return o == null ? "" : o.toString();

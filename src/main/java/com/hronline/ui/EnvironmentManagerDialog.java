@@ -43,6 +43,8 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         super(project);
         this.project = project;
         this.settings = RestAutoLabSettingsState.getInstance(project);
+        // 一伦优化 R5：先从 settings 拉一次最新数据，确保「环境列表」与「外面主面板的下拉框、baseUrlField」始终同步。
+        // 兜底逻辑（缺哪个补哪个 / 强制只保留 dev/test/prod）已在 loadEnvironments 内完成。
         this.environments = settings.loadEnvironments();
         this.selectedEnvironment = null;
         String activeName = settings.getActiveEnvironment();
@@ -62,6 +64,27 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
     @Override
     public @Nullable JComponent createCenterPanel() {
+        // 一伦优化 R5+：createCenterPanel 每次被调用（即每次 init/init 重新触发）都从 settings
+        // 拉取最新环境数据并重新定位 selectedEnvironment，
+        // 保证左侧「环境列表」始终与右侧主面板 envCombo 的 activeEnvironment 一致。
+        // 关键点：右侧 envCombo 切换时调用的是 settings.setActiveEnvironment(name)，
+        // 这里必须重新 loadEnvironments() 拉一次，否则 active 勾选会一直停留在旧值。
+        this.environments = settings.loadEnvironments();
+        String activeName = settings.getActiveEnvironment();
+        this.selectedEnvironment = null;
+        for (Environment e : this.environments) {
+            // 用 active flag + name 双保险定位当前激活项
+            if (e.isActive() || e.getName().equals(activeName)) {
+                this.selectedEnvironment = e;
+                // 同步 active flag（防止持久化里 active 标记丢失）
+                for (Environment ee : this.environments) ee.setActive(ee == e);
+                break;
+            }
+        }
+        if (this.selectedEnvironment == null && !this.environments.isEmpty()) {
+            this.selectedEnvironment = this.environments.get(0);
+        }
+
         JPanel panel = new JPanel(new BorderLayout(8, 0));
         panel.setPreferredSize(new Dimension(780, 420));
 
@@ -90,6 +113,12 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             Environment selected = envList.getSelectedValue();
             if (selected != null) {
                 selectedEnvironment = selected;
+                // 一伦优化 v22：切换左侧 envList 选中项时，强制把"激活"标记同步到当前选中项，
+                // 并立刻 refreshEnvList() 让 JList 重画「✓ 激活」勾选（DefaultListModel 不会自动触发 cell repaint）。
+                // 否则用户切了列表项但勾选停留在旧 env，关闭弹窗后右侧 envCombo 也对不上。
+                for (Environment ee : environments) ee.setActive(ee == selected);
+                refreshEnvList();
+                envList.setSelectedValue(selected, true);
                 loadEnvironment(selected);
             }
         });
@@ -263,34 +292,17 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     }
 
     private void addNewEnvironment() {
-        saveCurrentEdits();
-        Environment newEnv = new Environment("env" + (environments.size() + 1), "http://localhost:8080");
-        newEnv.setDescription("新建环境");
-        environments.add(newEnv);
-        refreshEnvList();
-        envList.setSelectedValue(newEnv, true);
-        dirty = true;
+        // 一伦优化 R5：环境列表固定为 dev / test / prod 三个，不允许新建。
+        Messages.showWarningDialog(getContentPanel(),
+                "环境列表已固定为 dev / test / prod 三个,不允许新建。\n如需新增,请直接编辑已有环境。",
+                "提示");
     }
 
     private void deleteEnvironment() {
-        Environment selected = envList.getSelectedValue();
-        if (selected == null) return;
-        if (environments.size() <= 1) {
-            // v2.0.0:统一用 IDEA 原生 Messages(跟随主题+图标),替换 JOptionPane 模态窗口
-            Messages.showWarningDialog(getContentPanel(), "至少保留一个环境", "无法删除");
-            return;
-        }
-        // v2.0.0:删除是 destructive 操作,加 yes/no 二次确认,默认聚焦"取消"防误删
-        int confirm = Messages.showYesNoDialog(
-                getContentPanel(),
-                "确定删除环境 \"" + selected.getName() + "\" 吗?\n该操作不可撤销。",
-                "删除环境",
-                Messages.getWarningIcon());
-        if (confirm != Messages.YES) return;
-        environments.remove(selected);
-        refreshEnvList();
-        envList.setSelectedIndex(0);
-        dirty = true;
+        // 一伦优化 R5：环境列表固定为 dev / test / prod 三个，不允许删除。
+        Messages.showWarningDialog(getContentPanel(),
+                "环境列表已固定为 dev / test / prod 三个,不允许删除。",
+                "提示");
     }
 
     private void activateEnvironment() {
@@ -309,6 +321,16 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     @Override
     protected void doOKAction() {
         saveCurrentEdits();
+        // 一伦优化 v22：OK 关闭前，把「当前 envList 选中项」强制标记为激活（不再依赖
+        // 之前的 isActive()，因为普通编辑后用户根本不会再点"激活"按钮）。
+        // 这样 active 标记会随 envList 选中项实时对齐右侧 envCombo。
+        Environment sel = envList != null ? envList.getSelectedValue() : null;
+        if (sel != null) {
+            for (Environment e : environments) e.setActive(e == sel);
+        }
+        // 一伦优化 v22：再 refreshEnvList 一次，确保 JList 重画「✓ 激活」勾选（DefaultListModel
+        // 不会因为 Environment.setActive 字段变化自动触发 cell repaint，必须 clear+addElement 强制重画）。
+        refreshEnvList();
         settings.saveEnvironments(environments);
         // Persist active environment
         for (Environment e : environments) {
