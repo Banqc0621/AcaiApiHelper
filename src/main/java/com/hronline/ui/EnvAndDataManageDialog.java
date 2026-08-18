@@ -45,7 +45,17 @@ public class EnvAndDataManageDialog extends DialogWrapper {
                                   List<DataManagePanel.Action> apiDataActions) {
         super(project);
         this.project = project;
-        this.envDialog = new EnvironmentManagerDialog(project);
+        // 一伦优化 v24：构造时把异常从 logger 记一次，避免静默丢；上层 openEnvAndDataManageDialog
+        // 的 try-catch 会捕获并向用户弹真实堆栈。
+        EnvironmentManagerDialog env;
+        try {
+            env = new EnvironmentManagerDialog(project);
+        } catch (Throwable t) {
+            com.intellij.openapi.diagnostic.Logger.getInstance(EnvAndDataManageDialog.class)
+                    .error("[RestAutoLab] EnvironmentManagerDialog 构造失败", t);
+            throw t;
+        }
+        this.envDialog = env;
         this.configActions.addAll(configActions);
         this.apiDataActions.addAll(apiDataActions);
         setTitle("环境 & 数据管理");
@@ -72,6 +82,14 @@ public class EnvAndDataManageDialog extends DialogWrapper {
      */
     public void addOnCommit(Runnable r) {
         if (r != null) onCommit.add(r);
+    }
+
+    /**
+     * 一伦优化 v23：暴露内嵌的 EnvironmentManagerDialog 引用，
+     * 主面板用它安装实时联动回调（左侧字段改 → 右侧 envCombo 立即刷新）。
+     */
+    public EnvironmentManagerDialog getEnvDialog() {
+        return envDialog;
     }
 
     @Override

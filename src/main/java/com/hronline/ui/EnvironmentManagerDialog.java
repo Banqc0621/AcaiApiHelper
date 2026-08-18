@@ -15,9 +15,14 @@ import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.event.TableModelEvent;
+import javax.swing.event.TableModelListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 环境管理对话框 - 创建/编辑/删除/切换环境
@@ -38,6 +43,82 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     private DefaultTableModel headerTableModel;
     private boolean dirty = false;
     private boolean initializing = true;
+    /** 刷新列表并恢复选择时，禁止 ListSelectionListener 重新进入自身。 */
+    private boolean suppressEnvListSelectionAction = false;
+    /** 一伦优化 v24：refreshEnvList() 内部重建 listModel 时锁住 listener，避免 clear() 触发 selection 事件造成死循环（StackOverflow）。 */
+    private boolean refreshingEnvList = false;
+    /** 一伦优化 v23：监听器装填（loadEnvironment / 初始化）期间为 true，避免回写风暴 */
+    private boolean loadingFields = false;
+    /** 一伦优化 v23：监听器只装一次（createCenterPanel 会被 init 多次调用） */
+    private boolean listenersInstalled = false;
+
+    /** 一伦优化 v23：双向联动通道 —— 任一字段被改、envList 选中项变化、激活项变化时触发。
+     *  主面板安装本回调即可实时刷新右侧 envCombo / baseUrlField。 */
+    private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
+
+    /** 主面板注入：右侧 envCombo / baseUrlField 发生改动时调用，强制本对话框重新 load 列表。 */
+    private Runnable externalRefreshHook = null;
+
+    /** 一伦优化 v23：注册联动回调。主面板装上后，左侧任意字段改动会立刻刷右侧。 */
+    public void addChangeListener(Runnable r) {
+        if (r != null) changeListeners.add(r);
+    }
+
+    /** 一伦优化 v23：主面板通知本对话框「外部已修改」，强制重拉数据 + 重画列表 + 同步右侧选中项。 */
+    public void setExternalRefreshHook(Runnable r) {
+        this.externalRefreshHook = r;
+    }
+
+    /** 一伦优化 v23：主动触发一次刷新（外部调用）。主面板在 baseUrl 回车 / envCombo 切换后调本方法。 */
+    public void notifyExternalChanged() {
+        String selectedName = envList != null && envList.getSelectedValue() != null
+                ? envList.getSelectedValue().getName() : null;
+        // 强制重拉最新 env 列表
+        this.environments = settings.loadEnvironments();
+        suppressEnvListSelectionAction = true;
+        try {
+            refreshEnvList();
+        } finally {
+            suppressEnvListSelectionAction = false;
+        }
+        if (externalRefreshHook != null) {
+            try { externalRefreshHook.run(); } catch (Exception ignored) {}
+        }
+        // 优先恢复原选中环境；若它已不存在则回退到当前激活环境。
+        Environment sel = null;
+        String activeName = settings.getActiveEnvironment();
+        for (Environment e : this.environments) {
+            if (e.getName().equals(selectedName)) {
+                sel = e;
+                break;
+            }
+        }
+        if (sel == null) {
+            for (Environment e : this.environments) {
+                if (e.getName().equals(activeName)) {
+                    sel = e;
+                    break;
+                }
+            }
+        }
+        if (sel != null) {
+            suppressEnvListSelectionAction = true;
+            try {
+                envList.setSelectedValue(sel, true);
+            } finally {
+                suppressEnvListSelectionAction = false;
+            }
+            selectedEnvironment = sel;
+            loadEnvironment(sel);
+        }
+        fireChange();
+    }
+
+    private void fireChange() {
+        for (Runnable r : changeListeners) {
+            try { r.run(); } catch (Exception ignored) {}
+        }
+    }
 
     public EnvironmentManagerDialog(Project project) {
         super(project);
@@ -108,7 +189,7 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             }
         });
         envList.addListSelectionListener(e -> {
-            if (e.getValueIsAdjusting() || initializing) return;
+            if (e.getValueIsAdjusting() || initializing || suppressEnvListSelectionAction || refreshingEnvList) return;
             saveCurrentEdits();
             Environment selected = envList.getSelectedValue();
             if (selected != null) {
@@ -117,9 +198,19 @@ public class EnvironmentManagerDialog extends DialogWrapper {
                 // 并立刻 refreshEnvList() 让 JList 重画「✓ 激活」勾选（DefaultListModel 不会自动触发 cell repaint）。
                 // 否则用户切了列表项但勾选停留在旧 env，关闭弹窗后右侧 envCombo 也对不上。
                 for (Environment ee : environments) ee.setActive(ee == selected);
-                refreshEnvList();
-                envList.setSelectedValue(selected, true);
+                suppressEnvListSelectionAction = true;
+                try {
+                    refreshEnvList();
+                    envList.setSelectedValue(selected, true);
+                } finally {
+                    suppressEnvListSelectionAction = false;
+                }
                 loadEnvironment(selected);
+                // 一伦优化 v23：双向联动 —— 切左侧列表项立刻写回 settings + 通知主面板刷新右侧。
+                settings.saveEnvironments(environments);
+                settings.setActiveEnvironment(selected.getName());
+                settings.setBaseUrl(selected.getBaseUrl());
+                fireChange();
             }
         });
         refreshEnvList();
@@ -233,29 +324,119 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         }
         initializing = false;
 
+        // 一伦优化 v23：装实时联动监听器（3 个文本字段 + 2 个表 model），
+        // 任一字段改动 → 立刻写回 settings + 通知主面板刷新右侧。
+        // 监听器只装一次（createCenterPanel 可能被 init 多次调用）。
+        if (!listenersInstalled) {
+            installLiveSyncListeners();
+            listenersInstalled = true;
+        }
+
         return panel;
     }
 
+    /**
+     * 一伦优化 v23：双向联动 —— 左侧任一字段被改，立刻写回 settings，并触发 changeListeners 通知主面板。
+     * <p>注意：loadEnvironment 装填字段期间会被 {@link #loadingFields} 守卫，不会回写风暴。</p>
+     */
+    private void installLiveSyncListeners() {
+        DocumentListener docListener = new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { onFieldChanged(); }
+            @Override public void removeUpdate(DocumentEvent e) { onFieldChanged(); }
+            @Override public void changedUpdate(DocumentEvent e) { onFieldChanged(); }
+        };
+        nameField.getDocument().addDocumentListener(docListener);
+        baseUrlField.getDocument().addDocumentListener(docListener);
+        descField.getDocument().addDocumentListener(docListener);
+
+        TableModelListener tableListener = new TableModelListener() {
+            @Override
+            public void tableChanged(TableModelEvent e) {
+                if (loadingFields) return;
+                onFieldChanged();
+            }
+        };
+        varTableModel.addTableModelListener(tableListener);
+        headerTableModel.addTableModelListener(tableListener);
+    }
+
+    /**
+     * 一伦优化 v23：任一字段被改 → 立刻持久化 + 通知主面板。
+     * <p>同时把当前选中 env 的最新 baseUrl 写回 settings.activeEnvironment 关联的 env，
+     * 这样右侧 envCombo / baseUrlField 取到的总是最新值。</p>
+     */
+    private void onFieldChanged() {
+        if (initializing || loadingFields) return;
+        if (selectedEnvironment == null) return;
+        // 1. 把 UI 内容写回 selectedEnvironment
+        saveCurrentEdits();
+        // 2. 持久化（这才是真"联动"：右侧主面板下次 refresh 就能看到）
+        settings.saveEnvironments(environments);
+        // 3. 如果是当前激活 env，baseUrl 还要同步给 settings 全局字段
+        String activeName = settings.getActiveEnvironment();
+        if (selectedEnvironment.getName().equals(activeName)) {
+            settings.setBaseUrl(selectedEnvironment.getBaseUrl());
+        }
+        // 4. 通知主面板
+        fireChange();
+    }
+
     private void refreshEnvList() {
-        listModel.clear();
-        for (Environment env : environments) {
-            listModel.addElement(env);
+        // 一伦优化 v24：锁住 listener，避免 listModel.clear() 触发的 selection 事件
+        // 重新进入 listener → refreshEnvList() → clear() 形成 StackOverflow 死循环。
+        // 首次填充（listModel 为空）走 addElement；之后优先逐个 setElementAt 刷新「✓ 激活」勾选，
+        // 不重建 model，从而不触发 selection 事件。size 不一致时退回到重建路径
+        // （此时 selection 事件会被 refreshingEnvList 守卫挡住，不死循环）。
+        refreshingEnvList = true;
+        try {
+            if (listModel.isEmpty()) {
+                for (Environment env : environments) {
+                    listModel.addElement(env);
+                }
+            } else if (listModel.size() == environments.size()) {
+                for (int i = 0; i < listModel.size(); i++) {
+                    listModel.setElementAt(environments.get(i), i);
+                }
+                envList.repaint();
+            } else {
+                // size 不一致（如外部增删 env），重建 model
+                Object currentSel = envList.getSelectedValue();
+                listModel.clear();
+                for (Environment env : environments) {
+                    listModel.addElement(env);
+                }
+                if (currentSel != null) {
+                    suppressEnvListSelectionAction = true;
+                    try {
+                        envList.setSelectedValue(currentSel, false);
+                    } finally {
+                        suppressEnvListSelectionAction = false;
+                    }
+                }
+            }
+        } finally {
+            refreshingEnvList = false;
         }
     }
 
     private void loadEnvironment(Environment env) {
-        nameField.setText(env.getName());
-        baseUrlField.setText(env.getBaseUrl());
-        descField.setText(env.getDescription());
+        loadingFields = true;
+        try {
+            nameField.setText(env.getName());
+            baseUrlField.setText(env.getBaseUrl());
+            descField.setText(env.getDescription());
 
-        varTableModel.setRowCount(0);
-        for (var entry : env.getVariables().entrySet()) {
-            varTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
-        }
+            varTableModel.setRowCount(0);
+            for (var entry : env.getVariables().entrySet()) {
+                varTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+            }
 
-        headerTableModel.setRowCount(0);
-        for (var entry : env.getGlobalHeaders().entrySet()) {
-            headerTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+            headerTableModel.setRowCount(0);
+            for (var entry : env.getGlobalHeaders().entrySet()) {
+                headerTableModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+            }
+        } finally {
+            loadingFields = false;
         }
     }
 
@@ -314,8 +495,10 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         selectedEnvironment = selected;
         settings.setActiveEnvironment(selected.getName());
         settings.setBaseUrl(selected.getBaseUrl());
+        settings.saveEnvironments(environments);   // 一伦优化 v23：激活也持久化
         refreshEnvList();
         dirty = true;
+        fireChange();  // 一伦优化 v23：通知主面板
     }
 
     @Override

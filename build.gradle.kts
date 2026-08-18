@@ -1,6 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
-val ideaVersion = providers.gradleProperty("ideaVersion").orElse("2023.3.6").get()
+val ideaVersion = providers.gradleProperty("ideaVersion").orElse("2026.1").get()
 
 plugins {
     id("java")
@@ -51,7 +51,7 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
 
     intellijPlatform {
-        // 默认使用仍受构建插件维护的 Java 17 平台；可用 -PideaVersion=2022.3.3
+        // 默认使用 2026.1 平台；可用 -PideaVersion=2022.3.3
         // 单独执行最低兼容版本的编译和测试。
         intellijIdea(ideaVersion)
         testFramework(TestFrameworkType.Platform)
@@ -74,7 +74,7 @@ intellijPlatform {
 
         ideaVersion {
             sinceBuild = "223"
-            untilBuild = "261.*"
+            untilBuild = "262.*"
         }
     }
 }
@@ -103,7 +103,7 @@ tasks {
 
     patchPluginXml {
         sinceBuild = "223"
-        untilBuild = "261.*"
+        untilBuild = "262.*"
         // 不在此处设置 changeNotes，<change-notes> 段由 plugin.xml 自己提供
         // （若赋值会覆盖 plugin.xml 中完整的多版本变更日志，用户在插件管理器只能看到单行）
     }

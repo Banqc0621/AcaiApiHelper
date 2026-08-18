@@ -565,7 +565,17 @@ public class ApiTreePanel extends JPanel {
                 Messages.showErrorDialog(project, "调试面板尚未初始化，请重新打开 RestAutoLab 工具窗口。", "无法打开管理面板");
                 return;
             }
-            debuggerPanel.openEnvAndDataManageDialog();
+            try {
+                debuggerPanel.openEnvAndDataManageDialog();
+            } catch (Throwable t) {
+                // 一伦优化 v24：捕获设置按钮点击异常，弹真实堆栈给用户便于诊断
+                com.intellij.openapi.diagnostic.Logger.getInstance(ApiTreePanel.class)
+                        .error("[RestAutoLab] 打开「环境 & 数据」弹窗失败", t);
+                Messages.showErrorDialog(project,
+                        "打开「环境 & 数据」弹窗失败：\n" + t.getClass().getName() + ": " + t.getMessage()
+                                + "\n\n完整堆栈请见 IDE 日志（Help → Show Log in Finder）",
+                        "错误");
+            }
         });
         row.add(settingsBtn);
 

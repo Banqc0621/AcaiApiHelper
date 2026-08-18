@@ -156,6 +156,9 @@ public class ApiDebuggerPanel extends JPanel {
     private JComboBox<Environment> envCombo;
     /** 环境下拉框重建期间的抑制标志，避免 setSelectedItem 触发 ActionListener 误切换环境 */
     private boolean suppressEnvComboAction = false;
+    /** 一伦优化 v23：当前打开的"环境 & 数据"弹窗（可能为 null）。用来在外部修改时通知弹窗刷新。 */
+    private EnvAndDataManageDialog currentEnvAndDataDialog = null;
+
     private DefaultListModel<RequestHistory> historyListModel;
     private JList<RequestHistory> historyList;
     private DefaultTableModel assertionTableModel;
@@ -436,6 +439,8 @@ public class ApiDebuggerPanel extends JPanel {
                 settings.saveEnvironments(envs);
                 applyEnvironmentToPanel(selected);
                 statusLabel.setText("● 已切换到环境: " + selected.getName());
+                // 一伦优化 v23：双向联动 —— 如果左侧"环境 & 数据"弹窗已开，立刻通知它重新拉数据并同步 UI
+                notifyEnvDialogExternalChanged();
             }
         });
         row.add(envCombo);
@@ -1424,7 +1429,48 @@ public class ApiDebuggerPanel extends JPanel {
             if (active != null) {
                 activeEnvInfoLabel.setText("当前环境: " + active.getName() + "  ·  " + active.getBaseUrl());
             }
+            // 一伦优化 v23：双向联动 —— 通知左侧"环境 & 数据"弹窗重新拉数据并同步 UI
+            notifyEnvDialogExternalChanged();
         });
+    }
+
+    /**
+     * 一伦优化 v23：通知当前已打开的「环境 & 数据」弹窗外部数据变了，让它强制重新拉 + 同步 UI。
+     * 弹窗没开时（currentEnvAndDataDialog == null 或 disposed）安全 no-op。
+     */
+    private void notifyEnvDialogExternalChanged() {
+        if (currentEnvAndDataDialog == null) return;
+        // 一伦优化 v23：用 Window.isShowing() 判断弹窗是否还活着（更通用，不依赖 Disposable.isDisposed）
+        if (currentEnvAndDataDialog.getPeer() == null || !currentEnvAndDataDialog.getPeer().isShowing()) {
+            currentEnvAndDataDialog = null;
+            return;
+        }
+        try {
+            EnvironmentManagerDialog envDialog = currentEnvAndDataDialog.getEnvDialog();
+            if (envDialog != null) {
+                envDialog.notifyExternalChanged();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * 一伦优化 v23：把环境列表 / 当前 baseUrl 重新拉一次并刷到主面板（envCombo / baseUrlField / 指示 label）。
+     * 由弹窗内 onChangeListener 触发。
+     */
+    private void applyExternalChangeToMainPanel() {
+        if (envCombo == null) return;
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        String activeName = settings.getActiveEnvironment();
+        // 重建 envCombo（保留选中项）
+        refreshEnvCombo();
+        // 把 envCombo 选中项对应的 baseUrl / 状态 / 全局头全量刷到主面板
+        Environment active = settings.getActiveEnvironmentObj();
+        if (active != null) {
+            applyEnvironmentToPanel(active);
+            statusLabel.setText("● 已切换到环境: " + active.getName());
+        }
+        // 主动强制 baseUrlField 显示最新值（即使 activeName 没变，baseUrl 可能被改过）
+        baseUrlField.setText(settings.getBaseUrl());
     }
 
     /**
@@ -3749,6 +3795,10 @@ public class ApiDebuggerPanel extends JPanel {
      * 用 invokeLater + defaultModalityState 执行（Windows 模态兼容）。</p>
      */
     public void openEnvAndDataManageDialog() {
+        // 一伦优化 v24：包一层 try-catch，弹窗构造/初始化任何一步失败时弹真实堆栈给用户。
+        // 设置按钮的 listener 也加了 catch —— 这里只捕构造期间同步异常，运行期 fireChange 链路的
+        // 异常已经被各 fireChange 调用点内部 try-catch 吞掉或弹错。
+        try {
         // 配置类操作（AI 设置 · 环境配置 · 测试配置）
         java.util.List<DataManagePanel.Action> configActions = new java.util.ArrayList<>();
         configActions.add(new DataManagePanel.Action(
@@ -3772,6 +3822,11 @@ public class ApiDebuggerPanel extends JPanel {
                 this::importTestDataAction));
 
         EnvAndDataManageDialog dialog = new EnvAndDataManageDialog(project, configActions, apiDataActions);
+        // 一伦优化 v23：双向联动 —— 弹窗内任一字段改动，立刻刷主面板。
+        // 弹窗内：保存当前编辑 → 持久化 → fireChange → 主面板 applyExternalChangeToMainPanel
+        dialog.getEnvDialog().addChangeListener(this::applyExternalChangeToMainPanel);
+        // 一伦优化 v23：主面板改动通知弹窗的通道（envCombo / baseUrlField 改动时调用）
+        currentEnvAndDataDialog = dialog;
 
         // 一伦优化 R4：注入"前置脚本&变量覆盖"和"AI 配置"两个新 Tab。
         // 顺序：环境 → 前置脚本 → AI 配置 → 数据
@@ -3796,6 +3851,8 @@ public class ApiDebuggerPanel extends JPanel {
         });
 
         dialog.show();
+        // 一伦优化 v23：弹窗已关闭，解除引用避免后续误通知
+        currentEnvAndDataDialog = null;
 
         // 环境 Tab 的 applyChanges 已在 dialog.doOKAction 内统一执行，这里刷新回主面板
         refreshEnvCombo();
@@ -3812,6 +3869,16 @@ public class ApiDebuggerPanel extends JPanel {
         Runnable pending = dialog.getPendingDataAction();
         if (pending != null) {
             ApplicationManager.getApplication().invokeLater(pending, ModalityState.defaultModalityState());
+        }
+        } catch (Throwable t) {
+            // 一伦优化 v24：弹窗构造/初始化失败时弹真实堆栈，并把 currentEnvAndDataDialog 引用清理
+            currentEnvAndDataDialog = null;
+            com.intellij.openapi.diagnostic.Logger.getInstance(ApiDebuggerPanel.class)
+                    .error("[RestAutoLab] 打开「环境 & 数据」弹窗失败", t);
+            com.intellij.openapi.ui.Messages.showErrorDialog(project,
+                    "打开「环境 & 数据」弹窗失败：\n" + t.getClass().getName() + ": " + t.getMessage()
+                            + "\n\n完整堆栈请见 IDE 日志（Help → Show Log in Finder）",
+                    "错误");
         }
     }
 
