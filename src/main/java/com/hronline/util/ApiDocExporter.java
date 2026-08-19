@@ -416,7 +416,12 @@ public class ApiDocExporter {
                 md.append("| 参数 | 类型 | 必填 | 说明 |\n");
                 md.append("|------|------|:---:|------|\n");
                 for (ApiParameter p : bodyParams) {
-                    appendParamRow(md, p.getName(), p.getType(), p.isRequired(), p.getDescription(), p.getDefaultValue());
+                    if (!p.getChildren().isEmpty()) {
+                        // @RequestBody 包装参数：直接展开 DTO 字段树（含全部嵌套字段）
+                        appendBodyParamsTable(md, p.getChildren(), "");
+                    } else {
+                        appendParamRow(md, p.getName(), p.getType(), p.isRequired(), p.getDescription(), p.getDefaultValue());
+                    }
                 }
                 md.append("\n");
             }

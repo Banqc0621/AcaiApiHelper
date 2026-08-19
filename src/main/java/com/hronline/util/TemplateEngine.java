@@ -334,7 +334,14 @@ public class TemplateEngine {
         sb.append("| 参数 | 类型 | 必填 | 说明 |\n");
         sb.append("|------|------|:---:|------|\n");
         for (ApiParameter p : params) {
-            appendParamRowMd(sb, p, "");
+            if ("Body".equals(section) && !p.getChildren().isEmpty()) {
+                // @RequestBody 包装参数：直接展开 DTO 字段树（含全部嵌套字段）
+                for (ApiParameter child : p.getChildren()) {
+                    appendParamRowMd(sb, child, "");
+                }
+            } else {
+                appendParamRowMd(sb, p, "");
+            }
         }
         sb.append("\n");
     }

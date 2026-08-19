@@ -13,6 +13,7 @@ import com.hronline.scanner.ApiScannerService;
 import com.hronline.scanner.StarredFolderService;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.hronline.util.ApiDocExporter;
+import com.hronline.util.ApiDocWordExporter;
 import com.hronline.util.PostmanCollectionExporter;
 import com.hronline.util.TestDataExporter;
 import com.intellij.icons.AllIcons;
@@ -360,6 +361,15 @@ public class ApiTreePanel extends JPanel {
             }
         };
         group.add(exportMdAction);
+
+        AnAction exportWordAction = new AnAction("导出 Word",
+                "将选中的接口按内置设计开发接口模版导出为 Word 文档", AllIcons.ToolbarDecorator.Export) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                exportSelectedApisAsWord();
+            }
+        };
+        group.add(exportWordAction);
 
         AnAction exportPostmanAction = new AnAction("导出 Postman JSON",
                 "将选中的接口导出为 Postman/Apifox 可直接导入的 JSON", AllIcons.ToolbarDecorator.Export) {
@@ -2016,6 +2026,64 @@ public class ApiTreePanel extends JPanel {
     private static String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * 导出选中的接口（支持单选/多选）为 Word 文档，使用内置「设计开发接口模版」：
+     * 接口设计标题 + 接口名称/地址 + 接口入参/出参三列表格（字段名/类型/注释），
+     * DTO 等嵌套对象的全部字段以点号路径展开。
+     */
+    private void exportSelectedApisAsWord() {
+        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Word\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Word\n• Shift 连选接口后再右键 → 导出 Word",
+                    "提示");
+            return;
+        }
+
+        // 二次确认：按 Controller 分组列出即将导出的接口
+        StringBuilder preview = new StringBuilder();
+        preview.append("<html><body style='width:480px;font-family:Menlo,Monaco,monospace;font-size:11px;'>")
+                .append("即将导出 <b>").append(selected.size())
+                .append("</b> 个接口到 Word 文档（内置设计开发接口模版）：<br/><br/>");
+        java.util.Map<String, java.util.List<ApiDefinition>> grouped = new java.util.LinkedHashMap<>();
+        for (ApiDefinition api : selected) {
+            grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
+        }
+        for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
+            preview.append("<b>").append(escapeHtml(e.getKey())).append("</b> (")
+                    .append(e.getValue().size()).append(")<br/>");
+            for (ApiDefinition api : e.getValue()) {
+                String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
+                String url = api.getUrl() == null ? "" : api.getUrl();
+                preview.append("&nbsp;&nbsp;• <span style='color:#1f6feb;font-weight:bold;'>")
+                        .append(escapeHtml(method)).append("</span> ")
+                        .append(escapeHtml(url)).append("<br/>");
+            }
+        }
+        preview.append("</body></html>");
+        int ok = Messages.showDialog(project, preview.toString(),
+                "确认导出 - Word", new String[]{"导出", "取消"}, 0,
+                AllIcons.Actions.Help);
+        if (ok != 0) return;
+
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
+        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".docx";
+
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
+            if (outputPath == null) return;
+            String out = outputPath.toLowerCase().endsWith(".docx") ? outputPath : outputPath + ".docx";
+            try {
+                ApiDocWordExporter.exportWord(selected, project.getName(), out);
+                Messages.showInfoMessage(project,
+                        "已导出 " + selected.size() + " 个接口到:\n" + out,
+                        "导出成功");
+            } catch (Exception ex) {
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.API_DOC, ex);
+            }
+        }, ModalityState.defaultModalityState());
     }
 
     /**
