@@ -53,6 +53,9 @@ public final class HttpExecutorService {
     public static final String BODY_FORMAT_JSON = "JSON";
     public static final String BODY_FORMAT_FORM = "FORM";
     public static final String BODY_FORMAT_RAW = "RAW";
+    public static final String BODY_FORMAT_XML = "XML";
+    public static final String BODY_FORMAT_TEXT = "TEXT";
+    public static final String BODY_FORMAT_HTML = "HTML";
 
     public HttpExecutorService(Project project) {
         this.project = project;
@@ -302,6 +305,15 @@ public final class HttpExecutorService {
     private String resolveContentType(ApiDefinition api, String bodyFormat) {
         if (BODY_FORMAT_FORM.equals(bodyFormat)) {
             return RestAutoLabConstants.CONTENT_TYPE_FORM_URLENCODED;
+        }
+        if (BODY_FORMAT_XML.equals(bodyFormat)) {
+            return RestAutoLabConstants.CONTENT_TYPE_XML;
+        }
+        if (BODY_FORMAT_TEXT.equals(bodyFormat)) {
+            return RestAutoLabConstants.CONTENT_TYPE_TEXT;
+        }
+        if (BODY_FORMAT_HTML.equals(bodyFormat)) {
+            return RestAutoLabConstants.CONTENT_TYPE_HTML;
         }
         return api.getConsumes();
     }

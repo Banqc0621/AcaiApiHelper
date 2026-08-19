@@ -978,7 +978,8 @@ public class ApiDebuggerPanel extends JPanel {
         fmtLabel.setFont(fmtLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         fmtLabel.setForeground(JBColor.GRAY);
         topBar.add(fmtLabel);
-        bodyFormatCombo = new JComboBox<>(new String[]{"JSON", "x-www-form-urlencoded", "Raw"});
+        // 一伦优化 v30：格式选项丰富化 —— 在 JSON / 表单 / Raw 基础上补充 XML / Text / HTML
+        bodyFormatCombo = new JComboBox<>(new String[]{"JSON", "x-www-form-urlencoded", "Raw", "XML", "Text", "HTML"});
         bodyFormatCombo.setPreferredSize(new Dimension(180, 28));
         bodyFormatCombo.setFont(bodyFormatCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         topBar.add(bodyFormatCombo);
@@ -1635,19 +1636,7 @@ public class ApiDebuggerPanel extends JPanel {
         String requestBody = (body != null && !body.isBlank()) ? body : null;
 
         // v3: 获取body格式和环境
-        final String finalBodyFormat;
-        if (bodyFormatCombo != null) {
-            String fmt = (String) bodyFormatCombo.getSelectedItem();
-            if ("x-www-form-urlencoded".equals(fmt)) {
-                finalBodyFormat = HttpExecutorService.BODY_FORMAT_FORM;
-            } else if ("Raw".equals(fmt)) {
-                finalBodyFormat = HttpExecutorService.BODY_FORMAT_RAW;
-            } else {
-                finalBodyFormat = HttpExecutorService.BODY_FORMAT_JSON;
-            }
-        } else {
-            finalBodyFormat = HttpExecutorService.BODY_FORMAT_JSON;
-        }
+        final String finalBodyFormat = resolveSelectedBodyFormat();
         final PreRequestProcessor.Result preRequest;
         try {
             preRequest = PreRequestProcessor.apply(preRequestScriptArea.getText(), collectVariableOverrides(),
@@ -1918,11 +1907,60 @@ public class ApiDebuggerPanel extends JPanel {
         List<ApiParameter> bodyParams = api.bodyParameters();
         if (bodyParams.isEmpty()) return "{}";
         if (bodyParams.size() == 1 && bodyParams.get(0).isComplexType()) {
-            return bodyParams.get(0).generateDefaultValue();
+            return prettyPrintDefaultBody(bodyParams.get(0).generateDefaultValue());
         }
-        Map<String, Object> map = new LinkedHashMap<>();
+        Map<String, String> map = new LinkedHashMap<>();
         for (ApiParameter p : bodyParams) map.put(p.getName(), p.generateDefaultValue());
-        return gson.toJson(map);
+        // 一伦优化 v30：默认请求体直接输出「已格式化」JSON，用户无需再手动点格式化。
+        // map 的 value 可能是嵌套 JSON 字符串（复杂类型），复用 mapToNestedJson 还原真实结构，
+        // 避免 gson.toJson(map) 产生双重转义；gson 已配置 setPrettyPrinting，输出即格式化。
+        return gson.toJson(mapToNestedJson(map));
+    }
+
+    /**
+     * 一伦优化 v30：把默认请求体转为格式化（pretty-print）JSON。
+     * <p>切换接口 / 切换方法自动回填请求体时调用，保证打开即是可读的格式化内容；
+     * 若内容不是合法 JSON（如纯文本占位），原样返回，不破坏用户可见内容。</p>
+     */
+    private String prettyPrintDefaultBody(String raw) {
+        if (raw == null || raw.isBlank()) return raw;
+        String trimmed = raw.trim();
+        if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return raw;
+        try {
+            var elem = JsonParser.parseString(trimmed);
+            return gson.toJson(elem);
+        } catch (Exception e) {
+            return raw;
+        }
+    }
+
+    /**
+     * 一伦优化 v30：把格式下拉的选中项映射为 {@link HttpExecutorService} 的 body 格式常量。
+     * 供发送请求与导出 cURL 共用，避免两处分支不一致。
+     */
+    private String resolveSelectedBodyFormat() {
+        if (bodyFormatCombo == null) return HttpExecutorService.BODY_FORMAT_JSON;
+        String fmt = (String) bodyFormatCombo.getSelectedItem();
+        if ("x-www-form-urlencoded".equals(fmt)) return HttpExecutorService.BODY_FORMAT_FORM;
+        if ("Raw".equals(fmt)) return HttpExecutorService.BODY_FORMAT_RAW;
+        if ("XML".equals(fmt)) return HttpExecutorService.BODY_FORMAT_XML;
+        if ("Text".equals(fmt)) return HttpExecutorService.BODY_FORMAT_TEXT;
+        if ("HTML".equals(fmt)) return HttpExecutorService.BODY_FORMAT_HTML;
+        return HttpExecutorService.BODY_FORMAT_JSON;
+    }
+
+    /**
+     * 一伦优化 v30：根据当前选中的 body 格式返回对应 Content-Type（导出 cURL 用）。
+     */
+    private String selectedBodyFormatContentType(ApiDefinition api) {
+        String format = resolveSelectedBodyFormat();
+        return switch (format) {
+            case HttpExecutorService.BODY_FORMAT_FORM -> RestAutoLabConstants.CONTENT_TYPE_FORM_URLENCODED;
+            case HttpExecutorService.BODY_FORMAT_XML -> RestAutoLabConstants.CONTENT_TYPE_XML;
+            case HttpExecutorService.BODY_FORMAT_TEXT -> RestAutoLabConstants.CONTENT_TYPE_TEXT;
+            case HttpExecutorService.BODY_FORMAT_HTML -> RestAutoLabConstants.CONTENT_TYPE_HTML;
+            default -> api.getConsumes();
+        };
     }
 
     private void generateAiParameters(AiParameterService.TestScenario scenario) {
@@ -2089,11 +2127,13 @@ public class ApiDebuggerPanel extends JPanel {
         testResultArea.setText("");
         statusLabel.setText("● 正在测试: " + currentApi.getName());
 
+        // 一伦优化 v30：跟随格式下拉（JSON/表单/Raw/XML/Text/HTML），与「发送」保持一致
+        final String testBodyFormat = resolveSelectedBodyFormat();
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             HttpExecutorService http = HttpExecutorService.getInstance(project);
             TestResult r = http.executeRequest(currentApi, baseUrlField.getText().trim(),
                     collectParameterValues(), collectHeaderValues(),
-                    bodyEditor.getText(), HttpExecutorService.BODY_FORMAT_JSON,
+                    bodyEditor.getText(), testBodyFormat,
                     getCurrentEnvironment(), new ArrayList<>(currentAssertions));
             ApplicationManager.getApplication().invokeLater(() -> {
                 testProgressBar.setVisible(false);
@@ -3497,9 +3537,8 @@ public class ApiDebuggerPanel extends JPanel {
 
         Map<String, String> headers = collectHeaderValues();
         String body = bodyEditor.getText();
-        String format = bodyFormatCombo != null ? (String) bodyFormatCombo.getSelectedItem() : "JSON";
-        String contentType = "x-www-form-urlencoded".equals(format) ?
-                RestAutoLabConstants.CONTENT_TYPE_FORM_URLENCODED : currentApi.getConsumes();
+        // 一伦优化 v30：Content-Type 按完整格式集合映射（JSON/表单/Raw/XML/Text/HTML）
+        String contentType = selectedBodyFormatContentType(currentApi);
         headers.put("Content-Type", contentType);
 
         String curl = CurlUtil.generateCurl((String) methodCombo.getSelectedItem(),

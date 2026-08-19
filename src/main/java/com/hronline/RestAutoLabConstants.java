@@ -265,6 +265,12 @@ public final class RestAutoLabConstants {
     public static final String CONTENT_TYPE_FORM_URLENCODED = "application/x-www-form-urlencoded";
     /** multipart/form-data Content-Type */
     public static final String CONTENT_TYPE_FORM_DATA = "multipart/form-data";
+    /** XML Content-Type */
+    public static final String CONTENT_TYPE_XML = "application/xml";
+    /** 纯文本 Content-Type */
+    public static final String CONTENT_TYPE_TEXT = "text/plain";
+    /** HTML Content-Type */
+    public static final String CONTENT_TYPE_HTML = "text/html";
 
     /** API变更标记：新增 */
     public static final String CHANGE_ADDED = "ADDED";
