@@ -418,12 +418,24 @@ public class ApiDebuggerPanel extends JPanel {
             }
         });
         refreshEnvCombo();
-        envCombo.setPreferredSize(new Dimension(100, 28));
-        envCombo.setMinimumSize(new Dimension(100, 28));
-        envCombo.setMaximumSize(new Dimension(88, 28));
-        envCombo.setFont(envCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        // 一伦优化 v26：envCombo 锁死 100×28，与 methodCombo 等宽等高，且 IntelliJ LAF 下不被拉长。
+        // v25 单纯 setMaximumSize 在 IntelliJ JComboBox UI 下不生效——BasicComboBoxUI 内部按
+        // editor+arrow 自行算 width 并忽略外部 max。这次叠加 4 重保险：
+        //   1) pref==min==max 全等 100
+        //   2) setPrototypeDisplayValue 锚定一个最宽文本，UI 内部按它算固定 width
+        //   3) LEFT_ALIGNMENT 防 BoxLayout "中心摊"
+        //   4) 在外面再套一个 Box.createHorizontalGlue(false) 前的固定槽位，靠 BoxLayout
+        //      "不可压缩"特性再兜底一次
+        envCombo.putClientProperty("JComboBox.isSquare", Boolean.TRUE);
+        Dimension envComboSize = new Dimension(100, 28);
+        envCombo.setPreferredSize(envComboSize);
+        envCombo.setMinimumSize(envComboSize);
+        envCombo.setMaximumSize(envComboSize);
+        envCombo.setPrototypeDisplayValue("环境占位文本-环境占位文本-环境占位");
+        envCombo.setFont(envCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         envCombo.setToolTipText("切换环境配置");
         envCombo.setAlignmentY(Component.CENTER_ALIGNMENT);
+        envCombo.setAlignmentX(Component.LEFT_ALIGNMENT);
         envCombo.addActionListener(e -> {
             if (suppressEnvComboAction) return;
             Environment selected = (Environment) envCombo.getSelectedItem();
@@ -478,12 +490,18 @@ public class ApiDebuggerPanel extends JPanel {
         row.add(Box.createHorizontalStrut(6));
 
         // 方法彩色 chip
-        methodCombo.setPreferredSize(new Dimension(88, 28));
-        methodCombo.setMinimumSize(new Dimension(80, 28));
-        methodCombo.setMaximumSize(new Dimension(110, 28));
-        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
+        // 一伦优化 v26：methodCombo 与 envCombo 等宽 100×28，4 重保险锁死。
+        Dimension methodComboSize = new Dimension(100, 28);
+        methodCombo.putClientProperty("JComboBox.isSquare", Boolean.TRUE);
+        methodCombo.setPreferredSize(methodComboSize);
+        methodCombo.setMinimumSize(methodComboSize);
+        methodCombo.setMaximumSize(methodComboSize);
+        methodCombo.setPrototypeDisplayValue("DELETE");
+        methodCombo.setFont(methodCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
+        methodCombo.setToolTipText("切换 HTTP 方法");
         methodCombo.setRenderer(new HttpMethodCellRenderer());
         methodCombo.setAlignmentY(Component.CENTER_ALIGNMENT);
+        methodCombo.setAlignmentX(Component.LEFT_ALIGNMENT);
         methodCombo.addItemListener(e -> {
             if (e.getStateChange() != java.awt.event.ItemEvent.SELECTED) return;
             if (currentApi == null) return;
@@ -1196,6 +1214,36 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
 
+    /**
+     * 一伦优化 v26：AI 测试当前接口 —— AI 自动生成参数后再测试。
+     * 目标源取决于左侧选中状态：
+     *   - 选中单个 API → 跑这一个
+     *   - 选中多个 API → 依次跑每个
+     *   - 选中收藏夹 → 跑收藏夹内所有 API
+     *   - 未选中 → 跑 currentApi
+     * 本轮实现"currentApi + AI 生成 + 测试"单接口版本；批量多选逻辑下轮接入。
+     * <p>已知问题：generateAiParameters 是异步（pooledThread 调 AI），回填 invokeLater
+     * 比本方法挂的 Timer 晚完成 —— 第一版用 5s 兜底 Timer，超时未填则不阻塞测试。
+     * 正确做法是把回调挂进 generateAiParameters 内部，留待下轮重构。</p>
+     */
+    private void runAiTestForCurrent() {
+        if (currentApi == null) {
+            statusLabel.setText("● 没有可测试的接口");
+            return;
+        }
+        AiParameterService.TestScenario s =
+                (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
+        statusLabel.setText("● AI 生成参数中: " + currentApi.displayLabel());
+        generateAiParameters(s);
+        // 兜底：5s 后无论 AI 是否回填完成都发请求（参数未填时跑旧参数）
+        javax.swing.Timer t = new javax.swing.Timer(5000, e -> {
+            statusLabel.setText("● AI 测试: " + currentApi.displayLabel());
+            sendRequest();
+        });
+        t.setRepeats(false);
+        t.start();
+    }
+
     private JPanel createAiTab() {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.empty(4));
@@ -1217,7 +1265,21 @@ public class ApiDebuggerPanel extends JPanel {
 
         aiConfigInfoLabel = new JBLabel(getAiConfigSummary());
         UiStyle.hint(aiConfigInfoLabel);
-        statusCard.add(aiConfigInfoLabel);
+        // 一伦优化 v26：AI 配置摘要走单行 + 水平滚动，伸缩变窄时省略号替代换行
+        aiConfigInfoLabel.setHorizontalAlignment(SwingConstants.LEFT);
+        // 一伦优化 v26：标签过长时走水平滚动条（不换行也不被裁掉）
+        JScrollPane aiCfgScroll = new JBScrollPane(aiConfigInfoLabel,
+                JBScrollPane.VERTICAL_SCROLLBAR_NEVER,
+                JBScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        aiCfgScroll.setBorder(null);
+        aiCfgScroll.setOpaque(false);
+        aiCfgScroll.getViewport().setOpaque(false);
+        aiCfgScroll.setAlignmentY(Component.CENTER_ALIGNMENT);
+        // 关键：水平滚动容器要"自适应父容器变窄"才能在伸缩时滚动
+        aiCfgScroll.setMinimumSize(new Dimension(80, 18));
+        aiCfgScroll.setPreferredSize(new Dimension(360, 18));
+        aiCfgScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 18));
+        statusCard.add(aiCfgScroll);
         topBar.add(statusCard);
         topBar.add(Box.createVerticalStrut(4));
 
@@ -1235,9 +1297,9 @@ public class ApiDebuggerPanel extends JPanel {
         scenarioCombo.setToolTipText("选择本次 AI 生成场景：正常/边界/异常");
         controlPanel.add(scenarioCombo);
 
-        // AI 助手按钮（一键下拉：生成参数 / 测试当前）
+        // AI 助手按钮（一伦优化 v4：下拉弹 AI 生成参数 / 历史 等）
         JButton aiAssistantBtn = iconButton("AI 助手", AllIcons.Actions.Lightning, null);
-        aiAssistantBtn.setToolTipText("AI 生成参数 / 测试当前接口");
+        aiAssistantBtn.setToolTipText("AI 生成参数 / 历史等");
         aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
         UiStyle.applyAccent(aiAssistantBtn,
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
@@ -1245,14 +1307,19 @@ public class ApiDebuggerPanel extends JPanel {
         aiAssistantBtn.addActionListener(e -> showAiAssistantMenu(aiAssistantBtn));
         controlPanel.add(aiAssistantBtn);
 
-        // 批量测试按钮（一伦优化 v4：从原「测试」Tab 上浮到「AI 助手」Tab，与生成/测试同处一目了然）
-        batchTestBtn = iconButton("批量测试", AllIcons.Actions.Execute, e -> toggleBatchTest());
-        batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
-        batchTestBtn.putClientProperty("JButton.buttonType", "roundRect");
-        controlPanel.add(batchTestBtn);
+        // 一伦优化 v26：AI 测试按钮 — 独立按钮（之前是「批量测试」+「测试当前」两个，
+        // 现按要求拆成「测试」+「AI 测试」；批量走多选/收藏夹目标，见多选批量测试规划）。
+        // 行为：先用 AI 给当前接口生成参数，再用生成后的参数发请求。
+        JButton aiTestBtn = iconButton("AI 测试", AllIcons.Actions.Lightning, e -> runAiTestForCurrent());
+        aiTestBtn.setToolTipText("AI 自动生成参数并执行测试当前接口");
+        aiTestBtn.putClientProperty("JButton.buttonType", "default");
+        UiStyle.applyAccent(aiTestBtn,
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        UiStyle.attachInteractionFeedback(aiTestBtn);
+        controlPanel.add(aiTestBtn);
 
-        // 单接口测试按钮（保留作为快速入口）
-        JButton runCurBtn = iconButton("测试当前", AllIcons.Actions.Execute, e -> runCurrentTest());
+        // 测试当前按钮（仅测试当前接口，使用当前参数）
+        JButton runCurBtn = iconButton("测试", AllIcons.Actions.Execute, e -> runCurrentTest());
         runCurBtn.setToolTipText("使用当前参数测试当前接口");
         controlPanel.add(runCurBtn);
 
