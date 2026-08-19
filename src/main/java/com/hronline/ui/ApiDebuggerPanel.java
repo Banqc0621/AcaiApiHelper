@@ -43,6 +43,8 @@ import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import java.awt.*;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.io.IOException;
 import java.util.*;
 import java.util.List;
@@ -214,7 +216,8 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        splitter.setFirstComponent(requestScroll);
+        // 一伦优化 v33：「发起请求」悬浮在 tab 标题行右缘（「AI 助手」tab 右侧），叠在滚动容器之上
+        splitter.setFirstComponent(new TabStripSendButtonLayer(requestScroll, createTabStripSendButton()));
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
         splitter.setHonorComponentsMinimumSize(false);
@@ -485,8 +488,8 @@ public class ApiDebuggerPanel extends JPanel {
         row.add(urlField);
         row.add(Box.createHorizontalGlue());
 
-        // v16 修复 1：顶部行不再放 sendButton（已在 tab 标题里），否则会出现两个发送按钮
-        // —— 一伦优化 v31：发送入口收敛到「参数」tab 行动行最右侧的「发起请求」按钮（createParamsSendButton）。
+        // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮
+        // —— 一伦优化 v33：发送入口另叠加在 tab 标题行右缘（TabStripSendButtonLayer + createTabStripSendButton）。
         return row;
     }
 
@@ -726,13 +729,12 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel northContainer = new JPanel();
         northContainer.setLayout(new BoxLayout(northContainer, BoxLayout.Y_AXIS));
 
-        // 一伦优化 v31：行动行最右边增设「发起请求」按钮 —— 对当前选中接口一键发请求。
+        // 一伦优化 v33：「发起请求」移至 tab 标题行右缘（「AI 助手」tab 右侧），行动行只保留 +/−
         JPanel actionBar = createTabActionBar(
                 "添加自定义参数",
                 "删除选中的参数",
                 e -> addCustomParameter(),
-                e -> removeSelectedParameter(),
-                createParamsSendButton());
+                e -> removeSelectedParameter());
         actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         northContainer.add(actionBar);
 
@@ -1269,26 +1271,12 @@ public class ApiDebuggerPanel extends JPanel {
      * +/− 统一为 24×24 紧凑方形图标按钮。</p>
      * <p>一伦优化 v29：+/− 右对齐并贴近表格 —— 与 IntelliJ 表格工具栏习惯一致，
      * 按钮视觉上"属于"下方表格，不再孤零零浮在左上角。</p>
-     * <p>一伦优化 v31：行动行最右侧可选增设「发起请求」按钮 —— 对当前选中接口一键发请求，
-     * 不必再滚回顶部请求栏点发送。</p>
-     * <p>一伦优化 v32：「发起请求」靠右固定 —— 内部从 FlowLayout（有默认 insets、窄宽折行）
-     * 换成 BoxLayout.X_AXIS 直排，整组放 BorderLayout.EAST：按钮永远硬贴行动行右缘，
-     * 任何宽度下位置恒定。</p>
+     * <p>一伦优化 v31/v33：曾支持在行动行最右侧增设「发起请求」按钮；v33 起该入口移到 tab 标题行右缘
+     * （「AI 助手」tab 右侧），行动行不再承担发送按钮。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
                                       java.awt.event.ActionListener removeAction) {
-        return createTabActionBar(addTooltip, removeTooltip, addAction, removeAction, null);
-    }
-
-    /**
-     * 一伦优化 v31：带「发起请求」按钮的 tab 行动行重载。
-     * <p>{@code sendButton} 为 null 时行为与旧签名一致；非空时放在行动行最右侧（+/− 之后）。</p>
-     */
-    private JPanel createTabActionBar(String addTooltip, String removeTooltip,
-                                      java.awt.event.ActionListener addAction,
-                                      java.awt.event.ActionListener removeAction,
-                                      JButton sendButton) {
         JPanel bar = new JPanel(new BorderLayout());
         bar.setOpaque(false);
         bar.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
@@ -1303,10 +1291,6 @@ public class ApiDebuggerPanel extends JPanel {
         btns.add(addBtn);
         btns.add(Box.createHorizontalStrut(4));
         btns.add(delBtn);
-        if (sendButton != null) {
-            btns.add(Box.createHorizontalStrut(8));
-            btns.add(sendButton);
-        }
         bar.add(btns, BorderLayout.EAST);
         return bar;
     }
@@ -1407,15 +1391,15 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v31：「参数」tab 行动行最右侧的「发起请求」按钮 —— 对当前选中接口一键发请求。
+     * 一伦优化 v33：tab 标题行右缘的「发起请求」悬浮按钮 —— 放在「AI 助手」tab 的右侧，靠右固定。
      * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
      * 主按钮请求中会切 spinner，本按钮同步 icon/tooltip，再点一次即取消，行为与顶部发送完全一致。</p>
      * <p>历史包袱说明：v14~v21 曾试图把发送按钮塞进 tab 标题区（setTabComponentAt /
-     * NORTH 独立 header），但 LaF 选中态蓝线会横穿 tab 标题，观感始终不对，
-     * 且 v21 的 tabSendHeaderPanel 实际从未被 add 进容器（死代码）。v31 彻底移除该机制，
-     * 入口收敛到行动行最右侧 —— 紧贴 +/−，视觉属于参数表，无 LaF 干扰。</p>
+     * NORTH 独立 header），但 LaF 选中态蓝线会横穿 tab 标题，观感始终不对；
+     * v31/v32 放在「参数」行动行最右；v33 按需求移到 tab 标题行右缘 ——
+     * 悬浮在 tabbedPane 之上（TabStripSendButtonLayer 定位），不占用任何 tab 的行动行空间。</p>
      */
-    private JButton createParamsSendButton() {
+    private JButton createTabStripSendButton() {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         btn.setToolTipText("对当前选中接口发起请求（与顶部发送等价）");
@@ -1428,6 +1412,64 @@ public class ApiDebuggerPanel extends JPanel {
         });
         sendButton.addPropertyChangeListener("enabled", evt -> btn.setEnabled((Boolean) evt.getNewValue()));
         return btn;
+    }
+
+    /**
+     * 一伦优化 v33：把「发起请求」按钮悬浮在 tab 标题行右缘的容器层。
+     * <p>结构：{@code BorderLayout} 包住原来的 requestScroll（CENTER），按钮挂在 EAST。
+     * 通过 {@link JTabbedPane#getBoundsAt(int)} 探测「AI 助手」tab（最后一个 tab）的右边界，
+     * 动态调整按钮右侧空隙，使按钮紧跟在「AI 助手」tab 右边；空间不够时退化为硬贴面板右缘。
+     * 面板尺寸变化时自动重新定位。</p>
+     */
+    private class TabStripSendButtonLayer extends JPanel {
+        private final JPanel east = new JPanel(new GridBagLayout());
+        private final JTabbedPane pane;
+        private final Component button;
+
+        TabStripSendButtonLayer(Component center, JButton sendBtn) {
+            super(new BorderLayout());
+            add(center, BorderLayout.CENTER);
+            add(east, BorderLayout.EAST);
+
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.anchor = GridBagConstraints.NORTHEAST;
+            east.add(sendBtn, gbc);
+
+            this.button = sendBtn;
+            this.pane = (center instanceof JScrollPane sp && sp.getViewport() != null
+                    && sp.getViewport().getView() instanceof JTabbedPane tp) ? tp : null;
+
+            reposition();
+            addComponentListener(new ComponentAdapter() {
+                @Override
+                public void componentResized(ComponentEvent e) {
+                    reposition();
+                }
+            });
+        }
+
+        /** 按「AI 助手」tab 右边界重新计算按钮右侧空隙，实现「紧跟 AI 助手 tab、靠右固定」。 */
+        private void reposition() {
+            if (pane == null || pane.getTabCount() == 0) return;
+            int layerWidth = getWidth();
+            if (layerWidth <= 0) return;
+            Rectangle tabBounds = pane.getBoundsAt(pane.getTabCount() - 1);
+            Insets tabInsets = pane.getInsets();
+            int btnWidth = button.getPreferredSize().width;
+            int btnHeight = button.getPreferredSize().height;
+            int tabRight = tabBounds.x + tabBounds.width;
+            // 按钮左缘 = tabRight ⇒ 右侧空隙 = layerWidth - tabRight - btnWidth；放不下则留 4px 硬贴右缘
+            int rightInset = layerWidth - tabRight - btnWidth;
+            if (rightInset < 4) rightInset = 4;
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.anchor = GridBagConstraints.NORTHEAST;
+            gbc.insets = new Insets(Math.max(0, tabInsets.top), 0, 0, rightInset);
+            ((GridBagLayout) east.getLayout()).setConstraints(button, gbc);
+            east.setPreferredSize(new Dimension(btnWidth + rightInset,
+                    Math.max(tabBounds.height, btnHeight + Math.max(0, tabInsets.top))));
+            east.revalidate();
+            east.repaint();
+        }
     }
 
     // ================================================================
