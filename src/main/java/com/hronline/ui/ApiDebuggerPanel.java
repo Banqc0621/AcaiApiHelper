@@ -1257,32 +1257,22 @@ public class ApiDebuggerPanel extends JPanel {
         topBar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
 
         // AI 配置状态（卡片样式，仅一行）
-        JPanel statusCard = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        // 一伦优化 v27：改回 BorderLayout —— 标题固定西侧，摘要占中部剩余宽度。
+        // 面板收缩时摘要自然被裁剪（无需完整显示请求路径/模型名），不换行、不出滚动条。
+        JPanel statusCard = new JPanel(new BorderLayout(6, 0));
         statusCard.setAlignmentX(Component.LEFT_ALIGNMENT);
         statusCard.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
         statusCard.setBorder(UiStyle.cardBorder(4, 8));
 
         JBLabel configStatusLabel = new JBLabel("AI 配置");
         configStatusLabel.setFont(configStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
-        statusCard.add(configStatusLabel);
+        statusCard.add(configStatusLabel, BorderLayout.WEST);
 
         aiConfigInfoLabel = new JBLabel(getAiConfigSummary());
         UiStyle.hint(aiConfigInfoLabel);
-        // 一伦优化 v26：AI 配置摘要走单行 + 水平滚动，伸缩变窄时省略号替代换行
         aiConfigInfoLabel.setHorizontalAlignment(SwingConstants.LEFT);
-        // 一伦优化 v26：标签过长时走水平滚动条（不换行也不被裁掉）
-        JScrollPane aiCfgScroll = new JBScrollPane(aiConfigInfoLabel,
-                JBScrollPane.VERTICAL_SCROLLBAR_NEVER,
-                JBScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
-        aiCfgScroll.setBorder(null);
-        aiCfgScroll.setOpaque(false);
-        aiCfgScroll.getViewport().setOpaque(false);
-        aiCfgScroll.setAlignmentY(Component.CENTER_ALIGNMENT);
-        // 关键：水平滚动容器要"自适应父容器变窄"才能在伸缩时滚动
-        aiCfgScroll.setMinimumSize(new Dimension(80, 18));
-        aiCfgScroll.setPreferredSize(new Dimension(360, 18));
-        aiCfgScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 18));
-        statusCard.add(aiCfgScroll);
+        aiConfigInfoLabel.setToolTipText(aiConfigInfoLabel.getText());
+        statusCard.add(aiConfigInfoLabel, BorderLayout.CENTER);
         topBar.add(statusCard);
         topBar.add(Box.createVerticalStrut(4));
 
@@ -1300,31 +1290,18 @@ public class ApiDebuggerPanel extends JPanel {
         scenarioCombo.setToolTipText("选择本次 AI 生成场景：正常/边界/异常");
         controlPanel.add(scenarioCombo);
 
-        // AI 助手按钮（一伦优化 v4：下拉弹 AI 生成参数 / 历史 等）
-        JButton aiAssistantBtn = iconButton("AI 助手", AllIcons.Actions.Lightning, null);
-        aiAssistantBtn.setToolTipText("AI 生成参数 / 历史等");
-        aiAssistantBtn.putClientProperty("JButton.buttonType", "default");
-        UiStyle.applyAccent(aiAssistantBtn,
+        // 一伦优化 v27：按需求去掉「AI 助手」下拉按钮，按钮行只保留 测试(左) + AI 测试(右)。
+        // 测试：主操作高亮按钮（跟随 settings accent），使用当前参数测试当前接口。
+        JButton runCurBtn = UiStyle.primaryButton("测试", AllIcons.Actions.Execute, e -> runCurrentTest(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
-        UiStyle.attachInteractionFeedback(aiAssistantBtn);
-        aiAssistantBtn.addActionListener(e -> showAiAssistantMenu(aiAssistantBtn));
-        controlPanel.add(aiAssistantBtn);
-
-        // 一伦优化 v26：AI 测试按钮 — 独立按钮（之前是「批量测试」+「测试当前」两个，
-        // 现按要求拆成「测试」+「AI 测试」；批量走多选/收藏夹目标，见多选批量测试规划）。
-        // 行为：先用 AI 给当前接口生成参数，再用生成后的参数发请求。
-        JButton aiTestBtn = iconButton("AI 测试", AllIcons.Actions.Lightning, e -> runAiTestForCurrent());
-        aiTestBtn.setToolTipText("AI 自动生成参数并执行测试当前接口");
-        aiTestBtn.putClientProperty("JButton.buttonType", "default");
-        UiStyle.applyAccent(aiTestBtn,
-                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
-        UiStyle.attachInteractionFeedback(aiTestBtn);
-        controlPanel.add(aiTestBtn);
-
-        // 测试当前按钮（仅测试当前接口，使用当前参数）
-        JButton runCurBtn = iconButton("测试", AllIcons.Actions.Execute, e -> runCurrentTest());
         runCurBtn.setToolTipText("使用当前参数测试当前接口");
         controlPanel.add(runCurBtn);
+
+        // AI 测试：AI 自动生成参数并测试当前接口；用紫色调呼应 AI 语义，与「测试」形成主次区分。
+        JButton aiTestBtn = UiStyle.primaryButton("AI 测试", AllIcons.Actions.Lightning, e -> runAiTestForCurrent(),
+                UiStyle.AccentColor.PURPLE);
+        aiTestBtn.setToolTipText("AI 自动生成参数并执行测试当前接口");
+        controlPanel.add(aiTestBtn);
 
         // 清空结果
         JButton clearBtn = iconButton("清空", AllIcons.Actions.GC, e -> {
@@ -1348,35 +1325,13 @@ public class ApiDebuggerPanel extends JPanel {
         testResultArea.setEditable(false);
         testResultArea.setLineWrap(true);
         testResultArea.setWrapStyleWord(true);
-        testResultArea.setText("点击「AI 助手」生成参数，或「批量测试」/「测试当前」执行请求。\n测试结果将以 JSON 格式展示。\n\n等待操作...\n");
+        testResultArea.setText("点击「测试」使用当前参数执行请求，或「AI 测试」由 AI 自动生成参数并测试。\n测试结果将以 JSON 格式展示。\n\n等待操作...\n");
         center.add(new JBScrollPane(testResultArea), BorderLayout.CENTER);
         panel.add(center, BorderLayout.CENTER);
 
         return panel;
     }
     
-    /**
-     * AI 生成与当前接口测试统一入口；批量/全量生成留到下一迭代。
-     */
-    private void showAiAssistantMenu(JButton invoker) {
-        JPopupMenu menu = new JPopupMenu();
-
-        JMenuItem genItem = new JMenuItem("AI 生成参数（当前场景）", AllIcons.Actions.Lightning);
-        genItem.addActionListener(ev -> {
-            AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
-            generateAiParameters(s);
-        });
-        menu.add(genItem);
-
-        menu.addSeparator();
-
-        JMenuItem testItem = new JMenuItem("测试当前接口（使用当前参数）", AllIcons.Actions.Execute);
-        testItem.addActionListener(ev -> sendRequest());
-        menu.add(testItem);
-
-        menu.show(invoker, 0, invoker.getHeight());
-    }
-
     /**
      * 获取AI配置摘要显示
      */
@@ -2983,6 +2938,7 @@ public class ApiDebuggerPanel extends JPanel {
             // 刷新主面板 AI 摘要
             if (aiConfigInfoLabel != null) {
                 aiConfigInfoLabel.setText(getAiConfigSummary());
+                aiConfigInfoLabel.setToolTipText(aiConfigInfoLabel.getText());
             }
             if (statusLabel != null) {
                 statusLabel.setText("● AI配置已更新");
