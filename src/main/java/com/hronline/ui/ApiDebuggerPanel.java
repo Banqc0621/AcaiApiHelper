@@ -1271,6 +1271,9 @@ public class ApiDebuggerPanel extends JPanel {
      * 按钮视觉上"属于"下方表格，不再孤零零浮在左上角。</p>
      * <p>一伦优化 v31：行动行最右侧可选增设「发起请求」按钮 —— 对当前选中接口一键发请求，
      * 不必再滚回顶部请求栏点发送。</p>
+     * <p>一伦优化 v32：「发起请求」靠右固定 —— 内部从 FlowLayout（有默认 insets、窄宽折行）
+     * 换成 BoxLayout.X_AXIS 直排，整组放 BorderLayout.EAST：按钮永远硬贴行动行右缘，
+     * 任何宽度下位置恒定。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
@@ -1293,12 +1296,15 @@ public class ApiDebuggerPanel extends JPanel {
         JButton addBtn = compactIconButton(AllIcons.General.Add, addTooltip, addAction);
         JButton delBtn = compactIconButton(AllIcons.General.Remove, removeTooltip, removeAction);
 
-        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        // 一伦优化 v32：BoxLayout.X_AXIS 直排（无 insets、不折行），整组挂 EAST → 硬贴右缘固定
+        JPanel btns = new JPanel();
+        btns.setLayout(new BoxLayout(btns, BoxLayout.X_AXIS));
         btns.setOpaque(false);
         btns.add(addBtn);
+        btns.add(Box.createHorizontalStrut(4));
         btns.add(delBtn);
         if (sendButton != null) {
-            btns.add(Box.createHorizontalStrut(4));
+            btns.add(Box.createHorizontalStrut(8));
             btns.add(sendButton);
         }
         bar.add(btns, BorderLayout.EAST);
