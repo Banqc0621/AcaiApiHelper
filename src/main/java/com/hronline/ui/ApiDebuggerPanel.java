@@ -1391,17 +1391,18 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v35/v36：「发起请求」与 tabs 同一行、钉死在整行最右端 —— 按钮是容器内覆盖层的一部分。
+     * 一伦优化 v35/v37：「发起请求」与 tabs 同一行、钉死在整行最右端 —— 按钮是容器内覆盖层的一部分。
      * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
      * 主按钮请求中会切 spinner，本按钮同步 icon，再点一次即取消，行为与顶部发送完全一致。</p>
-     * <p>v36：只保留图标，去掉文字与 tooltip。</p>
-     * <p>布局：{@code [参数][请求头][请求体][历史][AI 助手] ...... [▶]} ——
+     * <p>v36 曾只保留图标；v37 按用户要求恢复「发起请求」文字（保留 tooltip）。</p>
+     * <p>布局：{@code [参数][请求头][请求体][历史][AI 助手] ...... [▶ 发起请求]} ——
      * 按钮绝对定位悬浮在 tab 条右缘（不占布局宽度、不居中），tab 条占满整行。</p>
      */
     private JButton createTabStripSendButton() {
-        JButton btn = UiStyle.primaryButton("", AllIcons.Actions.Execute, e -> sendButton.doClick(),
+        JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
-        btn.setMargin(new Insets(4, 6, 4, 6));
+        btn.setMargin(new Insets(4, 8, 4, 8));
+        btn.setToolTipText("发起请求（与顶部发送等价）");
 
         // 与主 sendButton 状态同步：请求中 icon 切 spinner / 请求完成恢复
         sendButton.addPropertyChangeListener("icon", evt -> btn.setIcon((Icon) evt.getNewValue()));

@@ -1042,34 +1042,35 @@ public class ApiTreePanel extends JPanel {
             if (uo instanceof FolderNode) {
                 StarredFolder f = ((FolderNode) uo).folder;
                 group.add(starredAction("重命名", AllIcons.Actions.Edit, this::starredRenameFolder));
-                // v2.0.0：未分类也支持删除（与其他文件夹功能无差别）
-                group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
                 group.addSeparator();
-                group.add(starredAction("AI生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
+                group.add(starredAction("AI 生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
                 group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::starredChainBatchTest));
+                group.addSeparator();
+                // 一伦优化 v37：破坏性操作固定放菜单最底部
+                group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
             } else if (uo instanceof StarredApiNode) {
-                // 一伦优化 #4：多选 StarredApiNode 时新增「批量测试 / 批量移动到 / 批量删除」入口。
+                // 一伦优化 v37：菜单按选中数量自适应——多选只留批量操作，单选保留完整操作，
+                // 「移动到…」「移除」在两种模式下复用同一入口（内部自动分流单/批量）。
                 List<StarredApiNode> selectedApis = getSelectedStarredApiNodes();
-                if (selectedApis.size() > 1) {
-                    group.add(starredAction("批量测试（" + selectedApis.size() + " 项）",
-                            AllIcons.Actions.Execute, this::starredBatchTestSelected));
-                    group.add(starredAction("批量移动到…（" + selectedApis.size() + " 项）",
-                            AllIcons.Actions.MoveTo2, this::starredBatchMoveTo));
-                    group.add(starredAction("批量删除（" + selectedApis.size() + " 项）",
-                            AllIcons.Actions.GC, this::starredBatchRemove));
-                    group.addSeparator();
+                boolean multi = selectedApis.size() > 1;
+                if (multi) {
+                    group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTestSelected));
+                } else {
+                    group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
+                    group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
                 }
-                // 保留单选/上下文回退菜单
-                group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
-                group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
-                group.add(starredAction("移动到…", AllIcons.Actions.MoveTo2, this::starredMoveTo));
-                group.add(starredAction("复制到…", AllIcons.Actions.Copy, this::starredCopyTo));
-                group.add(starredAction("移除", AllIcons.Actions.GC, this::starredRemoveApi));
                 group.addSeparator();
-                group.add(starredAction("取消警示", AllIcons.Actions.QuickfixBulb, this::starredClearWarning));
+                group.add(starredAction("移动到…", AllIcons.Actions.MoveTo2, this::starredMoveToUnified));
+                if (!multi) {
+                    group.add(starredAction("复制到…", AllIcons.Actions.Copy, this::starredCopyTo));
+                    group.add(starredAction("复制URL", AllIcons.Actions.Copy, this::starredCopyUrl));
+                }
                 group.addSeparator();
-                group.add(starredAction("复制URL", AllIcons.Actions.Copy, this::starredCopyUrl));
+                if (!multi) {
+                    group.add(starredAction("取消警示", AllIcons.Actions.QuickfixBulb, this::starredClearWarning));
+                }
+                group.add(starredAction("移除", AllIcons.Actions.GC, this::starredRemoveUnified));
             }
         }
 
@@ -1297,6 +1298,18 @@ public class ApiTreePanel extends JPanel {
         if (ret < 0 || ret >= folders.size()) return;
         folderService.moveApi(n.api.uniqueKey(), n.folderId, folders.get(ret).getId());
         buildStarredTree();
+    }
+
+    /** 一伦优化 v37：「移动到…」统一入口——按选中数量自动分流单选/批量逻辑。 */
+    private void starredMoveToUnified() {
+        if (getSelectedStarredApiNodes().size() > 1) starredBatchMoveTo();
+        else starredMoveTo();
+    }
+
+    /** 一伦优化 v37：「移除」统一入口——按选中数量自动分流单选/批量逻辑。 */
+    private void starredRemoveUnified() {
+        if (getSelectedStarredApiNodes().size() > 1) starredBatchRemove();
+        else starredRemoveApi();
     }
 
     private void starredEditParams() {
@@ -1558,17 +1571,15 @@ public class ApiTreePanel extends JPanel {
                 "批量移动完成");
     }
 
-    /** 批量删除：从各自所属文件夹中移除多选 API。 */
+    /** 批量删除：从各自所属文件夹中移除多选 API（v37 起也作为单选「移除」的实际执行体）。 */
     private void starredBatchRemove() {
         List<StarredApiNode> selected = getSelectedStarredApiNodes();
-        if (selected.size() < 2) {
-            Messages.showInfoMessage(project, "批量删除需要至少 2 个接口", "提示");
-            return;
-        }
+        if (selected.isEmpty()) return;
+        String title = selected.size() > 1 ? "批量删除" : "移除收藏";
         int ret = Messages.showYesNoDialog(project,
                 "将从各自所属文件夹移除 " + selected.size() + " 个接口，是否继续？\n" +
                         "（仅从收藏移除，不会删除源码中的接口）",
-                "批量删除", Messages.getQuestionIcon());
+                title, Messages.getQuestionIcon());
         if (ret != Messages.YES) return;
         int ok = 0;
         for (StarredApiNode n : selected) {
@@ -1580,7 +1591,7 @@ public class ApiTreePanel extends JPanel {
             }
         }
         buildStarredTree();
-        Messages.showInfoMessage(project, "已从收藏移除 " + ok + " 个接口", "批量删除完成");
+        Messages.showInfoMessage(project, "已从收藏移除 " + ok + " 个接口", title + "完成");
     }
 
     // ═══════════════════════════════════════════════════════════
