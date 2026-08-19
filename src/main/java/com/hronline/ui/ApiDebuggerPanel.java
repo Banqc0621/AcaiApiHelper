@@ -216,7 +216,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        // 一伦优化 v33：「发起请求」悬浮在 tab 标题行右缘（「AI 助手」tab 右侧），叠在滚动容器之上
+        // 一伦优化 v34：「发起请求」与 tabs 同一行，靠最右边固定（[参数][请求头][请求体][历史][AI 助手] …… [▶ 发起请求]）
         splitter.setFirstComponent(new TabStripSendButtonLayer(requestScroll, createTabStripSendButton()));
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
@@ -489,7 +489,7 @@ public class ApiDebuggerPanel extends JPanel {
         row.add(Box.createHorizontalGlue());
 
         // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮
-        // —— 一伦优化 v33：发送入口另叠加在 tab 标题行右缘（TabStripSendButtonLayer + createTabStripSendButton）。
+        // —— 一伦优化 v34：发送入口与 tabs 同一行，靠最右边固定（TabStripSendButtonLayer + createTabStripSendButton）。
         return row;
     }
 
@@ -1391,13 +1391,11 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v33：tab 标题行右缘的「发起请求」悬浮按钮 —— 放在「AI 助手」tab 的右侧，靠右固定。
+     * 一伦优化 v34：「发起请求」与 tabs 同一行、钉死在整行最右端。
      * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
      * 主按钮请求中会切 spinner，本按钮同步 icon/tooltip，再点一次即取消，行为与顶部发送完全一致。</p>
-     * <p>历史包袱说明：v14~v21 曾试图把发送按钮塞进 tab 标题区（setTabComponentAt /
-     * NORTH 独立 header），但 LaF 选中态蓝线会横穿 tab 标题，观感始终不对；
-     * v31/v32 放在「参数」行动行最右；v33 按需求移到 tab 标题行右缘 ——
-     * 悬浮在 tabbedPane 之上（TabStripSendButtonLayer 定位），不占用任何 tab 的行动行空间。</p>
+     * <p>布局：{@code [参数][请求头][请求体][历史][AI 助手] ...... [▶ 发起请求]} ——
+     * tab 条居左、按钮硬贴行右缘（BorderLayout.EAST），与 tab 标题同一水平行。</p>
      */
     private JButton createTabStripSendButton() {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
@@ -1415,11 +1413,10 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v33：把「发起请求」按钮悬浮在 tab 标题行右缘的容器层。
+     * 一伦优化 v34：让「发起请求」与 tabs 处于同一行、并钉死在整行最右端的容器层。
      * <p>结构：{@code BorderLayout} 包住原来的 requestScroll（CENTER），按钮挂在 EAST。
-     * 通过 {@link JTabbedPane#getBoundsAt(int)} 探测「AI 助手」tab（最后一个 tab）的右边界，
-     * 动态调整按钮右侧空隙，使按钮紧跟在「AI 助手」tab 右边；空间不够时退化为硬贴面板右缘。
-     * 面板尺寸变化时自动重新定位。</p>
+     * EAST 只预留「按钮宽度 + 少量边距」，tab 条占满其余宽度，按钮垂直对齐 tab 标题行；
+     * 面板尺寸变化时自动重新定位。无论面板多宽多窄，按钮右缘始终硬贴容器右缘。</p>
      */
     private class TabStripSendButtonLayer extends JPanel {
         private final JPanel east = new JPanel(new GridBagLayout());
@@ -1448,25 +1445,23 @@ public class ApiDebuggerPanel extends JPanel {
             });
         }
 
-        /** 按「AI 助手」tab 右边界重新计算按钮右侧空隙，实现「紧跟 AI 助手 tab、靠右固定」。 */
+        /** 钉死整行最右端：EAST 只留「按钮宽度 + 4px」，tab 条居左占满其余宽度。 */
         private void reposition() {
-            if (pane == null || pane.getTabCount() == 0) return;
-            int layerWidth = getWidth();
-            if (layerWidth <= 0) return;
-            Rectangle tabBounds = pane.getBoundsAt(pane.getTabCount() - 1);
-            Insets tabInsets = pane.getInsets();
             int btnWidth = button.getPreferredSize().width;
             int btnHeight = button.getPreferredSize().height;
-            int tabRight = tabBounds.x + tabBounds.width;
-            // 按钮左缘 = tabRight ⇒ 右侧空隙 = layerWidth - tabRight - btnWidth；放不下则留 4px 硬贴右缘
-            int rightInset = layerWidth - tabRight - btnWidth;
-            if (rightInset < 4) rightInset = 4;
+            int rightInset = 4;
+            int topInset = 0;
+            int eastHeight = btnHeight;
+            if (pane != null && pane.getTabCount() > 0) {
+                Rectangle tabBounds = pane.getBoundsAt(pane.getTabCount() - 1);
+                topInset = Math.max(0, pane.getInsets().top);
+                eastHeight = Math.max(tabBounds.height, btnHeight + topInset);
+            }
             GridBagConstraints gbc = new GridBagConstraints();
             gbc.anchor = GridBagConstraints.NORTHEAST;
-            gbc.insets = new Insets(Math.max(0, tabInsets.top), 0, 0, rightInset);
+            gbc.insets = new Insets(topInset, 0, 0, rightInset);
             ((GridBagLayout) east.getLayout()).setConstraints(button, gbc);
-            east.setPreferredSize(new Dimension(btnWidth + rightInset,
-                    Math.max(tabBounds.height, btnHeight + Math.max(0, tabInsets.top))));
+            east.setPreferredSize(new Dimension(btnWidth + rightInset, eastHeight));
             east.revalidate();
             east.repaint();
         }
