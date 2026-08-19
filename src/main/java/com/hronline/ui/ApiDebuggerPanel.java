@@ -102,25 +102,14 @@ public class ApiDebuggerPanel extends JPanel {
     /** 最近一次注入的环境级请求头名称，用于切换环境时精准移除旧值。 */
     private final Set<String> appliedGlobalHeaderNames = new LinkedHashSet<>();
 
-    // ── 请求体编辑器（v3.0：3 态显式切换 — 紧凑 / 标准 / 展开）──
-    /** 紧凑态行数（最小可视高度，避免抢响应区空间） */
-    private static final int BODY_ROWS_COMPACT = 3;
+    // ── 请求体编辑器（一伦优化 v29：移除 紧凑/标准/展开 3 态切换，固定标准行数）──
     /** 标准态行数（默认） */
     private static final int BODY_ROWS_STANDARD = 8;
-    /** 展开态行数（编辑大段 JSON 时） */
-    private static final int BODY_ROWS_EXPANDED = 18;
-    private static final String[] BODY_SIZE_LABELS = {"紧凑", "标准", "展开"};
-    private int currentBodySizeIndex = 1; // 默认标准态
     private final JBTextArea bodyEditor = new JBTextArea(BODY_ROWS_STANDARD, 60);
-    /** body 编辑器的滚动容器引用：展开 / 折叠时 revalidate + repaint */
+    /** body 编辑器的滚动容器引用 */
     private JBScrollPane bodyScrollPane;
     /** body 编辑器撤销管理器（支持 Ctrl+Z / Ctrl+Y） */
     private final javax.swing.undo.UndoManager bodyUndoManager = new javax.swing.undo.UndoManager();
-    /**
-     * 一伦优化 v6：body 尺寸 segmented control（紧凑 / 标准 / 展开）。
-     * 取代旧版"尺寸 · xxx"按钮：单行单选，所见即所得，状态变化时 body 编辑器同步伸缩。
-     */
-    private JPanel bodySizeSegmented;
 
     // ── 响应区（v2.0.0：JsonSyntaxPane 提供语法高亮 + Ctrl+滚轮缩放 + 右键菜单）──
     private final JBTextArea responseArea = new JBTextArea();
@@ -292,40 +281,6 @@ public class ApiDebuggerPanel extends JPanel {
                 if (bodyUndoManager.canRedo()) bodyUndoManager.redo();
             }
         });
-    }
-
-    /**
-     * v3.0：把 body 编辑器切到指定行数（紧凑 / 标准 / 展开），并刷新容器避免父布局未感知高度变化。
-     * <p>由工具栏上的 segmented control 触发；不依赖焦点状态，避免边输边跳。</p>
-     */
-    private void setBodySize(int rows) {
-        if (bodyEditor.getRows() != rows) {
-            bodyEditor.setRows(rows);
-        }
-        if (bodyScrollPane != null) {
-            bodyScrollPane.revalidate();
-            bodyScrollPane.repaint();
-        }
-        // 同步 segmented 选中态（编程式切换避免递归触发）
-        if (bodySizeSegmented != null) {
-            int target = currentBodySizeIndex;
-            UiStyle.SegmentedAccessor accessor =
-                    (UiStyle.SegmentedAccessor) bodySizeSegmented.getClientProperty("segmented");
-            if (accessor != null && accessor.getSelectedIndex() != target) {
-                accessor.setSelectedIndex(target);
-            }
-        }
-    }
-
-    /** v3.0：3 态循环切换（紧凑 → 标准 → 展开 → 紧凑 ...） */
-    private void cycleBodySize() {
-        currentBodySizeIndex = (currentBodySizeIndex + 1) % BODY_SIZE_LABELS.length;
-        int rows = switch (currentBodySizeIndex) {
-            case 0 -> BODY_ROWS_COMPACT;
-            case 2 -> BODY_ROWS_EXPANDED;
-            default -> BODY_ROWS_STANDARD;
-        };
-        setBodySize(rows);
     }
 
     /**
@@ -1006,55 +961,13 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v6：body tab 整体灵动化 —— 解决"3 态伸缩都难看"的问题。
-     * <ul>
-     *   <li><b>segmented control 取代文字按钮</b>：紧凑 / 标准 / 展开 三档做成单行单选胶囊，
-     *       所见即所得，点击立即生效，状态直观</li>
-     *   <li><b>编辑器视觉基线对齐</b>：把 body 编辑器包入带圆角描边 + 浅底色的 cardPanel，
-     *       与请求头卡 / 响应卡视觉重量一致；padding 4px 留出输入呼吸感</li>
-     *   <li><b>工具行分组</b>：左 = 内容操作（插入/清空/AI），右 = 尺寸切换；用 Box.createHorizontalGlue 撑开</li>
-     *   <li><b>行高随状态平滑变化</b>：紧凑 3 行（节省空间）/ 标准 8 行（默认）/ 展开 18 行（编辑大段 JSON）</li>
-     * </ul>
+     * 一伦优化 v6：body tab 整体灵动化。
+     * <p>一伦优化 v29：按需求移除顶部行动行（+/− 与 紧凑/标准/展开 尺寸切换整行删除）——
+     * 请求体是单一内容块，清空有底部「清空」按钮，默认请求体在切换接口时自动回填。</p>
      */
     private JPanel createBodyTab() {
         JPanel panel = new JPanel(new BorderLayout(0, 6));
         panel.setBorder(JBUI.Borders.empty(4));
-
-        // ── 顶部工具行：左 = 内容操作（+/−/AI），右 = 尺寸 segmented ──
-        JPanel actionBar = createTabActionBar(
-                "插入当前接口的默认请求体",
-                "清空请求体",
-                e -> {
-                    if (currentApi == null) {
-                        Messages.showWarningDialog(project, "请先选择一个API接口", "提示");
-                        return;
-                    }
-                    bodyEditor.setText(generateDefaultBody(currentApi));
-                },
-                e -> bodyEditor.setText(""));
-        // 在 AI 按钮后追加 segmented control，用 glue 撑到右侧
-        actionBar.add(Box.createHorizontalGlue());
-
-//        JLabel sizeLabel = new JLabel("尺寸");
-//        sizeLabel.setFont(sizeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-//        sizeLabel.setForeground(JBColor.GRAY);
-//        actionBar.add(sizeLabel);
-        actionBar.add(Box.createHorizontalStrut(6));
-
-        // segmented control：紧凑 / 标准 / 展开，初始 = 标准（index=1）
-        bodySizeSegmented = UiStyle.segmentedControl(
-                BODY_SIZE_LABELS, currentBodySizeIndex, idx -> {
-                    if (idx == currentBodySizeIndex) return;
-                    currentBodySizeIndex = idx;
-                    int rows = switch (idx) {
-                        case 0 -> BODY_ROWS_COMPACT;
-                        case 2 -> BODY_ROWS_EXPANDED;
-                        default -> BODY_ROWS_STANDARD;
-                    };
-                    setBodySize(rows);
-                });
-        actionBar.add(bodySizeSegmented);
-        panel.add(actionBar, BorderLayout.NORTH);
 
         // ── 中部：body 格式 + cookie 状态 + 编辑器 ──
         JPanel center = new JPanel(new BorderLayout(0, 4));
@@ -1368,19 +1281,25 @@ public class ApiDebuggerPanel extends JPanel {
      * </ul>
      *
      * <p>一伦优化 v28：按需求移除行内「AI」按钮（AI 生成统一走底部「AI 测试」入口）；
-     * +/− 统一为 24×24 紧凑方形图标按钮，左侧紧凑排布。</p>
+     * +/− 统一为 24×24 紧凑方形图标按钮。</p>
+     * <p>一伦优化 v29：+/− 右对齐并贴近表格 —— 与 IntelliJ 表格工具栏习惯一致，
+     * 按钮视觉上"属于"下方表格，不再孤零零浮在左上角。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
                                       java.awt.event.ActionListener removeAction) {
-        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        bar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
+        JPanel bar = new JPanel(new BorderLayout());
+        bar.setOpaque(false);
+        bar.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
 
         JButton addBtn = compactIconButton(AllIcons.General.Add, addTooltip, addAction);
         JButton delBtn = compactIconButton(AllIcons.General.Remove, removeTooltip, removeAction);
 
-        bar.add(addBtn);
-        bar.add(delBtn);
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        btns.setOpaque(false);
+        btns.add(addBtn);
+        btns.add(delBtn);
+        bar.add(btns, BorderLayout.EAST);
         return bar;
     }
 
