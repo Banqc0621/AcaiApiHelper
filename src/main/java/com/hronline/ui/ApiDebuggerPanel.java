@@ -729,12 +729,18 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel northContainer = new JPanel();
         northContainer.setLayout(new BoxLayout(northContainer, BoxLayout.Y_AXIS));
 
-        // 一伦优化 v33：「发起请求」移至 tab 标题行右缘（「AI 助手」tab 右侧），行动行只保留 +/−
+        // 一伦优化 v38：「清空值 / 全部」从底部状态栏上方行动行收编 —— 统一为 24×24 紧凑图标按钮，
+        // 挂在 +/− 右侧，动作与表格在同一行、视线不用上下跳
+        JButton clearValuesBtn = compactIconButton(AllIcons.Actions.GC, "清空所有参数的值",
+                e -> clearParameterValues());
+        JButton filterAllBtn = compactIconButton(AllIcons.Actions.ShowAsTree, "显示所有参数",
+                e -> filterParamsByLocation(null));
         JPanel actionBar = createTabActionBar(
                 "添加自定义参数",
                 "删除选中的参数",
                 e -> addCustomParameter(),
-                e -> removeSelectedParameter());
+                e -> removeSelectedParameter(),
+                clearValuesBtn, filterAllBtn);
         actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         northContainer.add(actionBar);
 
@@ -748,20 +754,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         panel.add(northContainer, BorderLayout.NORTH);
 
-        // 底部工具栏 - 「清空值 / 全部」等低频动作保留在底部
-        JPanel bottomBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        JButton clearBtn = iconButton("清空值", AllIcons.Actions.GC, e -> clearParameterValues());
-        clearBtn.setToolTipText("清空所有参数的值");
-        bottomBar.add(clearBtn);
-        bottomBar.add(Box.createHorizontalStrut(12));
-
-        // 筛选按钮
-        JButton filterAllBtn = iconButton("全部", null, e -> filterParamsByLocation(null));
-        filterAllBtn.setToolTipText("显示所有参数");
-        filterAllBtn.putClientProperty("JButton.buttonType", "default");
-        bottomBar.add(filterAllBtn);
-
-        panel.add(bottomBar, BorderLayout.SOUTH);
+        // 一伦优化 v38：底部「清空值 / 全部」按钮已收编到顶部行动行，底部工具栏整体移除
 
         return panel;
     }
@@ -1271,12 +1264,13 @@ public class ApiDebuggerPanel extends JPanel {
      * +/− 统一为 24×24 紧凑方形图标按钮。</p>
      * <p>一伦优化 v29：+/− 右对齐并贴近表格 —— 与 IntelliJ 表格工具栏习惯一致，
      * 按钮视觉上"属于"下方表格，不再孤零零浮在左上角。</p>
-     * <p>一伦优化 v31/v33：曾支持在行动行最右侧增设「发起请求」按钮；v33 起该入口移到 tab 标题行右缘
-     * （「AI 助手」tab 右侧），行动行不再承担发送按钮。</p>
+     * <p>一伦优化 v38：支持追加尾部紧凑按钮（如「清空值 / 全部」），
+     * 统一挂在 +/− 右侧、同一行右对齐，动作与表格视线不分离。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
-                                      java.awt.event.ActionListener removeAction) {
+                                      java.awt.event.ActionListener removeAction,
+                                      JButton... extraButtons) {
         JPanel bar = new JPanel(new BorderLayout());
         bar.setOpaque(false);
         bar.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
@@ -1291,6 +1285,11 @@ public class ApiDebuggerPanel extends JPanel {
         btns.add(addBtn);
         btns.add(Box.createHorizontalStrut(4));
         btns.add(delBtn);
+        // 一伦优化 v38：尾部追加按钮（如「清空值 / 全部」），与 +/− 同一紧凑组
+        for (JButton extra : extraButtons) {
+            btns.add(Box.createHorizontalStrut(4));
+            btns.add(extra);
+        }
         bar.add(btns, BorderLayout.EAST);
         return bar;
     }
@@ -1402,7 +1401,6 @@ public class ApiDebuggerPanel extends JPanel {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         btn.setMargin(new Insets(4, 8, 4, 8));
-        btn.setToolTipText("发起请求（与顶部发送等价）");
 
         // 与主 sendButton 状态同步：请求中 icon 切 spinner / 请求完成恢复
         sendButton.addPropertyChangeListener("icon", evt -> btn.setIcon((Icon) evt.getNewValue()));
