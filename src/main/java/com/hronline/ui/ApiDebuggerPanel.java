@@ -216,7 +216,7 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        // 一伦优化 v34：「发起请求」与 tabs 同一行，靠最右边固定（[参数][请求头][请求体][历史][AI 助手] …… [▶ 发起请求]）
+        // 一伦优化 v35：「发起请求」与 tabs 同一行，钉死最右端 —— 覆盖层方案，按钮不占布局宽度
         splitter.setFirstComponent(new TabStripSendButtonLayer(requestScroll, createTabStripSendButton()));
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
@@ -1391,11 +1391,11 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v34：「发起请求」与 tabs 同一行、钉死在整行最右端。
+     * 一伦优化 v35：「发起请求」与 tabs 同一行、钉死在整行最右端 —— 按钮是容器内覆盖层的一部分。
      * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
      * 主按钮请求中会切 spinner，本按钮同步 icon/tooltip，再点一次即取消，行为与顶部发送完全一致。</p>
      * <p>布局：{@code [参数][请求头][请求体][历史][AI 助手] ...... [▶ 发起请求]} ——
-     * tab 条居左、按钮硬贴行右缘（BorderLayout.EAST），与 tab 标题同一水平行。</p>
+     * 按钮绝对定位悬浮在 tab 条右缘（不占布局宽度、不居中），tab 条占满整行。</p>
      */
     private JButton createTabStripSendButton() {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
@@ -1413,30 +1413,26 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v34：让「发起请求」与 tabs 处于同一行、并钉死在整行最右端的容器层。
-     * <p>结构：{@code BorderLayout} 包住原来的 requestScroll（CENTER），按钮挂在 EAST。
-     * EAST 只预留「按钮宽度 + 少量边距」，tab 条占满其余宽度，按钮垂直对齐 tab 标题行；
-     * 面板尺寸变化时自动重新定位。无论面板多宽多窄，按钮右缘始终硬贴容器右缘。</p>
+     * 一伦优化 v35：让「发起请求」与 tabs 处于同一行、并钉死在整行最右端的容器层。
+     * <p>结构：{@link JLayeredPane} —— 原 requestScroll 占满整行（DEFAULT_LAYER），
+     * 按钮绝对定位悬浮在 tab 标题条右缘（PALETTE_LAYER），<b>不占布局宽度、不会被居中</b>；
+     * 面板尺寸变化时自动重新定位。无论面板多宽，按钮右缘始终硬贴容器右缘。</p>
+     * <p>历史包袱：v33/v34 用 BorderLayout.EAST 预留宽度放按钮，实际渲染中 EAST 区域
+     * 被拉成一大块，按钮居中且 tab 条变窄 —— 覆盖层方案彻底规避布局挤占。</p>
      */
-    private class TabStripSendButtonLayer extends JPanel {
-        private final JPanel east = new JPanel(new GridBagLayout());
+    static class TabStripSendButtonLayer extends JLayeredPane {
         private final JTabbedPane pane;
-        private final Component button;
+        private final JButton button;
 
         TabStripSendButtonLayer(Component center, JButton sendBtn) {
-            super(new BorderLayout());
-            add(center, BorderLayout.CENTER);
-            add(east, BorderLayout.EAST);
-
-            GridBagConstraints gbc = new GridBagConstraints();
-            gbc.anchor = GridBagConstraints.NORTHEAST;
-            east.add(sendBtn, gbc);
+            setLayout(null);
+            add(center, JLayeredPane.DEFAULT_LAYER);
+            add(sendBtn, JLayeredPane.PALETTE_LAYER);
 
             this.button = sendBtn;
             this.pane = (center instanceof JScrollPane sp && sp.getViewport() != null
                     && sp.getViewport().getView() instanceof JTabbedPane tp) ? tp : null;
 
-            reposition();
             addComponentListener(new ComponentAdapter() {
                 @Override
                 public void componentResized(ComponentEvent e) {
@@ -1445,25 +1441,58 @@ public class ApiDebuggerPanel extends JPanel {
             });
         }
 
-        /** 钉死整行最右端：EAST 只留「按钮宽度 + 4px」，tab 条居左占满其余宽度。 */
-        private void reposition() {
-            int btnWidth = button.getPreferredSize().width;
-            int btnHeight = button.getPreferredSize().height;
-            int rightInset = 4;
-            int topInset = 0;
-            int eastHeight = btnHeight;
-            if (pane != null && pane.getTabCount() > 0) {
-                Rectangle tabBounds = pane.getBoundsAt(pane.getTabCount() - 1);
-                topInset = Math.max(0, pane.getInsets().top);
-                eastHeight = Math.max(tabBounds.height, btnHeight + topInset);
+        @Override
+        public void doLayout() {
+            reposition();
+        }
+
+        /** 尺寸语义跟随内容（scroll 容器）——覆盖层不参与布局挤占，但 splitter 初始比例仍合理。 */
+        @Override
+        public Dimension getPreferredSize() {
+            for (Component c : getComponents()) {
+                if (c != button) return c.getPreferredSize();
             }
-            GridBagConstraints gbc = new GridBagConstraints();
-            gbc.anchor = GridBagConstraints.NORTHEAST;
-            gbc.insets = new Insets(topInset, 0, 0, rightInset);
-            ((GridBagLayout) east.getLayout()).setConstraints(button, gbc);
-            east.setPreferredSize(new Dimension(btnWidth + rightInset, eastHeight));
-            east.revalidate();
-            east.repaint();
+            return super.getPreferredSize();
+        }
+
+        @Override
+        public Dimension getMinimumSize() {
+            return JBUI.size(1, 1);
+        }
+
+        /** 覆盖层定位：content 占满整行，按钮硬贴 tab 条右缘（垂直居中对齐 tab 标题行）。 */
+        private void reposition() {
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+
+            // tab 条在本层坐标系里的位置与高度（tabbedPane 是 requestScroll 的 view）
+            int stripX = 0;
+            int stripY = 0;
+            int stripH = 28;
+            if (pane != null) {
+                Point p = SwingUtilities.convertPoint(pane, new Point(0, 0), this);
+                stripX = p.x;
+                stripY = p.y;
+                if (pane.getTabCount() > 0) {
+                    Rectangle r = pane.getBoundsAt(0);
+                    if (r != null && r.height > 0) stripH = r.y + r.height;
+                }
+            }
+
+            Dimension ps = button.getPreferredSize();
+            int rightInset = 4;
+            int x = Math.max(stripX, w - ps.width - rightInset);
+            int y = stripY + Math.max(0, (stripH - ps.height) / 2);
+
+            for (Component c : getComponents()) {
+                if (c == button) {
+                    c.setBounds(x, y, ps.width, ps.height);
+                } else {
+                    c.setBounds(0, 0, w, h);
+                }
+            }
+            repaint();
         }
     }
 
