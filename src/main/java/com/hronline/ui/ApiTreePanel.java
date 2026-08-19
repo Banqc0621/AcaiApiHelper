@@ -350,27 +350,9 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(copyCurlAction);
 
-        // 一伦优化 #2：cURL 导入入口——从右键菜单触发。
-        // 不再占用主工具栏，避免与右侧"导出cURL"视觉冲突；保持与"复制为cURL"相邻。
-        AnAction importCurlAction = new AnAction("导入cURL", "粘贴cURL命令覆盖当前接口的请求参数", AllIcons.ToolbarDecorator.Import) {
-            @Override
-            public void actionPerformed(@NotNull AnActionEvent e) {
-                if (debuggerPanel == null) {
-                    Messages.showWarningDialog(project, "调试面板尚未初始化，请打开工具窗口后重试", "导入cURL");
-                    return;
-                }
-                // 把当前右键命中的接口加载到调试面板，作为 cURL 导入的上下文
-                if (onApiSelected != null && api != null) {
-                    onApiSelected.accept(api);
-                }
-                debuggerPanel.importCurlOrJson();
-            }
-        };
-        group.add(importCurlAction);
-
-        // 导出选中接口（支持多选）
+        // 导出选中接口（均支持多选）
         group.addSeparator();
-        AnAction exportMdAction = new AnAction("导出 Markdown（多选）",
+        AnAction exportMdAction = new AnAction("导出 Markdown",
                 "将选中的接口（含最近测试数据）导出为 Markdown 文档", AllIcons.ToolbarDecorator.Export) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -379,7 +361,7 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(exportMdAction);
 
-        AnAction exportPostmanAction = new AnAction("导出 Postman JSON（多选）",
+        AnAction exportPostmanAction = new AnAction("导出 Postman JSON",
                 "将选中的接口导出为 Postman/Apifox 可直接导入的 JSON", AllIcons.ToolbarDecorator.Export) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -388,9 +370,23 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(exportPostmanAction);
 
+        // 自定义模板导出（.docx / .md 模板 + 占位符）
+        AnAction exportTemplateAction = new AnAction("用模板导出",
+                "用自定义 Word/Markdown 模板导出选中的接口文档", AllIcons.ToolbarDecorator.Export) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                if (debuggerPanel == null) {
+                    Messages.showWarningDialog(project, "调试面板尚未初始化，请打开工具窗口后重试", "用模板导出");
+                    return;
+                }
+                debuggerPanel.exportApiDocFromTemplate();
+            }
+        };
+        group.add(exportTemplateAction);
+
         // 依赖链操作
         group.addSeparator();
-        AnAction chainTestAction = new AnAction("依赖链批量测试（多选）",
+        AnAction chainTestAction = new AnAction("依赖链测试",
                 "自动检测接口依赖，按依赖顺序批量测试并传递响应值", AllIcons.Actions.Execute) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -399,7 +395,7 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(chainTestAction);
 
-        AnAction chainAiGenAction = new AnAction("依赖链 AI 生成参数（多选）",
+        AnAction chainAiGenAction = new AnAction("AI 生成参数",
                 "为选中接口生成参数并标注依赖自动填充项", AllIcons.Actions.Lightning) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -407,16 +403,6 @@ public class ApiTreePanel extends JPanel {
             }
         };
         group.add(chainAiGenAction);
-
-        // 跳转到源码
-        group.addSeparator();
-        AnAction gotoSourceAction = new AnAction("跳转到源码", "在编辑器中打开此接口所在位置", AllIcons.Actions.EditSource) {
-            @Override
-            public void actionPerformed(@NotNull AnActionEvent e) {
-                navigateToSource();
-            }
-        };
-        group.add(gotoSourceAction);
 
         ActionPopupMenu popup = ActionManager.getInstance().createActionPopupMenu(ActionPlaces.POPUP, group);
         popup.getComponent().show(tree, e.getX(), e.getY());
@@ -1963,7 +1949,7 @@ public class ApiTreePanel extends JPanel {
         java.util.List<ApiDefinition> selected = getSelectedApisForExport();
         if (selected.isEmpty()) {
             Messages.showInfoMessage(project,
-                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Markdown（多选）\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Markdown（多选）\n• Shift 连选接口后再右键 → 导出 Markdown（多选）",
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Markdown\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Markdown\n• Shift 连选接口后再右键 → 导出 Markdown",
                     "提示");
             return;
         }
@@ -2028,7 +2014,7 @@ public class ApiTreePanel extends JPanel {
         java.util.List<ApiDefinition> selected = getSelectedApisForExport();
         if (selected.isEmpty()) {
             Messages.showInfoMessage(project,
-                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Postman JSON（多选）\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Postman JSON（多选）\n• Shift 连选接口后再右键 → 导出 Postman JSON（多选）",
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Postman JSON\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Postman JSON\n• Shift 连选接口后再右键 → 导出 Postman JSON",
                     "提示");
             return;
         }

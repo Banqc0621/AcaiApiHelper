@@ -3462,68 +3462,6 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 #2：从 ApiTreePanel 右键菜单触发 cURL 导入（移出本面板工具栏后，
-     * 这里只从入口端调用，但保持包内可见以减少外部依赖）。
-     */
-    public void importCurlOrJson() {
-        String input = Messages.showInputDialog(project,
-                "粘贴cURL命令或JSON:", "导入", Messages.getQuestionIcon());
-        if (input == null || input.isBlank()) return;
-
-        if (input.trim().startsWith("curl")) {
-            // 解析cURL
-            Map<String, Object> parsed = CurlUtil.parseCurl(input);
-            String method = (String) parsed.get("method");
-            String url = (String) parsed.get("url");
-            @SuppressWarnings("unchecked")
-            Map<String, String> headers = (Map<String, String>) parsed.get("headers");
-            String body = (String) parsed.get("body");
-
-            // 分离baseUrl和path
-            String baseUrl = baseUrlField.getText().trim();
-            String path = url;
-            if (url.startsWith("http://") || url.startsWith("https://")) {
-                int pathStart = url.indexOf("/", 8);
-                if (pathStart > 0) {
-                    int queryStart = url.indexOf("?", pathStart);
-                    int pathEnd = queryStart > 0 ? queryStart : url.length();
-                    baseUrl = url.substring(0, pathStart);
-                    path = url.substring(pathStart, pathEnd);
-                }
-            }
-
-            methodCombo.setSelectedItem(method);
-            urlField.setText(path);
-            baseUrlField.setText(baseUrl);
-
-            headerTableModel.setRowCount(0);
-            if (headers != null) {
-                for (Map.Entry<String, String> e : headers.entrySet()) {
-                    headerTableModel.addRow(new Object[]{e.getKey(), e.getValue()});
-                }
-            }
-            if (body != null) {
-                bodyEditor.setText(body);
-            }
-            statusLabel.setText("● 已从cURL导入请求");
-        } else {
-            // JSON导入（使用AI service）
-            AiParameterService ai = AiParameterService.getInstance(project);
-            List<Map<String, String>> params = ai.importFromJson(input);
-            if (!params.isEmpty()) {
-                Map<String, String> first = params.get(0);
-                for (int i = 0; i < paramTableModel.getRowCount(); i++) {
-                    Object name = paramTableModel.getValueAt(i, 0);
-                    if (name instanceof String && first.containsKey(name)) {
-                        paramTableModel.setValueAt(first.get(name), i, 3);
-                    }
-                }
-                statusLabel.setText("● 已从JSON导入参数");
-            }
-        }
-    }
-
-    /**
      * 一伦优化 v4：把"导出 cURL / 文档 / 报告"3 个按钮从右面板顶部工具栏下移到左侧 "..." 弹层。
      * 这里是给 ApiTreePanel 调用的公开入口，内部直接复用原私有方法。
      */
