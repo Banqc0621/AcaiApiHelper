@@ -69,11 +69,6 @@ public class ApiDebuggerPanel extends JPanel {
     /** 一伦优化 v11：发送/停止合并为单一按钮 —— 空闲时显示「Execute」图标，请求中显示自旋 spinner，再点一次即取消。 */
     private final JButton sendButton = new JButton(AllIcons.Actions.Execute);
     private final UiStyle.LoadingSpinnerIcon sendSpinner = new UiStyle.LoadingSpinnerIcon();
-    /** 一伦优化 v14：tab 标题里专用的"代理"发送按钮 —— 全新独立实例，从未调过 applyAccent / attachInteractionFeedback，
-     *  不会把 accent 底色带进 tab 标题，也不会有 hover 改底色的 listener。点击 forward 到主 sendButton。 */
-    private final JButton tabSendButton = new JButton(AllIcons.Actions.Execute);
-    /** 一伦优化 v21：「参数」Tab 内容区里承载「发起请求」按钮的小工具栏（独立 panel, 与 tab 标题完全分离） */
-    private JPanel tabSendHeaderPanel;
     private final JBTextField baseUrlField = new JBTextField();
     private final JBLabel activeEnvInfoLabel = new JBLabel("当前环境: -");
     private final JBTextArea preRequestScriptArea = new JBTextArea(4, 32);
@@ -210,10 +205,6 @@ public class ApiDebuggerPanel extends JPanel {
         // 一伦优化 v4：合并"AI 生成"与"测试"两个 Tab 为一个 "AI 助手" Tab，
         // 场景下拉 + 助手按钮（弹出生成 / 测试当前）一站式完成。
         tabbedPane.addTab("AI 助手", createAiTab());
-        // 一伦优化 v21：把发送按钮放进「参数」Tab <b>内容区</b>的 NORTH 顶部（{@link #installSendButtonOnParamsTab} 组装 tabSendHeaderPanel），
-        // createParamsTab 在内部把 tabSendHeaderPanel add 到 northContainer 的第一行 —— 物理上脱离 tab 标题区，
-        // LaF 的选中态蓝线（横穿 tab 标题底部）碰不到按钮；选哪个 tab 哪个 tab 标题底部才出现蓝线。
-        installSendButtonOnParamsTab();
         JScrollPane requestScroll = new JBScrollPane(tabbedPane);
         requestScroll.setBorder(JBUI.Borders.empty());
         requestScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
@@ -495,7 +486,7 @@ public class ApiDebuggerPanel extends JPanel {
         row.add(Box.createHorizontalGlue());
 
         // v16 修复 1：顶部行不再放 sendButton（已在 tab 标题里），否则会出现两个发送按钮
-        // —— 真正"右侧第三列"的发送按钮通过 installSendButtonOnParamsTab() 注入到"参数"Tab 标题内。
+        // —— 一伦优化 v31：发送入口收敛到「参数」tab 行动行最右侧的「发起请求」按钮（createParamsSendButton）。
         return row;
     }
 
@@ -731,24 +722,17 @@ public class ApiDebuggerPanel extends JPanel {
 
         panel.add(new JBScrollPane(paramTable), BorderLayout.CENTER);
 
-        // 一伦优化 v4：tab 顶部 [+/−/AI] 行动行 + 附件面板（仅在有文件参数时显示）
+        // 一伦优化 v4：tab 顶部 [+/−] 行动行 + 附件面板（仅在有文件参数时显示）
         JPanel northContainer = new JPanel();
         northContainer.setLayout(new BoxLayout(northContainer, BoxLayout.Y_AXIS));
 
-        // 一伦优化 v21：把「发起请求」按钮放进「参数」Tab 内容区顶部（独立小工具栏）——
-        // 物理上脱离 tab 标题区，LaF 的选中态蓝线（横穿 tab 标题底部）碰不到按钮。
-        // tabSendHeaderPanel 由 {@link #installSendButtonOnParamsTab} 在 addTab("参数", ...) 之后立刻组装，
-        // 并 add 到 northContainer 的<b>第一行</b>。
-        if (tabSendHeaderPanel != null) {
-            tabSendHeaderPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
-            northContainer.add(tabSendHeaderPanel);
-        }
-
+        // 一伦优化 v31：行动行最右边增设「发起请求」按钮 —— 对当前选中接口一键发请求。
         JPanel actionBar = createTabActionBar(
                 "添加自定义参数",
                 "删除选中的参数",
                 e -> addCustomParameter(),
-                e -> removeSelectedParameter());
+                e -> removeSelectedParameter(),
+                createParamsSendButton());
         actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         northContainer.add(actionBar);
 
@@ -1285,10 +1269,23 @@ public class ApiDebuggerPanel extends JPanel {
      * +/− 统一为 24×24 紧凑方形图标按钮。</p>
      * <p>一伦优化 v29：+/− 右对齐并贴近表格 —— 与 IntelliJ 表格工具栏习惯一致，
      * 按钮视觉上"属于"下方表格，不再孤零零浮在左上角。</p>
+     * <p>一伦优化 v31：行动行最右侧可选增设「发起请求」按钮 —— 对当前选中接口一键发请求，
+     * 不必再滚回顶部请求栏点发送。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
                                       java.awt.event.ActionListener removeAction) {
+        return createTabActionBar(addTooltip, removeTooltip, addAction, removeAction, null);
+    }
+
+    /**
+     * 一伦优化 v31：带「发起请求」按钮的 tab 行动行重载。
+     * <p>{@code sendButton} 为 null 时行为与旧签名一致；非空时放在行动行最右侧（+/− 之后）。</p>
+     */
+    private JPanel createTabActionBar(String addTooltip, String removeTooltip,
+                                      java.awt.event.ActionListener addAction,
+                                      java.awt.event.ActionListener removeAction,
+                                      JButton sendButton) {
         JPanel bar = new JPanel(new BorderLayout());
         bar.setOpaque(false);
         bar.setBorder(JBUI.Borders.empty(0, 0, 2, 0));
@@ -1300,6 +1297,10 @@ public class ApiDebuggerPanel extends JPanel {
         btns.setOpaque(false);
         btns.add(addBtn);
         btns.add(delBtn);
+        if (sendButton != null) {
+            btns.add(Box.createHorizontalStrut(4));
+            btns.add(sendButton);
+        }
         bar.add(btns, BorderLayout.EAST);
         return bar;
     }
@@ -1400,82 +1401,27 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v21：把「发起请求」按钮放进「参数」Tab 内容区右上角，<b>彻底脱离 tab 标题区</b>。
-     * <p>之前几轮（v11→v20）一直把按钮装在 {@code setTabComponentAt} 设置的自定义 tab 标题组件里。
-     * 根因：JetBrains LaF 的 {@code JTabbedPane} 选中态会在<b>整个选中 tab 标题的底部</b>画一条
-     * 蓝色下划线（{@code TabbedPane.tabUnderlineColor}），这条线会横穿整条 tab 标题 bounds，
-     * 物理上必然穿过按钮 → 中间留白 → 「参数」label，视觉上就像"两个按钮共用同一条下划线"、
-     * "默认两个一起变蓝"。我们之前在按钮内部 {@code fillRect(tabAreaBackground)} 想盖，<b>盖不住</b>：
-     * LaF 是最后画在 Swing 组件之上的。</p>
-     *
-     * <p>v21 解法：按钮放到「参数」Tab <b>内容区</b>的 {@code NORTH} 顶部（{@link #createParamsTab} 里的
-     * {@code northContainer} 第一行），紧贴 tab 标题下方、与内容表右对齐。</p>
-     * <ul>
-     *   <li>按钮物理上脱离 tab 标题 → LaF 的选中态蓝线碰不到按钮；</li>
-     *   <li>按钮恢复成普通 {@code JButton}（不设自绘 UI），LaF 自带的 hover/pressed 反馈正常显示，
-     *       没有"鼠标移开还发亮"残留 —— 因为普通按钮的 hover 状态由 LaF 完整管理；</li>
-     *   <li>选哪个 tab，哪个 tab 标题底部才出现蓝线；不在「参数」tab 时按钮位于内容区但随 tab 一起隐藏。</li>
-     * </ul>
+     * 一伦优化 v31：「参数」tab 行动行最右侧的「发起请求」按钮 —— 对当前选中接口一键发请求。
+     * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
+     * 主按钮请求中会切 spinner，本按钮同步 icon/tooltip，再点一次即取消，行为与顶部发送完全一致。</p>
+     * <p>历史包袱说明：v14~v21 曾试图把发送按钮塞进 tab 标题区（setTabComponentAt /
+     * NORTH 独立 header），但 LaF 选中态蓝线会横穿 tab 标题，观感始终不对，
+     * 且 v21 的 tabSendHeaderPanel 实际从未被 add 进容器（死代码）。v31 彻底移除该机制，
+     * 入口收敛到行动行最右侧 —— 紧贴 +/−，视觉属于参数表，无 LaF 干扰。</p>
      */
-    private void installSendButtonOnParamsTab() {
-        if (tabbedPane == null) return;
-        int paramsIdx = -1;
-        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
-            if ("参数".equals(tabbedPane.getTitleAt(i))) {
-                paramsIdx = i;
-                break;
-            }
-        }
-        if (paramsIdx < 0) return;
+    private JButton createParamsSendButton() {
+        JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
+                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
+        btn.setToolTipText("对当前选中接口发起请求（与顶部发送等价）");
 
-        // v21：tabSendButton 是普通 JButton，LaF 自管 hover/pressed，
-        // 不再自绘、也不再塞进 setTabComponentAt 的 tab 标题组件 —— 物理上脱离 LaF 蓝线区域。
-        tabSendButton.setOpaque(false);
-        tabSendButton.setFocusable(false);
-        // 触摸目标 ≥ 24x24 (内容区里可以稍大些,这里给 28x28)
-        tabSendButton.setPreferredSize(new Dimension(28, 28));
-        tabSendButton.setMinimumSize(new Dimension(28, 28));
-        tabSendButton.setMaximumSize(new Dimension(28, 28));
-        tabSendButton.setMargin(new Insets(2, 4, 2, 4));
-        tabSendButton.setIconTextGap(0);
-        tabSendButton.setAlignmentY(Component.CENTER_ALIGNMENT);
-
-        // 同步初始 icon / tooltip（主 sendButton 此刻仍是 Execute 图标）
-        tabSendButton.setIcon(sendButton.getIcon());
-        tabSendButton.setToolTipText(sendButton.getToolTipText());
-
-        // 关键：主 sendButton 的 icon / tooltip 变化时同步给 tabSendButton。
-        sendButton.addPropertyChangeListener("icon", evt ->
-                tabSendButton.setIcon((Icon) evt.getNewValue()));
-        sendButton.addPropertyChangeListener("toolTipText", evt ->
-                tabSendButton.setToolTipText((String) evt.getNewValue()));
-        sendButton.addPropertyChangeListener("enabled", evt ->
-                tabSendButton.setEnabled((Boolean) evt.getNewValue()));
-
-        // 点击 forward：doClick 触发主 sendButton 的 ActionListener，业务逻辑只走一处
-        tabSendButton.addActionListener(e -> sendButton.doClick());
-
-        // v21：把按钮放到「参数」Tab 内容区的右上角（独立小工具栏）——
-        // 紧贴 tab 标题下方、与内容表右对齐，物理上完全脱离 tab 标题区。
-        // 这里只组装 header 容器，content 由 createParamsTab 把它 add 到 northContainer 第一行。
-        tabSendHeaderPanel = new JPanel(new BorderLayout());
-        tabSendHeaderPanel.setOpaque(false);
-        // 左侧留一个「发送」提示文字，让按钮含义更明确（按钮只有 icon 容易看不出来是发送）
-        JBLabel sendHint = new JBLabel("发起请求");
-        sendHint.setFont(sendHint.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
-        sendHint.setForeground(JBColor.GRAY);
-        sendHint.setBorder(JBUI.Borders.empty(0, 0, 0, 0));
-        sendHint.setAlignmentY(Component.CENTER_ALIGNMENT);
-        tabSendHeaderPanel.add(sendHint, BorderLayout.WEST);
-        // 按钮在 EAST，right-aligned
-        JPanel rightWrap = new JPanel();
-        rightWrap.setLayout(new BoxLayout(rightWrap, BoxLayout.X_AXIS));
-        rightWrap.setOpaque(false);
-        rightWrap.add(Box.createHorizontalGlue());
-        rightWrap.add(tabSendButton);
-        rightWrap.add(Box.createHorizontalStrut(2));
-        tabSendHeaderPanel.add(rightWrap, BorderLayout.EAST);
-        tabSendHeaderPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        // 与主 sendButton 状态同步：请求中 icon 切 spinner / tooltip 提示取消 / 请求完成恢复
+        sendButton.addPropertyChangeListener("icon", evt -> btn.setIcon((Icon) evt.getNewValue()));
+        sendButton.addPropertyChangeListener("toolTipText", evt -> {
+            String tt = (String) evt.getNewValue();
+            btn.setToolTipText(tt == null ? null : "对当前选中接口" + tt.replace(" (Ctrl+Enter)", ""));
+        });
+        sendButton.addPropertyChangeListener("enabled", evt -> btn.setEnabled((Boolean) evt.getNewValue()));
+        return btn;
     }
 
     // ================================================================
