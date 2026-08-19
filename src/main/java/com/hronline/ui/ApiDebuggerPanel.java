@@ -1358,16 +1358,17 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v4：tab 顶部「+/−/AI」行动行 — 放在每个 tab 顶部 NORTH。
-     * <p>目的：把"添加行 / 删除选中行 / 跳到 AI 生成"三个高频动作压到一行，
+     * 一伦优化 v4：tab 顶部「+/−」行动行 — 放在每个 tab 顶部 NORTH。
+     * <p>目的：把"添加行 / 删除选中行"两个高频动作压到一行，
      * 不用滚到底部工具栏，也不用在每个 tab 单独维护一套按钮。</p>
      *
      * <ul>
      *   <li>「+」：调用 {@code addAction}（各 tab 自定义：参数表 addRow / 请求头 addRow / body 插入默认内容）</li>
      *   <li>「−」：调用 {@code removeAction}（各 tab 自定义：参数表 removeSelected / 请求头 removeSelected / body 清空）</li>
-     *   <li>「AI」：调 {@link #generateAiParameters}（使用 AI 助手 tab 当前选中场景），完成后自动切到 AI 助手 tab 显示结果。
-     *       生成会回填参数表 + body，headers 不动（生成逻辑本身不处理 headers）。</li>
      * </ul>
+     *
+     * <p>一伦优化 v28：按需求移除行内「AI」按钮（AI 生成统一走底部「AI 测试」入口）；
+     * +/− 统一为 24×24 紧凑方形图标按钮，左侧紧凑排布。</p>
      */
     private JPanel createTabActionBar(String addTooltip, String removeTooltip,
                                       java.awt.event.ActionListener addAction,
@@ -1375,49 +1376,29 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         bar.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
 
-        // 仅保留图标，避免「+ 文字 + + 图标」大小两个一起出现
-        JButton addBtn = iconButton(null, AllIcons.General.Add, e -> {
-            if (addAction != null) addAction.actionPerformed(e);
-        });
-        addBtn.setToolTipText(addTooltip);
-        addBtn.setMargin(new Insets(2, 10, 2, 10));
-
-        // 仅保留图标，避免「− 文字 + − 图标」大小两个一起出现
-        JButton delBtn = iconButton(null, AllIcons.General.Remove, e -> {
-            if (removeAction != null) removeAction.actionPerformed(e);
-        });
-        delBtn.setToolTipText(removeTooltip);
-        delBtn.setMargin(new Insets(2, 10, 2, 10));
-
-        JButton aiBtn = iconButton("AI", AllIcons.Actions.Lightning, e -> aiGenerateAndSwitch());
-        aiBtn.setToolTipText("按 AI 助手当前场景生成参数，填入参数表与请求体，并切到 AI 助手 Tab");
-        aiBtn.setMargin(new Insets(2, 10, 2, 10));
-        aiBtn.putClientProperty("JButton.buttonType", "default");
-        UiStyle.applyAccent(aiBtn,
-                UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
-        UiStyle.attachInteractionFeedback(aiBtn);
+        JButton addBtn = compactIconButton(AllIcons.General.Add, addTooltip, addAction);
+        JButton delBtn = compactIconButton(AllIcons.General.Remove, removeTooltip, removeAction);
 
         bar.add(addBtn);
         bar.add(delBtn);
-        bar.add(Box.createHorizontalStrut(8));
-        bar.add(aiBtn);
         return bar;
     }
 
     /**
-     * 触发 AI 生成（按当前 scenarioCombo 选择），生成完毕后自动切到「AI 助手」Tab 显示结果。
+     * 一伦优化 v28：紧凑型纯图标方形按钮（24×24 固定尺寸），用于 tab 行动行的 +/− 等高频小动作。
+     * 固定 preferred/minimum/maximum 三件套，任何 LaF 下都不被拉宽拉高。
      */
-    private void aiGenerateAndSwitch() {
-        AiParameterService.TestScenario s = (AiParameterService.TestScenario) scenarioCombo.getSelectedItem();
-        generateAiParameters(s);
-        // 切到 AI 助手 Tab（最后一项 = AI 助手）。generateAiParameters 是异步执行,
-        // 切 Tab 立即发生，用户能看到 "AI生成中..." 状态与结果区。
-        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
-            if ("AI 助手".equals(tabbedPane.getTitleAt(i))) {
-                tabbedPane.setSelectedIndex(i);
-                break;
-            }
-        }
+    private JButton compactIconButton(Icon icon, String tooltip, java.awt.event.ActionListener action) {
+        JButton btn = iconButton(null, icon, e -> {
+            if (action != null) action.actionPerformed(e);
+        });
+        btn.setToolTipText(tooltip);
+        btn.setMargin(new Insets(0, 0, 0, 0));
+        Dimension size = new Dimension(24, 24);
+        btn.setPreferredSize(size);
+        btn.setMinimumSize(size);
+        btn.setMaximumSize(size);
+        return btn;
     }
 
     private void setupActions() {
