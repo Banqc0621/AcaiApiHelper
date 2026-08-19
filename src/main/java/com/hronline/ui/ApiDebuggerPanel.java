@@ -431,7 +431,10 @@ public class ApiDebuggerPanel extends JPanel {
         envCombo.setPreferredSize(envComboSize);
         envCombo.setMinimumSize(envComboSize);
         envCombo.setMaximumSize(envComboSize);
-        envCombo.setPrototypeDisplayValue("环境占位文本-环境占位文本-环境占位");
+        // 一伦优化 v26 修：envCombo 是 DefaultComboBoxModel<Environment>，setPrototypeDisplayValue
+        // 收的是泛型元素 Environment。v26 错传 String 触发了"不兼容类型: String无法转换为Environment"。
+        // 这里传一个 Environment 临时实例，长度按目标宽度算（"环境-生产-长文本"足够撑出 100+px 内部 width）。
+        envCombo.setPrototypeDisplayValue(new Environment("环境-生产-长文本-占位", ""));
         envCombo.setFont(envCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         envCombo.setToolTipText("切换环境配置");
         envCombo.setAlignmentY(Component.CENTER_ALIGNMENT);
