@@ -47,6 +47,8 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public int requestTimeout = RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS;
         public String globalHeadersJson = "{}";
         public boolean autoScanOnStartup = true;
+        /** 扫描包过滤（逗号/分号分隔的包前缀，空=扫描全部） */
+        public String scanPackageFilter = "";
         public String testReportDir = ".acai/reports";
         public String lastTestProfile = "";
         /** 单次扫描最大AI调用次数 */
@@ -146,6 +148,9 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     public void setActiveEnvironment(String v) { myState.activeEnvironment = v; }
     public boolean isAutoScanOnStartup() { return myState.autoScanOnStartup; }
     public void setAutoScanOnStartup(boolean v) { myState.autoScanOnStartup = v; }
+
+    public String getScanPackageFilter() { return myState.scanPackageFilter == null ? "" : myState.scanPackageFilter; }
+    public void setScanPackageFilter(String v) { myState.scanPackageFilter = v == null ? "" : v; }
 
     public String getGlobalHeadersJson() { return myState.globalHeadersJson; }
     public void setGlobalHeadersJson(String v) { myState.globalHeadersJson = v; }

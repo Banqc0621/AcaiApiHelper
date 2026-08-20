@@ -2157,6 +2157,15 @@ public class ApiTreePanel extends JPanel {
 
         try {
             VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
+            // 修复提单「快速跳转无效」：扫描时记录的绝对路径可能已失效（项目换目录/换盘符），
+            // 先刷新 VFS，再按文件名在项目内回退查找，尽量保证跳转成功。
+            if (virtualFile == null) {
+                LocalFileSystem.getInstance().refresh(false);
+                virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
+            }
+            if (virtualFile == null) {
+                virtualFile = locateByFileName(api.getSourceFilePath());
+            }
             if (virtualFile == null) {
                 Messages.showWarningDialog(project, "找不到源文件：\n" + api.getSourceFilePath(), "跳转失败");
                 return;
@@ -2171,6 +2180,32 @@ public class ApiTreePanel extends JPanel {
         } catch (Exception ex) {
             LOG.warn("跳转到源码失败: " + api.getSourceFilePath(), ex);
             Messages.showErrorDialog(project, "跳转到源码失败：" + ex.getMessage(), "跳转失败");
+        }
+    }
+
+    /** 路径失效时按文件名在项目源码范围内回退查找（优先同包路径后缀匹配） */
+    private VirtualFile locateByFileName(String recordedPath) {
+        if (recordedPath == null || recordedPath.isBlank()) return null;
+        String fileName = recordedPath.substring(recordedPath.lastIndexOf('/') + 1);
+        if (fileName.isBlank()) return null;
+        try {
+            return com.intellij.openapi.application.ReadAction.compute(() -> {
+                com.intellij.psi.PsiFile[] files = com.intellij.psi.search.FilenameIndex.getFilesByName(
+                        project, fileName, com.intellij.psi.search.GlobalSearchScope.projectScope(project));
+                if (files.length == 0) return null;
+                // 优先：路径后缀与记录路径一致（同包同名文件）
+                String norm = recordedPath.replace('\\', '/');
+                for (com.intellij.psi.PsiFile f : files) {
+                    if (f.getVirtualFile() != null
+                            && f.getVirtualFile().getPath().replace('\\', '/').endsWith(norm)) {
+                        return f.getVirtualFile();
+                    }
+                }
+                return files[0].getVirtualFile();
+            });
+        } catch (Exception ex) {
+            LOG.warn("按文件名回退查找失败: " + recordedPath, ex);
+            return null;
         }
     }
 

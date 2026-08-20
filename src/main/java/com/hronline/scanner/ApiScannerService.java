@@ -251,6 +251,18 @@ public final class ApiScannerService {
                 LOG.info("控制器去重: " + skippedNullQfn + " 个匿名/lambda 类被跳过（无类名无法稳定解析）");
             }
 
+            // ── 3.7 包过滤：修复提单「扫描api能不能指定扫特别包下的文件」──
+            //    设置里配置了包前缀时，只保留命中前缀的控制器，其余跳过。
+            List<String> packageFilter = parsePackageFilter(
+                    RestAutoLabSettingsState.getInstance(project).getScanPackageFilter());
+            if (!packageFilter.isEmpty()) {
+                int before = uniqueControllers.size();
+                uniqueControllers = uniqueControllers.stream()
+                        .filter(cls -> matchesPackageFilter(cls, packageFilter))
+                        .collect(Collectors.toList());
+                LOG.info("包过滤 " + packageFilter + ": 控制器 " + before + " -> " + uniqueControllers.size());
+            }
+
             // ── 4. 逐个解析控制器 ──
             int total = uniqueControllers.size();
             for (int i = 0; i < total; i++) {
@@ -373,6 +385,27 @@ public final class ApiScannerService {
         return apis;
     }
 
+    /** 解析包过滤配置：按逗号/分号/空白拆分，去空白；空配置返回空列表（=不过滤） */
+    private List<String> parsePackageFilter(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+        List<String> prefixes = new ArrayList<>();
+        for (String part : raw.split("[,;\\s]+")) {
+            String p = part.trim();
+            if (!p.isEmpty()) prefixes.add(p);
+        }
+        return prefixes;
+    }
+
+    /** 控制器类的全限定名是否命中任一包前缀（qfn 为 null 的类不过滤，保留） */
+    private boolean matchesPackageFilter(PsiClass cls, List<String> prefixes) {
+        String qfn = cls.getQualifiedName();
+        if (qfn == null) return true;
+        for (String prefix : prefixes) {
+            if (qfn.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
     /** 判断类是否为 JAX-RS 风格（有 @Path 注解但无 Spring 控制器注解） */
     private boolean isJaxrsClass(PsiClass psiClass) {
         boolean hasPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAVAX) != null
@@ -414,6 +447,16 @@ public final class ApiScannerService {
         // 2. Spring 框架本身的类（用户业务控制器不会在 org.springframework.* 包下）
         if (qfn.startsWith("org.springframework.")
                 && !qfn.startsWith("org.springframework.samples.")) {
+            return true;
+        }
+
+        // 3. 修复提单「扫描出来不存在的api」：springdoc/swagger/actuator 等
+        //    依赖库内置端点（SwaggerUiHome、OpenApiActuatorResource 等）不是用户业务接口，
+        //    且源码在 jar 里，双击跳转必然失败，统一过滤。
+        if (qfn.startsWith("org.springdoc.")
+                || qfn.startsWith("springfox.")
+                || qfn.startsWith("io.swagger.")
+                || qfn.startsWith("org.springframework.boot.actuate.")) {
             return true;
         }
 
@@ -528,7 +571,7 @@ public final class ApiScannerService {
         }
         for (String basePath : basePaths) {
             for (String methodPath : methodPaths) {
-                String fullPath = normalizePath(basePath + methodPath);
+                String fullPath = normalizePath(joinPaths(basePath, methodPath));
                 result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
             }
         }
@@ -619,7 +662,7 @@ public final class ApiScannerService {
         }
         for (String basePath : basePaths) {
             for (String methodPath : methodPaths) {
-                String fullPath = normalizePath(basePath + methodPath);
+                String fullPath = normalizePath(joinPaths(basePath, methodPath));
                 result.add(buildApiDefinition(method, controllerName, httpMethod, fullPath, declaringClass));
             }
         }
@@ -822,6 +865,22 @@ public final class ApiScannerService {
         }
 
         return result;
+    }
+
+    /**
+     * 拼接类级基路径与方法级路径。
+     * <p>修复提单「扫描接口URL不完整，缺少/」：类级 @RequestMapping("/sys/xxx") 与
+     * 方法级 @PostMapping("page")（无前导斜杠）直接拼接会变成 /sys/xxxpage。
+     * 这里在两段之间缺斜杠时补上 /，双斜杠时折叠，保证结果与 Spring 运行时一致。</p>
+     */
+    private String joinPaths(String base, String sub) {
+        if (base == null || base.isEmpty()) return sub == null ? "" : sub;
+        if (sub == null || sub.isEmpty()) return base;
+        boolean baseSlash = base.endsWith("/");
+        boolean subSlash = sub.startsWith("/");
+        if (baseSlash && subSlash) return base + sub.substring(1);
+        if (!baseSlash && !subSlash) return base + "/" + sub;
+        return base + sub;
     }
 
     /** 规范化URL路径 */

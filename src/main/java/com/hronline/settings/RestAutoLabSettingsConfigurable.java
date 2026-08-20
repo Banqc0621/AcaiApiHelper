@@ -39,6 +39,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
     private JBTextField timeoutField;
     private JBTextField maxAiCallsField;
     private JBCheckBox autoScanBox;
+    private JBTextField scanPackageField;
     private JBTextArea systemPromptArea;
     private JBTextArea userPromptTemplateArea;
 
@@ -95,6 +96,9 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         timeoutField = new JBTextField(String.valueOf(state != null ? state.requestTimeout : RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
         maxAiCallsField = new JBTextField(String.valueOf(state != null ? state.maxAiCallsPerScan : 50));
         autoScanBox = new JBCheckBox("项目打开时自动扫描API", state == null || state.autoScanOnStartup);
+        scanPackageField = new JBTextField(state != null && state.scanPackageFilter != null
+                ? state.scanPackageFilter : "");
+        scanPackageField.setToolTipText("留空=扫描全部；多个包前缀用逗号分隔，如 com.xxx.sys, com.xxx.admin");
 
         // AI 提示词自定义
         systemPromptArea = new JBTextArea(state != null ? state.aiSystemPrompt : RestAutoLabConstants.AI_SYSTEM_PROMPT);
@@ -173,6 +177,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
                 .addLabeledComponent(new JBLabel("API 基础 URL:"), baseUrlField, 1, false)
                 .addLabeledComponent(new JBLabel("请求超时(秒):"), timeoutField, 1, false)
                 .addComponent(autoScanBox, 1)
+                .addLabeledComponent(new JBLabel("扫描包过滤:"), scanPackageField, 1, false)
                 .addVerticalGap(16)
 
                 .addComponent(aiHeader)
@@ -229,6 +234,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
                 || gitCheckEnabledBox.isSelected() != state.gitCheckEnabled
                 || !fieldText(gitAllowedCodesField).equals(state.gitAllowedStatusCodes)
                 || autoScanBox.isSelected() != state.autoScanOnStartup
+                || !fieldText(scanPackageField).equals(state.scanPackageFilter == null ? "" : state.scanPackageFilter)
                 || !fieldText(timeoutField).equals(String.valueOf(state.requestTimeout))
                 || !fieldText(maxAiCallsField).equals(String.valueOf(state.maxAiCallsPerScan))
                 || !systemPromptArea.getText().equals(state.aiSystemPrompt)
@@ -251,6 +257,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         s.setRequestTimeout(parseInt(fieldText(timeoutField), RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
         s.setMaxAiCallsPerScan(parseInt(fieldText(maxAiCallsField), 50));
         s.setAutoScanOnStartup(autoScanBox.isSelected());
+        s.setScanPackageFilter(fieldText(scanPackageField));
         s.setAiSystemPrompt(systemPromptArea.getText());
         s.setAiUserPromptTemplate(userPromptTemplateArea.getText());
     }
@@ -273,6 +280,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         timeoutField.setText(String.valueOf(state.requestTimeout));
         maxAiCallsField.setText(String.valueOf(state.maxAiCallsPerScan));
         autoScanBox.setSelected(state.autoScanOnStartup);
+        scanPackageField.setText(state.scanPackageFilter == null ? "" : state.scanPackageFilter);
         systemPromptArea.setText(state.aiSystemPrompt);
         userPromptTemplateArea.setText(state.aiUserPromptTemplate);
     }

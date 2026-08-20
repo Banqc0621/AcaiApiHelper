@@ -964,6 +964,9 @@ public class ApiDebuggerPanel extends JPanel {
         bodyFormatCombo = new JComboBox<>(new String[]{"JSON", "x-www-form-urlencoded", "Raw", "XML", "Text", "HTML"});
         bodyFormatCombo.setPreferredSize(new Dimension(180, 28));
         bodyFormatCombo.setFont(bodyFormatCombo.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        // 修复提单「json格式没有生效」：切换格式即刻生效——
+        // JSON 时自动格式化请求体内容，同时把 Content-Type 头同步为所选格式对应的类型
+        bodyFormatCombo.addActionListener(e -> applySelectedBodyFormat());
         topBar.add(bodyFormatCombo);
 
         topBar.add(Box.createHorizontalStrut(16));
@@ -1562,18 +1565,30 @@ public class ApiDebuggerPanel extends JPanel {
         }
 
         // 添加请求体参数（文件参数占位，等用户在附件面板选择）
+        // 修复提单「参数解析有问题」：复杂对象（DTO）不再压成一行（值是一整坨 JSON 字符串），
+        // 而是展开为点号路径行（request.appId 等），每个字段的类型/默认值/注释一目了然。
         for (ApiParameter param : api.bodyParameters()) {
-            String defaultVal = param.isFile()
-                    ? "请在右侧'文件参数'区选择本地文件"
-                    : param.generateDefaultValue();
-            paramTableModel.addRow(new Object[]{
-                    param.getName(),
-                    param.getType(),
-                    param.isFile() ? "FILE" : "BODY",
-                    defaultVal,
-                    param.isRequired() ? "是" : "否",
-                    param.getDescription()
-            });
+            if (param.isFile()) {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "FILE",
+                        "请在右侧'文件参数'区选择本地文件",
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            } else if (param.isComplexType()) {
+                addFlattenedBodyRows(param.getName(), param, 0);
+            } else {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "BODY",
+                        param.generateDefaultValue(),
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            }
         }
 
         // 收藏模式下：覆盖该文件夹下此接口的实时参数（与其它文件夹互不干扰）
@@ -1920,6 +1935,33 @@ public class ApiDebuggerPanel extends JPanel {
         return headers;
     }
 
+    /**
+     * 把复杂 BODY 参数（DTO）递归展开为点号路径行写入参数表。
+     * <p>例：request(TenantAppInitDTO) → request.appId / request.appName …
+     * 嵌套对象继续下钻（最多 4 层，防循环引用爆表）。</p>
+     */
+    private void addFlattenedBodyRows(String prefix, ApiParameter param, int depth) {
+        if (depth > 4 || param.getChildren().isEmpty()) {
+            paramTableModel.addRow(new Object[]{
+                    prefix, param.getType(), "BODY",
+                    param.generateDefaultValue(),
+                    param.isRequired() ? "是" : "否",
+                    param.getDescription()
+            });
+            return;
+        }
+        // 父行：只读展示，值留空，提示为对象
+        paramTableModel.addRow(new Object[]{
+                prefix, param.getType(), "BODY", "",
+                param.isRequired() ? "是" : "否",
+                param.getDescription().isBlank() ? "对象，字段见下方 " + prefix + ".* 行"
+                        : param.getDescription()
+        });
+        for (ApiParameter child : param.getChildren()) {
+            addFlattenedBodyRows(prefix + "." + child.getName(), child, depth + 1);
+        }
+    }
+
     private String generateDefaultBody(ApiDefinition api) {
         List<ApiParameter> bodyParams = api.bodyParameters();
         if (bodyParams.isEmpty()) return "{}";
@@ -1949,6 +1991,45 @@ public class ApiDebuggerPanel extends JPanel {
         } catch (Exception e) {
             return raw;
         }
+    }
+
+    /**
+     * 修复提单「json格式没有生效」：格式下拉切换后立即生效，两步：
+     * <p>1. JSON 格式时自动格式化请求体内容（内容非法 JSON 则保留原文本，仅在状态栏提示）；
+     * 2. 把请求头里的 Content-Type 同步为所选格式对应的类型，保证发送时格式真正生效。</p>
+     */
+    private void applySelectedBodyFormat() {
+        String format = resolveSelectedBodyFormat();
+        // 1. JSON 时自动格式化内容
+        if (HttpExecutorService.BODY_FORMAT_JSON.equals(format)) {
+            String text = bodyEditor.getText();
+            if (text != null && !text.isBlank()) {
+                try {
+                    var elem = JsonParser.parseString(text);
+                    bodyEditor.setText(gson.toJson(elem));
+                } catch (Exception ex) {
+                    statusLabel.setText("● 内容不是合法 JSON，未格式化");
+                }
+            }
+        }
+        // 2. 同步 Content-Type 头（有则替换值，无则追加）
+        String contentType = currentApi != null
+                ? selectedBodyFormatContentType(currentApi)
+                : RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
+        setHeaderValue(RestAutoLabConstants.HEADER_CONTENT_TYPE, contentType);
+        statusLabel.setText("● 请求体格式已切换: " + bodyFormatCombo.getSelectedItem());
+    }
+
+    /** 设置/覆盖指定名称的请求头值（大小写不敏感匹配已有行） */
+    private void setHeaderValue(String name, String value) {
+        for (int i = 0; i < headerTableModel.getRowCount(); i++) {
+            Object key = headerTableModel.getValueAt(i, 0);
+            if (name.equalsIgnoreCase(key == null ? "" : key.toString())) {
+                headerTableModel.setValueAt(value, i, 1);
+                return;
+            }
+        }
+        headerTableModel.addRow(new Object[]{name, value});
     }
 
     /**

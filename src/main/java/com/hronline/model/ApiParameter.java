@@ -125,8 +125,10 @@ public class ApiParameter {
         if (lowerName.contains("password") || lowerName.contains("pwd")) {
             return "Abc@123456";
         }
-        // ID字段
-        if (lowerName.equals("id") || lowerName.endsWith("_id") || lowerName.endsWith("Id")) {
+        // ID字段（修复：lowerName 永远匹配不到大写后缀 "Id"，改用原名判断，
+        // 覆盖 appId / orderId / userId 这类常见命名）
+        if (lowerName.equals("id") || lowerName.endsWith("_id")
+                || name.endsWith("Id") || name.endsWith("ID")) {
             return "1001";
         }
         // 名称字段
