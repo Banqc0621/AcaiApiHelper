@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -47,6 +48,133 @@ public class TemplateEngine {
 
     /** 模板类型枚举 */
     public enum TemplateType { DOCX, MARKDOWN, PDF, UNKNOWN }
+
+    /**
+     * 提取模板全文（docx 会拼回所有 {@code <w:t>} 文本），供占位符检测与调试。
+     */
+    public static String extractTemplateText(String templatePath) throws IOException {
+        byte[] bytes = Files.readAllBytes(Paths.get(templatePath));
+        if (templatePath.toLowerCase().endsWith(".docx")) {
+            StringBuilder plain = new StringBuilder();
+            try (ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+                ZipEntry entry;
+                while ((entry = zin.getNextEntry()) != null) {
+                    if (!entry.getName().equals("word/document.xml")) continue;
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[4096];
+                    int n;
+                    while ((n = zin.read(buf)) > 0) baos.write(buf, 0, n);
+                    String xml = baos.toString(StandardCharsets.UTF_8);
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile("<w:t(?:\\s[^>]*)?>([^<]*)</w:t>").matcher(xml);
+                    while (m.find()) plain.append(m.group(1));
+                }
+            }
+            return plain.toString();
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    /** 模板是否包含任何占位符（${...} 或 {#each apis}） */
+    public static boolean hasPlaceholders(String templateText) {
+        return templateText != null
+                && (templateText.contains("${") || templateText.contains(LOOP_EACH_APIS));
+    }
+
+    /**
+     * 生成内置示例 Markdown 模板内容（与《设计开发接口模版》结构一致的占位符版）。
+     */
+    public static String sampleMarkdownTemplate() {
+        return "# 一、接口设计（${project.name}，共 ${project.apiCount} 个接口）\n\n"
+                + "{#each apis}\n"
+                + "### ${api.name}接口：\n\n"
+                + "（1）接口名称：${api.name}\n\n"
+                + "（2）接口地址：`${api.url}`\n\n"
+                + "（3）请求方式：${api.method}（Content-Type: ${api.contentType}）\n\n"
+                + "（4）返回类型：${api.returnType}\n\n"
+                + "（5）接口入参：\n\n"
+                + "${api.requestParams}\n\n"
+                + "（6）接口出参：\n\n"
+                + "${api.responseParams}\n\n"
+                + "（7）请求示例：\n\n"
+                + "```json\n${api.requestExample}\n```\n\n"
+                + "（8）响应示例：\n\n"
+                + "```json\n${api.responseExample}\n```\n\n"
+                + "（9）接口逻辑：${api.description}\n\n"
+                + "---\n\n"
+                + "{/each}\n";
+    }
+
+    /**
+     * 生成内置示例 Word 模板（.docx）。占位符与 Markdown 版相同；
+     * docx 模板里循环标记与每个占位符行各自独占一个段落（Word 里一行一个），
+     * 占位符值中的换行会被展开为同格式的多个段落。
+     */
+    public static void writeSampleDocxTemplate(String outputPath) throws IOException {
+        StringBuilder body = new StringBuilder();
+        body.append(samplePara("${project.name} 接口文档（共 ${project.apiCount} 个接口，生成于 ${project.generatedAt}）"));
+        String[] loopLines = {
+                "{#each apis}",
+                "${api.name}接口：",
+                "（1）接口名称：${api.name}",
+                "（2）接口地址：${api.url}",
+                "（3）请求方式：${api.method}（Content-Type: ${api.contentType}）",
+                "（4）返回类型：${api.returnType}",
+                "（5）接口入参：",
+                "${api.requestParams}",
+                "（6）接口出参：",
+                "${api.responseParams}",
+                "（7）请求示例：${api.requestExample}",
+                "（8）响应示例：${api.responseExample}",
+                "（9）接口逻辑：${api.description}",
+                "{/each}"
+        };
+        for (String line : loopLines) {
+            body.append(samplePara(line));
+        }
+
+        String documentXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
+                + "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+                + "<w:body>" + body
+                + "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/>"
+                + "<w:pgMar w:top=\"1440\" w:right=\"1800\" w:bottom=\"1440\" w:left=\"1800\" "
+                + "w:header=\"851\" w:footer=\"992\" w:gutter=\"0\"/></w:sectPr>"
+                + "</w:body></w:document>";
+        String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
+                + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                + "<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+                + "</Types>";
+        String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
+                + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>"
+                + "</Relationships>";
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (ZipOutputStream zout = new ZipOutputStream(out)) {
+            putEntry(zout, "[Content_Types].xml", contentTypes);
+            putEntry(zout, "_rels/.rels", rels);
+            putEntry(zout, "word/document.xml", documentXml);
+        }
+        Path p = Paths.get(outputPath);
+        if (p.getParent() != null) Files.createDirectories(p.getParent());
+        Files.write(p, out.toByteArray());
+    }
+
+    private static String samplePara(String text) {
+        return "<w:p><w:r><w:t xml:space=\"preserve\">" + esc(text) + "</w:t></w:r></w:p>";
+    }
+
+    private static String esc(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private static void putEntry(ZipOutputStream zout, String name, String content) throws IOException {
+        zout.putNextEntry(new ZipEntry(name));
+        zout.write(content.getBytes(StandardCharsets.UTF_8));
+        zout.closeEntry();
+    }
 
     /**
      * 根据文件名推断模板类型。
@@ -143,10 +271,11 @@ public class TemplateEngine {
 
     /** 渲染单个 API 块：对 api.xxx 占位符与 {#if}…{/if} 进行替换 */
     private static String renderApiBlock(String block, ApiDefinition api) {
-        String s = block;
-        // 1) 处理 {#if} 块：保留命中分支，移除另一分支
-        s = processIfBlocks(s, api);
-        // 2) 替换占位符
+        return replaceApiPlaceholders(processIfBlocks(block, api), api);
+    }
+
+    /** 替换 <code>${api.xxx}</code> 占位符 */
+    private static String replaceApiPlaceholders(String s, ApiDefinition api) {
         s = s.replace("${api.method}", safe(api.getHttpMethod()));
         s = s.replace("${api.url}", safe(api.getUrl()));
         s = s.replace("${api.name}", safe(api.getName()));
@@ -197,11 +326,15 @@ public class TemplateEngine {
     // DOCX 模板渲染
     // ================================================================
 
+    /** docx 段落匹配（含自闭合） */
+    private static final java.util.regex.Pattern PARA_PATTERN = java.util.regex.Pattern.compile(
+            "<w:p\\b[^>]*>.*?</w:p>|<w:p\\b[^>]*/>", java.util.regex.Pattern.DOTALL);
+    /** <w:t> 文本节点 */
+    private static final java.util.regex.Pattern WT_PATTERN = java.util.regex.Pattern.compile(
+            "<w:t(?:\\s[^>]*)?>([^<]*)</w:t>");
+
     /**
-     * 渲染 docx 模板：解压 → 修改 word/document.xml 中 <w:t> 节点文本 → 重新打包。
-     * <p>由于 docx 的占位符可能被 Word 拆到多个 <w:t>（同段被切分），先尝试在
-     * 整段 XML 上做占位符替换（简单但可能漏），再回退到「拼回文本 → 替换 → 再切回
-     * <w:t>」的串行文本方案：取每个 <w:p> 段落拼成单字符串后做替换。</p>
+     * 渲染 docx 模板：解压 → 按段落渲染 word/document.xml（及页眉页脚）→ 重新打包。
      */
     static byte[] renderDocx(byte[] docxBytes, List<ApiDefinition> apis, String projectName) throws IOException {
         // 1) 解压
@@ -217,13 +350,13 @@ public class TemplateEngine {
             }
         }
 
-        // 2) 替换 document.xml（主文档）。Word 文档里占位符一般都在 document.xml
+        // 2) 替换 document.xml（主文档）与页眉页脚
         for (Map.Entry<String, byte[]> e : entries.entrySet()) {
             String name = e.getKey();
             if (name.equals("word/document.xml") || name.startsWith("word/header")
                     || name.startsWith("word/footer")) {
                 String xml = new String(e.getValue(), StandardCharsets.UTF_8);
-                String renderedXml = renderInDocxXml(xml, apis, projectName);
+                String renderedXml = renderDocxXml(xml, apis, projectName);
                 e.setValue(renderedXml.getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -241,78 +374,148 @@ public class TemplateEngine {
     }
 
     /**
-     * 在 docx 的 document.xml 上做占位符替换。
-     * <p>策略：先把整段 XML 中所有 <w:t>…</w:t> 节点文本按出现顺序收集为数组，
-     * 拼成一个大字符串做模板渲染，再按字符长度比例切回去写入对应 <w:t>。
-     * 这样可正确处理同一段被拆成多个 <w:t> 的情形。</p>
+     * 段落级渲染 docx XML。
+     * <p>模板约定：<code>{#each apis}</code> / <code>{/each}</code>、
+     * <code>{#if ...}</code> / <code>{/if}</code> 各自独占一个段落（Word 里一行一个）；
+     * 循环体段落对每个接口复制一份并替换 <code>${api.xxx}</code> 占位符。
+     * 占位符值中的换行（如参数表）会拆成多个同格式段落。</p>
      */
-    private static String renderInDocxXml(String xml, List<ApiDefinition> apis, String projectName) {
-        // 收集所有 <w:t>…</w:t> 节点（可能含 xml:space="preserve"）
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-                "<w:t(?:\\s[^>]*)?>([^<]*)</w:t>");
-        java.util.regex.Matcher m = p.matcher(xml);
-        StringBuilder plain = new StringBuilder();
-        List<int[]> spans = new ArrayList<>(); // 每个 <w:t> 文本在 plain 中的 [start,end)
-        List<String> originals = new ArrayList<>();
-        int lastEnd = 0;
-        while (m.find()) {
-            // 区间内保持原 xml 其它部分：占位符不跨非 <w:t> 标签，先做近似切分
-            // 简单方案：把 m.group(1) 直接拼到 plain
-            String t = m.group(1);
-            int s = plain.length();
-            plain.append(t);
-            spans.add(new int[]{s, plain.length()});
-            originals.add(t);
-            lastEnd = m.end();
+    private static String renderDocxXml(String xml, List<ApiDefinition> apis, String projectName) {
+        Matcher pm = PARA_PATTERN.matcher(xml);
+        List<int[]> spans = new ArrayList<>();
+        List<String> paraXmls = new ArrayList<>();
+        List<String> paraTexts = new ArrayList<>();
+        while (pm.find()) {
+            spans.add(new int[]{pm.start(), pm.end()});
+            paraXmls.add(pm.group());
+            paraTexts.add(concatWT(pm.group()));
         }
-        if (plain.length() == 0) return xml;
-        // 在 plain 上做 Markdown 模板渲染（同样的占位符语法）
-        String rendered = renderMarkdown(plain.toString(), apis, projectName);
-        if (rendered.equals(plain.toString())) {
-            // 没替换：保持原样
-            return xml;
-        }
-        // 重建 xml：把每个 <w:t>…</w:t> 内的文本按 spans 切到 rendered
-        // 简单粗暴：按 rendered 的子串替换原文中每个 <w:t> 节点内的内容
-        m = p.matcher(xml);
+        if (paraXmls.isEmpty()) return xml;
+
         StringBuilder out = new StringBuilder();
         int pos = 0;
-        int cursor = 0;
-        while (m.find()) {
-            out.append(xml, pos, m.start(1));
-            int[] span = spans.get(0); // 因为 matcher 是顺序的，可维护 idx
-            // 用 spans 的索引对齐
-            int origIdx = -1;
-            // 通过游标顺序读取 spans
-            origIdx = nextSpanIdx(cursor, spans);
-            cursor++;
-            if (origIdx < 0) {
-                out.append(m.group(1));
-            } else {
-                int s = spans.get(origIdx)[0];
-                int e = spans.get(origIdx)[1];
-                if (e <= rendered.length()) {
-                    out.append(escapeForWText(rendered.substring(s, e)));
+        int i = 0;
+        while (i < paraXmls.size()) {
+            out.append(xml, pos, spans.get(i)[0]);
+            String trimmed = paraTexts.get(i).trim();
+            if (LOOP_EACH_APIS.equals(trimmed)) {
+                int j = i + 1;
+                while (j < paraXmls.size() && !LOOP_END.equals(paraTexts.get(j).trim())) j++;
+                if (j >= paraXmls.size()) {
+                    // 未闭合：原样保留
+                    out.append(paraXmls.get(i));
                 } else {
-                    out.append(m.group(1));
+                    for (ApiDefinition api : apis) {
+                        renderDocxLoopBody(paraXmls, paraTexts, i + 1, j, api, out);
+                    }
+                    pos = spans.get(j)[1];
+                    i = j + 1;
+                    continue;
                 }
+            } else if (replaceProjectPlaceholders(paraTexts.get(i), apis, projectName)
+                    .equals(paraTexts.get(i))) {
+                out.append(paraXmls.get(i));
+            } else {
+                out.append(textToParagraphXml(paraXmls.get(i),
+                        replaceProjectPlaceholders(paraTexts.get(i), apis, projectName)));
             }
-            out.append(xml, m.end(1), m.end());
-            pos = m.end();
+            pos = spans.get(i)[1];
+            i++;
         }
         out.append(xml, pos, xml.length());
         return out.toString();
     }
 
-    /** 根据第几次匹配返回 spans 索引（直接用 cursor 即可，spans 顺序与 <w:t> 出现顺序一致） */
-    private static int nextSpanIdx(int cursor, List<int[]> spans) {
-        return cursor < spans.size() ? cursor : -1;
+    /** 渲染循环体段落区间 [from, to)，处理段落级 {#if} 标记 */
+    private static void renderDocxLoopBody(List<String> paraXmls, List<String> paraTexts,
+                                           int from, int to, ApiDefinition api, StringBuilder out) {
+        int k = from;
+        while (k < to) {
+            String trimmed = paraTexts.get(k).trim();
+            if (IF_HAS_RESPONSE_OPEN.equals(trimmed) || IF_HAS_REQUEST_OPEN.equals(trimmed)) {
+                int end = k + 1;
+                while (end < to && !IF_END.equals(paraTexts.get(end).trim())) end++;
+                boolean cond = IF_HAS_RESPONSE_OPEN.equals(trimmed) ? hasResponse(api) : hasRequest(api);
+                if (cond && end < to) {
+                    renderDocxLoopBody(paraXmls, paraTexts, k + 1, end, api, out);
+                }
+                k = (end < to) ? end + 1 : to;
+            } else if (IF_END.equals(trimmed) || LOOP_EACH_APIS.equals(trimmed) || LOOP_END.equals(trimmed)) {
+                k++;
+            } else {
+                String t = processIfBlocks(paraTexts.get(k), api);
+                t = replaceApiPlaceholders(t, api);
+                out.append(t.equals(paraTexts.get(k)) ? paraXmls.get(k) : textToParagraphXml(paraXmls.get(k), t));
+                k++;
+            }
+        }
     }
 
-    /** XML 中 <w:t> 节点内的特殊字符转义（只处理 &、<、>） */
-    private static String escapeForWText(String s) {
+    /** 拼回段落内所有 <w:t> 文本（解码 XML 实体） */
+    private static String concatWT(String paraXml) {
+        Matcher m = WT_PATTERN.matcher(paraXml);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) sb.append(decodeXml(m.group(1)));
+        return sb.toString();
+    }
+
+    /**
+     * 用新文本重建段落：第一行写入原段落（保留段落/运行格式），
+     * 其余行复制为同格式的新段落。
+     */
+    private static String textToParagraphXml(String paraXml, String text) {
+        String[] lines = text.split("\n", -1);
+        Matcher pprm = java.util.regex.Pattern.compile("<w:pPr>.*?</w:pPr>", java.util.regex.Pattern.DOTALL)
+                .matcher(paraXml);
+        String pPr = pprm.find() ? pprm.group() : "";
+        Matcher rr = java.util.regex.Pattern
+                .compile("<w:r\\b[^>]*>\\s*(<w:rPr>.*?</w:rPr>)?", java.util.regex.Pattern.DOTALL)
+                .matcher(paraXml);
+        String rPr = rr.find() && rr.group(1) != null ? rr.group(1).trim() : "";
+
+        Matcher wt = WT_PATTERN.matcher(paraXml);
+        StringBuilder first = new StringBuilder();
+        int p = 0;
+        boolean firstDone = false;
+        while (wt.find()) {
+            first.append(paraXml, p, wt.start(1));
+            first.append(esc(firstDone ? "" : lines[0]));
+            firstDone = true;
+            p = wt.end(1);
+        }
+        if (!firstDone) {
+            StringBuilder sb = new StringBuilder("<w:p>").append(pPr);
+            for (String line : lines) sb.append(runXml(rPr, line));
+            return sb.append("</w:p>").toString();
+        }
+        first.append(paraXml, p, paraXml.length());
+        StringBuilder out = new StringBuilder(first.toString());
+        for (int li = 1; li < lines.length; li++) {
+            out.append("<w:p>").append(pPr).append(runXml(rPr, lines[li])).append("</w:p>");
+        }
+        return out.toString();
+    }
+
+    private static String runXml(String rPr, String line) {
+        return "<w:r>" + rPr + "<w:t xml:space=\"preserve\">" + esc(line) + "</w:t></w:r>";
+    }
+
+    private static String decodeXml(String s) {
         if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+                .replace("&apos;", "'").replace("&amp;", "&");
+    }
+
+    private static boolean hasResponse(ApiDefinition api) {
+        return api.getResponseBodyType() != null
+                && !api.getResponseBodyType().isBlank()
+                && !"void".equalsIgnoreCase(api.getResponseBodyType());
+    }
+
+    private static boolean hasRequest(ApiDefinition api) {
+        return !api.bodyParameters().isEmpty()
+                || !api.queryParameters().isEmpty()
+                || !api.pathParameters().isEmpty();
     }
 
     // ================================================================

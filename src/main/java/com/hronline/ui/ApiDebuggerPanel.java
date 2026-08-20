@@ -46,6 +46,9 @@ import java.awt.*;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.Future;
@@ -3610,7 +3613,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 让用户选模板文件
         ApplicationManager.getApplication().invokeLater(() -> {
             String templatePath = TestDataExporter.chooseOpenFile(project,
-                    "选择接口文档模板", "模板文件", "docx", "md", "markdown");
+                    "选择接口文档模板", "模板文件（需包含 ${api.xxx} 占位符）", "docx", "md", "markdown");
             if (templatePath == null) return;
             TemplateEngine.TemplateType type = TemplateEngine.detectType(templatePath);
             if (type == TemplateEngine.TemplateType.UNKNOWN) {
@@ -3624,6 +3627,47 @@ public class ApiDebuggerPanel extends JPanel {
                         "PDF 模板需要表单域或专用库支持，请改用 .docx 或 .md 模板。\n"
                                 + "如需 PDF 导出，可先用 .md 模板生成后另存。",
                         "模板不支持");
+                return;
+            }
+            // 模板必须含占位符才会有效果，否则产物与模板完全相同
+            try {
+                String text = TemplateEngine.extractTemplateText(templatePath);
+                if (!TemplateEngine.hasPlaceholders(text)) {
+                    int choice = Messages.showYesNoDialog(project,
+                            "所选模板没有检测到任何占位符，导出结果会和模板一模一样（没有效果）。\n\n"
+                                    + "模板里需要写占位符才会被替换，例如：\n"
+                                    + "  {#each apis} … ${api.name} ${api.url} ${api.requestParams} … {/each}\n\n"
+                                    + "是否帮你生成一份内置示例模板（含全部占位符），改完后再用它导出？",
+                            "模板缺少占位符",
+                            "生成示例模板", "仍要继续", Messages.getQuestionIcon());
+                    if (choice == Messages.YES) {
+                        String ext = type == TemplateEngine.TemplateType.DOCX ? ".docx" : ".md";
+                        String name = "RestAutoLab-示例模板" + ext;
+                        String out = TestDataExporter.chooseExportPath(project, name);
+                        if (out == null) return;
+                        try {
+                            if (type == TemplateEngine.TemplateType.DOCX) {
+                                TemplateEngine.writeSampleDocxTemplate(out);
+                            } else {
+                                Files.writeString(Paths.get(out),
+                                        TemplateEngine.sampleMarkdownTemplate(), StandardCharsets.UTF_8);
+                            }
+                            Messages.showInfoMessage(project,
+                                    "示例模板已生成：" + out + "\n\n"
+                                            + "1) 按自己的格式修改它（保留 ${...} 占位符与 {#each apis}/{/each}）；\n"
+                                            + "2) 再次右键『用模板导出』并选择这份文件即可。",
+                                    "示例模板已生成");
+                        } catch (IOException ex) {
+                            ExportErrorReporter.reportExportFailure(project,
+                                    ExportErrorReporter.Operation.API_DOC_TEMPLATE, ex);
+                        }
+                    } else if (choice != Messages.NO) {
+                        return;
+                    }
+                }
+            } catch (IOException ex) {
+                ExportErrorReporter.reportExportFailure(project,
+                        ExportErrorReporter.Operation.API_DOC_TEMPLATE, ex);
                 return;
             }
             // 推荐输出路径（与内置导出同一命名规则：RestAutoLab-template-yyyyMMddHHmmss）
