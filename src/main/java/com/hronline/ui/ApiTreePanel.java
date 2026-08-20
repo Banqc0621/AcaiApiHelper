@@ -2068,8 +2068,9 @@ public class ApiTreePanel extends JPanel {
                 AllIcons.Actions.Help);
         if (ok != 0) return;
 
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
-        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".docx";
+        // 导出文件名格式：RestAutoLab-年月日时分秒（RestAutoLab-yyyyMMddHHmmss.docx）
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMddHHmmss");
+        String suggestName = "RestAutoLab-" + sdf.format(new java.util.Date()) + ".docx";
 
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
