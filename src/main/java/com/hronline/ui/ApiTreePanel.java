@@ -652,7 +652,7 @@ public class ApiTreePanel extends JPanel {
                 btn.setToolTipText("打开收藏文件夹管理（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试）");
                 break;
             case FILTER_LATEST:
-                btn.setToolTipText("仅显示最近1个月（" + LATEST_CHANGE_DAYS + "天）Git 变更涉及的接口（含 Controller/Service/实体类等全栈逻辑改动）");
+                btn.setToolTipText("仅显示最近（" + LATEST_CHANGE_DAYS + "天）Git 变更涉及的接口");
                 break;
         }
     }
@@ -1961,7 +1961,7 @@ public class ApiTreePanel extends JPanel {
     /**
      * 导出选中的接口（支持单选/多选）为 Markdown 文档（含最近测试数据）。
      * <ul>
-     *   <li>文件命名精确到秒：<code>acai-api-yyyyMMdd-HHmmss.md</code></li>
+     *   <li>文件命名与 Word 导出一致：<code>RestAutoLab-yyyyMMddHHmmss.md</code></li>
      *   <li>严格按用户在接口树中**明确选中**的节点生成；不展开 Controller 节点</li>
      *   <li>导出前弹出确认框，列出要导出的接口（按 Controller 分组），用户可取消</li>
      * </ul>
@@ -2001,19 +2001,17 @@ public class ApiTreePanel extends JPanel {
                 AllIcons.Actions.Help);
         if (ok != 0) return;
 
-        // === 文件名精确到秒：acai-api-20260708-153022.md ===
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
-        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
+        // === 文件命名与 Word 导出一致：RestAutoLab-yyyyMMddHHmmss.md ===
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMddHHmmss");
+        String suggestName = "RestAutoLab-" + sdf.format(new java.util.Date()) + ".md";
 
         // 用 FileChooser.chooseFile 弹目录选择框（与导入同一套机制），跨平台一致。
         // 不用 FileSaverDescriptor/createSaveFileDialog：Windows 上原生保存对话框常弹不出。
         ApplicationManager.getApplication().invokeLater(() -> {
             String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
             if (outputPath == null) return;
-            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-            java.util.List<RequestHistory> history = settings.loadRequestHistory();
             try {
-                ApiDocExporter.exportSelectedApisWithHistory(selected, history, project.getName(), outputPath);
+                ApiDocExporter.exportSelectedApis(selected, outputPath);
                 Messages.showInfoMessage(project,
                         "已导出 " + selected.size() + " 个接口到:\n" + outputPath,
                         "导出成功");

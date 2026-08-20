@@ -3554,20 +3554,19 @@ public class ApiDebuggerPanel extends JPanel {
                 AllIcons.Actions.Help);
         if (ok != 0) return;
 
-        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-        List<RequestHistory> history = settings.loadRequestHistory();
         // selected 在上方多次重赋值，非 effectively final，需用 final 副本供 lambda 捕获
         final List<ApiDefinition> selectedApis = selected;
 
         // 路径选择：统一用 FileChooser.chooseFile 弹出目录选择框（与导入同一套机制），
         // 跨平台一致。用 invokeLater + defaultModalityState 确保上方确认对话框模态状态清除后再弹。
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
-        String suggestName = "acai-api-" + sdf.format(new java.util.Date()) + ".md";
+        // 文件名与 Word 导出一致：RestAutoLab-yyyyMMddHHmmss.md
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMddHHmmss");
+        String suggestName = "RestAutoLab-" + sdf.format(new java.util.Date()) + ".md";
         ApplicationManager.getApplication().invokeLater(() -> {
             String path = TestDataExporter.chooseExportPath(project, suggestName);
             if (path == null) return;
             try {
-                ApiDocExporter.exportSelectedApisWithHistory(selectedApis, history, project.getName(), path);
+                ApiDocExporter.exportSelectedApis(selectedApis, path);
                 Messages.showInfoMessage(project, "API文档已导出到:\n" + path, "导出成功");
             } catch (IOException e) {
                 ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.API_DOC, e);
@@ -3627,10 +3626,10 @@ public class ApiDebuggerPanel extends JPanel {
                         "模板不支持");
                 return;
             }
-            // 推荐输出路径
+            // 推荐输出路径（与内置导出同一命名规则：RestAutoLab-template-yyyyMMddHHmmss）
             String outExt = type == TemplateEngine.TemplateType.DOCX ? ".docx" : ".md";
-            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss");
-            String suggestName = "acai-api-template-" + sdf.format(new java.util.Date()) + outExt;
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMddHHmmss");
+            String suggestName = "RestAutoLab-template-" + sdf.format(new java.util.Date()) + outExt;
             String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
             if (outputPath == null) return;
             // 若用户没改后缀，按模板后缀修正

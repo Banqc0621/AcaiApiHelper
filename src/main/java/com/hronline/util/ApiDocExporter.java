@@ -4,7 +4,6 @@ import com.hronline.RestAutoLabConstants;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.ApiParameter;
 import com.hronline.model.ParameterLocation;
-import com.hronline.model.RequestHistory;
 
 import java.io.FileWriter;
 import java.io.IOException;
@@ -12,12 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * API文档导出工具 - 生成Markdown格式的接口文档
@@ -25,105 +20,34 @@ import java.util.stream.Collectors;
 public class ApiDocExporter {
 
     /**
-     * 导出单个Controller的API文档
-     */
-    public static String exportControllerDoc(String controllerName, List<ApiDefinition> apis, String outputFile) throws IOException {
-        StringBuilder md = new StringBuilder();
-        md.append("# ").append(controllerName).append("\n\n");
-        md.append("> 自动生成 by RestAutoLab v1.0.3  \n");
-        md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
-        md.append("---\n\n");
-
-        // Group APIs by controller sub-path or keep flat
-        for (ApiDefinition api : apis) {
-            appendApiDoc(md, api);
-        }
-
-        if (outputFile != null) {
-            Path path = Paths.get(outputFile);
-            Files.createDirectories(path.getParent());
-            try (FileWriter writer = new FileWriter(path.toFile(), StandardCharsets.UTF_8)) {
-                writer.write(md.toString());
-            }
-        }
-
-        return md.toString();
-    }
-
-    /**
-     * 导出所有API文档
-     */
-    public static String exportAllDoc(List<ApiDefinition> apis, String outputFile) throws IOException {
-        // Group by controller
-        Map<String, List<ApiDefinition>> grouped = apis.stream()
-                .collect(Collectors.groupingBy(
-                        api -> api.getControllerName() != null ? api.getControllerName() : "未分类"));
-
-        StringBuilder md = new StringBuilder();
-        md.append("# API 接口文档\n\n");
-        md.append("> 自动生成 by RestAutoLab v1.0.3  \n");
-        md.append("> 接口总数: **").append(apis.size()).append("** 个  \n");
-        md.append("> 生成时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n\n");
-
-        // Table of contents
-        md.append("## 目录\n\n");
-        int idx = 1;
-        for (String controller : grouped.keySet()) {
-            md.append(idx++).append(". [").append(controller).append("](#")
-              .append(controller.toLowerCase().replaceAll("\\s+", "-")).append(")\n");
-        }
-        md.append("\n---\n\n");
-
-        // Content
-        for (Map.Entry<String, List<ApiDefinition>> entry : grouped.entrySet()) {
-            md.append("## ").append(entry.getKey()).append("\n\n");
-            for (ApiDefinition api : entry.getValue()) {
-                appendApiDoc(md, api);
-            }
-        }
-
-        if (outputFile != null) {
-            Path path = Paths.get(outputFile);
-            Files.createDirectories(path.getParent());
-            try (FileWriter writer = new FileWriter(path.toFile(), StandardCharsets.UTF_8)) {
-                writer.write(md.toString());
-            }
-        }
-
-        return md.toString();
-    }
-
-    /**
-     * 导出选中接口的 Markdown 文档（含真实测试数据）。
+     * 导出选中接口的 Markdown 文档，内容与 Word 导出同一信息要求：
+     * <ul>
+     *   <li>一级标序「一、接口设计」（全文档唯一章节标题）</li>
+     *   <li>二级标序「N、xxx接口：」按选中顺序连续编号 1、2、3…</li>
+     *   <li>三级标序「（n）」每个接口从（1）重新开始：
+     *       接口名称 / 接口地址 / 接口入参 / 接口出参 / 接口逻辑
+     *       （与 Word 一致，不含请求方式/返回类型行）</li>
+     *   <li>入参/出参三列表格（字段名 / 类型 / 注释），DTO 等嵌套对象字段
+     *       以「父.子」点号路径全量展开；出参对 Result&lt;T&gt; 等泛型包装
+     *       自动补全 code/msg/data 并继续展开 data 的具体字段</li>
+     * </ul>
      *
-     * <p>在每个接口的标准文档之后，追加"最近一次真实测试"的请求头、请求体、
-     * 响应状态码和响应体，便于离线回溯测试结果。该文档主要供人阅读，
-     * <b>不能</b>被 Postman/Apifox 当作接口源导入（两者只认 JSON 格式）。</p>
-     *
-     * @param apis    选中的接口列表
-     * @param history 请求历史列表（可为null，null 时不附测试数据）
+     * @param apis       选中的接口列表
      * @param outputFile 输出文件路径，为null时仅返回字符串
      * @return Markdown 全文
      */
-    public static String exportSelectedApisWithHistory(List<ApiDefinition> apis,
-                                                       List<RequestHistory> history,
-                                                       String projectName,
-                                                       String outputFile) throws IOException {
-        Map<String, List<ApiDefinition>> grouped = apis.stream()
-                .collect(Collectors.groupingBy(
-                        api -> api.getControllerName() != null && !api.getControllerName().isBlank()
-                                ? api.getControllerName() : "未分类"));
-
+    public static String exportSelectedApis(List<ApiDefinition> apis, String outputFile) throws IOException {
+        if (apis == null) apis = new ArrayList<>();
         StringBuilder md = new StringBuilder();
-        md.append("# API 文档\n\n");
-        md.append("> 项目名称：").append(projectName == null || projectName.isBlank() ? "未命名" : projectName).append("\n\n");
-        md.append("---\n\n");
 
-        for (Map.Entry<String, List<ApiDefinition>> entry : grouped.entrySet()) {
-            for (ApiDefinition api : entry.getValue()) {
-                appendApiDoc(md, api);
-                appendTestHistory(md, api, history);
-            }
+        // 一级标序「一、接口设计」：与 Word 导出一致，全文档唯一章节标题
+        if (!apis.isEmpty()) {
+            md.append("# 一、接口设计\n\n");
+        }
+
+        // 二级标序全文档连续编号（1、2、3…），三级标序每接口从（1）重新开始
+        for (int i = 0; i < apis.size(); i++) {
+            appendApiDoc(md, apis.get(i), i + 1);
         }
 
         if (outputFile != null) {
@@ -134,44 +58,6 @@ public class ApiDocExporter {
             }
         }
         return md.toString();
-    }
-
-    /** 在接口文档后追加最近一次真实测试数据（默认展开 details，便于阅读） */
-    private static void appendTestHistory(StringBuilder md, ApiDefinition api, List<RequestHistory> history) {
-        RequestHistory latest = findLatestHistory(api, history);
-        if (latest == null) {
-            // 没有测试记录：响应参数/示例段已基于返回类型推断展示
-            md.append("> ℹ️ 该接口暂无实际测试记录，响应示例按返回类型推断生成。\n\n");
-            return;
-        }
-
-        md.append("<details open>\n<summary>📝 最近测试记录 (")
-          .append(latest.timeDisplay()).append(")</summary>\n\n");
-        md.append("- 请求方法: `").append(latest.getMethod()).append("`\n");
-        md.append("- 请求URL: `").append(escapeMd(latest.getUrl())).append("`\n");
-        md.append("- 状态码: **").append(latest.getStatusCode())
-          .append("**  耗时: ").append(latest.getDurationMs()).append("ms\n");
-
-        if (latest.getHeaders() != null && !latest.getHeaders().isEmpty()) {
-            md.append("\n**请求头**\n\n");
-            for (Map.Entry<String, String> e : latest.getHeaders().entrySet()) {
-                md.append("- `").append(escapeMd(e.getKey())).append("`: ")
-                  .append(escapeMd(e.getValue())).append("\n");
-            }
-        }
-        if (latest.getRequestBody() != null && !latest.getRequestBody().isBlank()) {
-            md.append("\n**请求体**\n\n```json\n")
-              .append(latest.getRequestBody()).append("\n```\n");
-        } else {
-            md.append("\n**请求体**\n\n```\n(无请求体)\n```\n");
-        }
-        if (latest.getResponseBody() != null && !latest.getResponseBody().isBlank()) {
-            md.append("\n**响应体**\n\n```json\n")
-              .append(latest.getResponseBody()).append("\n```\n");
-        } else {
-            md.append("\n**响应体**\n\n```\n(无响应体)\n```\n");
-        }
-        md.append("\n\n---\n\n");
     }
 
     /**
@@ -225,278 +111,50 @@ public class ApiDocExporter {
         int lt = type.indexOf('<');
         int gt = type.lastIndexOf('>');
         if (lt >= 0 && gt > lt) {
-            String inner = type.substring(lt + 1, gt);
-            // 处理 List<Foo> 之类
-            if (inner.contains("<")) {
-                return inner; // 保留嵌套
-            }
-            return inner;
+            return type.substring(lt + 1, gt);
         }
         return "Object";
     }
 
-    /**
-     * 在历史列表中查找该接口最近一次测试记录。
-     * <p>多策略匹配（按优先级）：</p>
-     * <ol>
-     *   <li><b>apiKey 精确匹配</b>（最稳）</li>
-     *   <li>URL 归一化后按段对比（处理 {id} 占位符 vs 真实值）</li>
-     *   <li>URL 后缀/包含匹配（兜底）</li>
-     * </ol>
-     */
-    private static RequestHistory findLatestHistory(ApiDefinition api, List<RequestHistory> history) {
-        if (history == null || history.isEmpty()) return null;
-        String apiKey = api.uniqueKey();         // "GET|/api/users/{id}"
-        String apiPath = api.getUrl();           // "/api/users/{id}"
-        String method = api.getHttpMethod() == null ? "" : api.getHttpMethod().toUpperCase();
-        String normApiPath = normalizePath(apiPath);
-
-        RequestHistory latest = null;
-
-        // 第 1 优先级：apiKey 精确匹配
-        for (RequestHistory h : history) {
-            if (!methodMatch(h.getMethod(), method)) continue;
-            if (h.getApiKey() != null && h.getApiKey().equals(apiKey)) {
-                if (latest == null || h.getTimestamp() > latest.getTimestamp()) latest = h;
-            }
-        }
-        if (latest != null) return latest;
-
-        // 第 2 优先级：归一化路径段匹配
-        for (RequestHistory h : history) {
-            if (!methodMatch(h.getMethod(), method)) continue;
-            String hUrl = h.getUrl();
-            if (hUrl == null) continue;
-            String normHPath = normalizePath(hUrl);
-            if (normHPath.equals(normApiPath) || pathSegmentsMatch(normHPath, normApiPath)) {
-                if (latest == null || h.getTimestamp() > latest.getTimestamp()) latest = h;
-            }
-        }
-        if (latest != null) return latest;
-
-        // 第 3 优先级：URL 后缀/包含（兜底）
-        for (RequestHistory h : history) {
-            if (!methodMatch(h.getMethod(), method)) continue;
-            String hUrl = h.getUrl();
-            if (hUrl == null) continue;
-            if (hUrl.endsWith(apiPath) || hUrl.contains(apiPath)
-                    || (apiPath.contains("{") && pathMatches(hUrl, apiPath))) {
-                if (latest == null || h.getTimestamp() > latest.getTimestamp()) latest = h;
-            }
-        }
-        return latest;
-    }
-
-    private static boolean methodMatch(String h, String m) {
-        if (h == null || m == null || m.isEmpty()) return true; // 历史方法为空则不限制
-        return h.equalsIgnoreCase(m);
-    }
-
-    /**
-     * URL 归一化：去掉协议/域名/端口/查询参数/花括号占位符
-     * <p>例：<code>http://localhost:8080/api/users/{id}?x=1</code> → <code>/api/users</code></p>
-     */
-    private static String normalizePath(String url) {
-        if (url == null) return "";
-        // 去掉 query
-        int q = url.indexOf('?');
-        if (q >= 0) url = url.substring(0, q);
-        // 去掉 fragment
-        int h = url.indexOf('#');
-        if (h >= 0) url = url.substring(0, h);
-        // 去掉协议+域名
-        int proto = url.indexOf("://");
-        if (proto >= 0) {
-            int slash = url.indexOf('/', proto + 3);
-            if (slash >= 0) url = url.substring(slash);
-            else url = "/";
-        }
-        // 归一化：把 /v1/users/{id} 和 /v1/users/123 视为相同路径
-        StringBuilder sb = new StringBuilder();
-        String[] segs = url.split("/");
-        for (String seg : segs) {
-            if (seg.isEmpty()) continue;
-            // 跳过纯数字段（路径变量值）
-            if (seg.matches("\\{[^{}]+\\}") || seg.matches("\\d+")) continue;
-            sb.append('/').append(seg);
-        }
-        if (sb.length() == 0) sb.append('/');
-        return sb.toString();
-    }
-
-    private static boolean pathSegmentsMatch(String a, String b) {
-        if (a.equals(b)) return true;
-        String[] aSegs = a.split("/");
-        String[] bSegs = b.split("/");
-        if (aSegs.length != bSegs.length) return false;
-        for (int i = 0; i < aSegs.length; i++) {
-            if (aSegs[i].equals(bSegs[i])) continue;
-            // 允许 {id} 占位符
-            if (aSegs[i].matches("\\{[^{}]+\\}") || bSegs[i].matches("\\{[^{}]+\\}")) continue;
-            return false;
-        }
-        return true;
-    }
-
-    private static boolean pathMatches(String fullUrl, String apiPath) {
-        String[] apiSegs = apiPath.split("/");
-        String[] urlSegs = fullUrl.split("[?]");
-        String[] pathSegs = urlSegs[0].split("/");
-        if (apiSegs.length != pathSegs.length) return false;
-        for (int i = 0; i < apiSegs.length; i++) {
-            String a = apiSegs[i];
-            if (a.startsWith("{") && a.endsWith("}")) continue;
-            if (!a.equals(pathSegs[i])) return false;
-        }
-        return true;
-    }
-
-    private static void appendApiDoc(StringBuilder md, ApiDefinition api) {
-        String method = api.getHttpMethod() == null ? "GET" : api.getHttpMethod().toUpperCase();
-        String name = api.getName() == null || api.getName().isBlank() ? "" : api.getName();
+    private static void appendApiDoc(StringBuilder md, ApiDefinition api, int index) {
+        String name = api.getName() == null || api.getName().isBlank()
+                ? (api.getUrl() == null ? "" : api.getUrl()) : api.getName();
         String url = api.getUrl() == null ? "" : api.getUrl();
 
-        // ## `/collection/collectionInfo` （标题：仅 URL，不含方法名和接口名）
-        md.append("## `").append(url).append("`\n\n");
+        // 二级标序「N、xxx接口：」，与 Word 导出同一层级标序
+        md.append("### ").append(index).append("、").append(escapeMd(name)).append("接口：\n\n");
 
-        // 基本信息：<name> （接口名展示在基本信息前一行）
-        if (!name.isEmpty() && !name.equals(url)) {
-            md.append("基本信息：").append(escapeMd(name)).append("\n\n");
-        } else {
-            md.append("基本信息：").append(escapeMd(url)).append("\n\n");
-        }
+        // 三级标序「（n）」信息行（严格对齐 Word：无请求方式/返回类型行）
+        md.append("（1）接口名称：").append(escapeMd(name)).append("\n\n");
+        md.append("（2）接口地址：`").append(url).append("`\n\n");
 
-        // 基本信息表
-        md.append("| 项目 | 内容 |\n");
-        md.append("|------|------|\n");
-        md.append("| 请求方式 | ").append(method).append(" |\n");
-        md.append("| 请求地址 | `").append(url).append("` |\n");
-        String contentType = api.getConsumes();
-        if (contentType == null || contentType.isBlank()) {
-            contentType = "application/json";
-        }
-        md.append("| Content-Type | ").append(contentType).append(" |\n");
-        String retType = api.getResponseBodyType();
-        md.append("| 返回类型 | ").append(retType == null || retType.isBlank() ? "void" : retType).append(" |\n\n");
+        // （3）接口入参：与 Word 导出同一套扁平化（Path/Query/Header 平铺 + DTO 字段树全量展开）
+        md.append("（3）接口入参：\n\n");
+        appendFlatTable(md, ApiDocWordExporter.flattenRequestParams(api));
 
-        // === 请求参数（按段：路径参数 / 查询参数 / Body）===
-        List<ApiParameter> pathParams = api.pathParameters();
-        List<ApiParameter> queryParams = api.queryParameters();
-        List<ApiParameter> bodyParams = api.bodyParameters();
-        List<ApiParameter> headerParams = api.headerParameters();
+        // （4）接口出参：与 Word 导出同一套扁平化（泛型包装补全 code/msg/data + 嵌套字段全量展开）
+        md.append("（4）接口出参：\n\n");
+        appendFlatTable(md, ApiDocWordExporter.flattenResponseParams(api));
 
-        if (!pathParams.isEmpty() || !queryParams.isEmpty() || !bodyParams.isEmpty() || !headerParams.isEmpty()) {
-            md.append("请求参数\n\n");
-
-            // Path
-            if (!pathParams.isEmpty()) {
-                md.append("Path\n\n");
-                md.append("| 参数 | 类型 | 必填 | 说明 |\n");
-                md.append("|------|------|:---:|------|\n");
-                for (ApiParameter p : pathParams) {
-                    appendParamRow(md, p.getName(), p.getType(), p.isRequired(), p.getDescription(), null);
-                }
-                md.append("\n");
-            }
-
-            // Query
-            if (!queryParams.isEmpty()) {
-                md.append("Query\n\n");
-                md.append("| 参数 | 类型 | 必填 | 说明 |\n");
-                md.append("|------|------|:---:|------|\n");
-                for (ApiParameter p : queryParams) {
-                    appendParamRow(md, p.getName(), p.getType(), p.isRequired(), p.getDescription(), p.getDefaultValue());
-                }
-                md.append("\n");
-            }
-
-            // Body
-            if (!bodyParams.isEmpty()) {
-                md.append("Body（").append(contentType).append("）\n\n");
-                md.append("| 参数 | 类型 | 必填 | 说明 |\n");
-                md.append("|------|------|:---:|------|\n");
-                for (ApiParameter p : bodyParams) {
-                    if (!p.getChildren().isEmpty()) {
-                        // @RequestBody 包装参数：直接展开 DTO 字段树（含全部嵌套字段）
-                        appendBodyParamsTable(md, p.getChildren(), "");
-                    } else {
-                        appendParamRow(md, p.getName(), p.getType(), p.isRequired(), p.getDescription(), p.getDefaultValue());
-                    }
-                }
-                md.append("\n");
-            }
-
-            // Header
-            if (!headerParams.isEmpty()) {
-                md.append("Header\n\n");
-                md.append("| 参数 | 必填 | 说明 |\n");
-                md.append("|------|:---:|------|\n");
-                for (ApiParameter p : headerParams) {
-                    md.append("| `").append(p.getName()).append("` | ")
-                      .append(p.isRequired() ? "✓" : "").append(" | ")
-                      .append(escapeMd(p.getDescription())).append(" |\n");
-                }
-                md.append("\n");
-            }
-
-            // 请求示例
-            md.append("请求示例\n\n");
-            md.append("```json\n");
-            md.append(buildRequestExample(api, bodyParams, queryParams, pathParams));
-            md.append("\n```\n\n");
-        }
-
-        // === 响应参数 ===
-        md.append("响应参数\n\n");
-        if (retType == null || retType.isBlank() || retType.equalsIgnoreCase("void")) {
-            md.append("> 接口无返回体\n\n");
-            md.append("响应示例\n\n```json\nnull\n```\n\n");
-        } else {
-            md.append("| 字段 | 类型 | 说明 |\n");
-            md.append("|------|------|------|\n");
-
-            // 优先用扫描器解析出的真实字段树（responseSchema）
-            List<ApiParameter> schema = api.getResponseSchema();
-            boolean hasSchema = schema != null && !schema.isEmpty();
-            if (hasSchema) {
-                appendResponseFieldRowsFromSchema(md, schema, "");
-            } else {
-                // Fallback：未拿到 schema 时，也尝试从 body 参数的 children 中复用（对请求体即响应体的简单情形有帮助）
-                appendResponseParamRows(md, retType, bodyParams, 0);
-            }
-            md.append("\n");
-
-            // 响应示例
-            md.append("响应示例\n\n");
-            md.append("```json\n");
-            md.append(hasSchema
-                    ? synthesizeExampleFromSchema(retType, schema)
-                    : synthesizeExampleFromType(retType, bodyParams));
-            md.append("\n```\n\n");
-        }
+        // （5）接口逻辑
+        md.append("（5）接口逻辑：\n\n");
+        String desc = api.getDescription() == null ? "" : api.getDescription().trim();
+        md.append(desc.isEmpty() ? "接口原有逻辑不变。" : escapeMd(desc)).append("\n\n");
 
         md.append("---\n\n");
     }
 
-    /**
-     * 把扫描器返回的字段树渲染为响应参数表行（递归）。
-     *
-     * @param md     MD 文本缓冲
-     * @param fields 字段列表
-     * @param prefix 字段名前缀（嵌套时累积，如 "data." / "data.user."）
-     */
-    private static void appendResponseFieldRowsFromSchema(StringBuilder md, List<ApiParameter> fields, String prefix) {
-        if (fields == null) return;
-        for (ApiParameter f : fields) {
-            String name = prefix + f.getName();
-            String type = f.getType() == null ? "" : f.getType();
-            String desc = f.getDescription() == null ? "" : f.getDescription();
-            md.append("| `").append(name).append("` | ").append(type)
-              .append(" | ").append(escapeMd(desc)).append(" |\n");
-            if (f.getChildren() != null && !f.getChildren().isEmpty()) {
-                appendResponseFieldRowsFromSchema(md, f.getChildren(), name + ".");
-            }
+    /** 三列表格（字段名 / 类型 / 注释），与 Word 导出的入参/出参表同构 */
+    private static void appendFlatTable(StringBuilder md, List<String[]> rows) {
+        md.append("| 字段名 | 类型 | 注释 |\n");
+        md.append("|--------|------|------|\n");
+        for (String[] row : rows) {
+            md.append("| ").append(escapeMd(row[0]))
+              .append(" | ").append(escapeMd(row[1]))
+              .append(" | ").append(escapeMd(row.length > 2 ? row[2] : ""))
+              .append(" |\n");
         }
+        md.append("\n");
     }
 
     /**
@@ -671,113 +329,6 @@ public class ApiDocExporter {
                 || simpleName.equals("RespResult");
     }
 
-    /** 输出一行参数表。required=true 显示 ✓，否则空字符串。 */
-    private static void appendParamRow(StringBuilder md, String name, String type, boolean required, String desc, String defaultVal) {
-        md.append("| `").append(name == null ? "" : name).append("` | ")
-          .append(type == null ? "" : type).append(" | ")
-          .append(required ? "✓" : "").append(" | ")
-          .append(escapeMd(desc == null ? "" : desc));
-        if (defaultVal != null && !defaultVal.isBlank()) {
-            md.append(" (默认: `").append(escapeMd(defaultVal)).append("`)");
-        }
-        md.append(" |\n");
-    }
-
-    /**
-     * 递归输出响应参数表行。
-     * <p>支持深度限制（maxDepth=3），避免对未知的嵌套对象无限展开。</p>
-     * <p>若提供了 bodyParams，会先尝试用 body 中已有的 ApiParameter 字段树进行展开；
-     * 这样在扫描器未生成 responseSchema 但 Body 与响应同构时也能展示嵌套字段。</p>
-     */
-    private static void appendResponseParamRows(StringBuilder md, String type,
-                                                List<ApiParameter> bodyParams, int depth) {
-        if (depth > 3) {
-            md.append("| `…` | ").append(escapeMd(type)).append(" | 嵌套对象 |\n");
-            return;
-        }
-        String t = type == null ? "" : type.trim();
-        if (t.isEmpty()) return;
-        if (isPrimitiveType(t)) {
-            md.append("| - | ").append(t).append(" | 原始返回值 |\n");
-            return;
-        }
-        // 集合：data 字段
-        if (t.startsWith("List<") || t.startsWith("Collection<") || t.startsWith("Set<") || t.endsWith("[]")) {
-            String inner = t.startsWith("List<") || t.startsWith("Collection<") || t.startsWith("Set<")
-                    ? extractGenericInner(t) : t.substring(0, t.length() - 2);
-            md.append("| `data` | List<").append(inner).append("> | 返回数据 |\n");
-            if (!isPrimitiveType(inner)) {
-                md.append("| `data[].id` | Long | 列表项 ID |\n");
-                appendResponseParamRows(md, inner, null, depth + 1);
-            }
-            return;
-        }
-        if (t.startsWith("Map<") || t.startsWith("java.util.Map<")) {
-            md.append("| `data` | Object | 键值对集合 |\n");
-            return;
-        }
-        if (t.startsWith("Page<") || t.startsWith("IPage<")) {
-            String inner = extractGenericInner(t);
-            md.append("| `data.total` | Long | 总条数 |\n");
-            md.append("| `data.size` | Long | 页大小 |\n");
-            md.append("| `data.current` | Long | 当前页 |\n");
-            md.append("| `data.records` | List<").append(inner).append("> | 数据列表 |\n");
-            if (!isPrimitiveType(inner)) {
-                appendResponseParamRows(md, inner, null, depth + 1);
-            }
-            return;
-        }
-        // 通用 Result<T> 包装或领域对象
-        if (t.startsWith("Result<") || t.endsWith("dto") || t.endsWith("DTO")
-                || t.endsWith("vo") || t.endsWith("VO")
-                || t.endsWith("entity") || t.endsWith("Entity")) {
-            String inner = t.startsWith("Result<") ? extractGenericInner(t) : t;
-            if (inner.equals("Object") || inner.isEmpty()) {
-                md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                md.append("| `message` | String | 返回信息 |\n");
-                md.append("| `data` | Object | 返回数据 |\n");
-            } else if (isPrimitiveType(inner)) {
-                md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                md.append("| `message` | String | 返回信息 |\n");
-                md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
-            } else if (inner.startsWith("List<") || inner.startsWith("Collection<") || inner.endsWith("[]")) {
-                String e = inner.startsWith("List<") ? extractGenericInner(inner) : inner.substring(0, inner.length() - 2);
-                md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                md.append("| `message` | String | 返回信息 |\n");
-                md.append("| `data` | List<").append(e).append("> | 返回数据 |\n");
-            } else {
-                // 关键修复：若 bodyParams 与返回类型同名（或近似），复用其子字段树
-                List<ApiParameter> reuse = findMatchingBodyParams(inner, bodyParams);
-                if (reuse != null && !reuse.isEmpty()) {
-                    md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                    md.append("| `message` | String | 返回信息 |\n");
-                    md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
-                    appendBodyParamsTable(md, reuse, "data");
-                } else {
-                    md.append("| `code` | Integer | 状态码，0 表示成功 |\n");
-                    md.append("| `message` | String | 返回信息 |\n");
-                    md.append("| `data` | ").append(inner).append(" | 返回数据 |\n");
-                    // 给几个常见字段提示
-                    if (inner.endsWith("User") || inner.endsWith("UserDTO") || inner.endsWith("UserVO")) {
-                        md.append("| `data.id` | Long | 主键 |\n");
-                        md.append("| `data.name` | String | 名称 |\n");
-                    } else {
-                        // 尝试递归展开一层（即便没有 bodyParams，DTO 内也可能能命中基础类型）
-                        appendResponseParamRows(md, inner, null, depth + 1);
-                    }
-                }
-            }
-            return;
-        }
-        // 兜底：尝试匹配 bodyParams
-        List<ApiParameter> reuse = findMatchingBodyParams(t, bodyParams);
-        if (reuse != null && !reuse.isEmpty()) {
-            appendBodyParamsTable(md, reuse, "");
-        } else {
-            md.append("| - | ").append(escapeMd(t)).append(" | 复杂对象（字段未在扫描器中识别） |\n");
-        }
-    }
-
     /**
      * 在 bodyParams 中查找与给定类型名匹配的 ApiParameter 字段树。
      * <p>匹配规则：body 的类型名或单字段的 type/名称与 typeSimple 相等（大小写不敏感、忽略泛型）。</p>
@@ -795,13 +346,6 @@ public class ApiDocExporter {
             }
         }
         return null;
-    }
-
-    /**
-     * 兼容旧调用：仅基于类型名生成响应参数表行（不引用 body）。
-     */
-    private static void appendResponseParamRows(StringBuilder md, String type, int depth) {
-        appendResponseParamRows(md, type, null, depth);
     }
 
     /**
@@ -904,25 +448,6 @@ public class ApiDocExporter {
         return "null";
     }
 
-    private static void appendBodyParamsTable(StringBuilder md, List<ApiParameter> params, String prefix) {
-        for (ApiParameter p : params) {
-            String name = prefix.isEmpty() ? p.getName() : prefix + "." + p.getName();
-            md.append("| `").append(name).append("` | ").append(p.getType())
-              .append(" | ").append(p.isRequired() ? "是" : "否")
-              .append(" | ").append(escapeMd(p.getDescription()));
-            if (!p.getDefaultValue().isBlank()) {
-                md.append(" (默认: `").append(escapeMd(p.getDefaultValue())).append("`)");
-            }
-            if (!p.getExample().isBlank()) {
-                md.append(" 例: `").append(escapeMd(p.getExample())).append("`");
-            }
-            md.append(" |\n");
-            if (p.getChildren() != null && !p.getChildren().isEmpty()) {
-                appendBodyParamsTable(md, p.getChildren(), name);
-            }
-        }
-    }
-
     // ================================================================
     // 模板导出便捷方法（供 TemplateEngine 调用）
     // ================================================================
@@ -949,58 +474,6 @@ public class ApiDocExporter {
             return synthesizeExampleFromSchema(retType, schema);
         }
         return synthesizeExampleFromType(retType, api.bodyParameters());
-    }
-
-    private static String generateJsonExample(ApiDefinition api) {
-        StringBuilder sb = new StringBuilder("{");
-        List<ApiParameter> bodyParams = api.bodyParameters();
-        boolean first = true;
-        for (ApiParameter p : bodyParams) {
-            if (!first) sb.append(",");
-            sb.append("\n  \"").append(p.getName()).append("\": ").append(getJsonExampleValue(p));
-            first = false;
-        }
-        if (!first) sb.append("\n");
-        sb.append("}");
-        return sb.toString();
-    }
-
-    private static String getJsonExampleValue(ApiParameter p) {
-        String type = p.getType().toLowerCase();
-        if (!p.getChildren().isEmpty()) {
-            StringBuilder sb = new StringBuilder("{");
-            boolean first = true;
-            for (ApiParameter child : p.getChildren()) {
-                if (!first) sb.append(",");
-                sb.append("\n    \"").append(child.getName()).append("\": ").append(getJsonExampleValue(child));
-                first = false;
-            }
-            if (!first) sb.append("\n  ");
-            sb.append("}");
-            return sb.toString();
-        }
-        if (type.contains("int") || type.contains("long") || type.contains("double")
-                || type.contains("float") || type.contains("bigdecimal")) {
-            return "1";
-        }
-        if (type.contains("boolean")) {
-            return "true";
-        }
-        if (type.contains("list") || type.contains("array")) {
-            return "[]";
-        }
-        return "\"" + p.generateDefaultValue().replace("\"", "\\\"") + "\"";
-    }
-
-    private static String getMethodBadgeColor(String method) {
-        return switch (method) {
-            case "GET" -> "#2E7D32";
-            case "POST" -> "#1565C0";
-            case "PUT" -> "#ED6C02";
-            case "DELETE" -> "#C62828";
-            case "PATCH" -> "#6B21A8";
-            default -> "#757575";
-        };
     }
 
     private static String escapeMd(String s) {

@@ -113,7 +113,7 @@ public class ApiDocWordExporter {
     // ================================================================
 
     /** 入参：Path / Query / Header 平铺 + Body 的 DTO 字段树递归展开 */
-    private static List<String[]> flattenRequestParams(ApiDefinition api) {
+    public static List<String[]> flattenRequestParams(ApiDefinition api) {
         List<String[]> rows = new ArrayList<>();
         appendFlat(rows, api.pathParameters(), "", "路径参数");
         appendFlat(rows, api.queryParameters(), "", "查询参数");
@@ -134,7 +134,7 @@ public class ApiDocWordExporter {
 
     /** 出参：响应字段树递归展开；识别 Result&lt;T&gt; 等泛型包装并补全包装字段，
      *  data 为具体对象时继续递归展开其包含的全部字段；无 schema 时回退到返回类型单行 */
-    private static List<String[]> flattenResponseParams(ApiDefinition api) {
+    public static List<String[]> flattenResponseParams(ApiDefinition api) {
         List<String[]> rows = new ArrayList<>();
         List<ApiParameter> schema = api.getResponseSchema();
         String retType = api.getResponseBodyType();
