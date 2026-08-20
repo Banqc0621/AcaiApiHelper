@@ -111,4 +111,9 @@ tasks {
     jar {
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     }
+
+    buildPlugin {
+        // 产物名与插件展示名保持一致：RestAutoLab-2.0.0.zip（默认取 rootProject.name 会是小写 restautolab）
+        archiveBaseName.set("RestAutoLab")
+    }
 }
