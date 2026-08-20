@@ -128,4 +128,42 @@ class ApiDocExporterTest {
         assertTrue(md.contains("（无入参）"), "无入参应有占位行");
         assertTrue(md.contains("（无返回体）"), "void 返回应有占位行");
     }
+
+    /**
+     * Word 导出：第 2 个接口的（n）必须从（1）重新计数。
+     * 回归锁定：每个接口的三级标序编号实例必须指向各自独立的 abstractNum
+     * 定义（共享 abstractNum 时部分 Word/WPS 版本会合并计数器，出现（11）（12）…）。
+     */
+    @Test
+    void wordExport_subNumberingResetsPerApi() throws IOException {
+        ApiDefinition api1 = buildNestedApi("提交订单", "/sys/payorder/submitOrder");
+        ApiDefinition api2 = buildNestedApi("airDrop", "/admin/collection/airDrop");
+
+        Path out = tempDir.resolve("RestAutoLab-test.docx");
+        ApiDocWordExporter.exportWord(List.of(api1, api2), "RestAutoLab", out.toString());
+
+        String numbering = readZipEntry(out, "word/numbering.xml");
+        String document = readZipEntry(out, "word/document.xml");
+
+        // 两个（n）标序定义相互独立，不共享 abstractNum
+        int cnt = 0, idx = 0;
+        while ((idx = numbering.indexOf("（%1）", idx)) >= 0) { cnt++; idx++; }
+        assertTrue(cnt == 2, "每个接口应有独立的（n）abstractNum 定义，实际 " + cnt);
+        assertTrue(!numbering.contains("startOverride"), "不再依赖 startOverride 合并修复");
+
+        // 文档中两个接口段落分别引用不同的 numId，且各自映射到不同 abstractNumId
+        String firstSubNum = "w:numId w:val=\"3\"", secondSubNum = "w:numId w:val=\"4\"";
+        assertTrue(document.contains(firstSubNum), "第 1 个接口应引用 numId=3");
+        assertTrue(document.contains(secondSubNum), "第 2 个接口应引用 numId=4");
+        assertTrue(numbering.contains("<w:num w:numId=\"3\"><w:abstractNumId w:val=\"2\"/></w:num>"));
+        assertTrue(numbering.contains("<w:num w:numId=\"4\"><w:abstractNumId w:val=\"3\"/></w:num>"));
+    }
+
+    private static String readZipEntry(Path zip, String entryName) throws IOException {
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zip.toFile())) {
+            java.util.zip.ZipEntry e = zf.getEntry(entryName);
+            assertTrue(e != null, "docx 缺少 " + entryName);
+            return new String(zf.getInputStream(e).readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
 }

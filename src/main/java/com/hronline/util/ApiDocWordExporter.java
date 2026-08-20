@@ -416,21 +416,24 @@ public class ApiDocWordExporter {
 
         // numbering.xml：三级标序定义，与参考模板一致
         // numId=1 → 一、（japaneseCounting）；numId=2 → N、（decimal）
-        // numId=3..2+N → （n）（decimal 全角括号），每个接口一个独立实例；
-        // 必须加 startOverride=1，否则 Word 会把共享同一 abstractNum 的多个实例
-        // 合并为同一计数器，导致第 2 个接口的（n）接着前一个接口继续编号
+        // numId=3..2+N → （n）（decimal 全角括号），每个接口一个独立编号实例。
+        // 每个实例必须指向【各自独立的 abstractNum 定义】：多个实例共享同一
+        // abstractNum 时（即使带 startOverride），部分 Word / WPS 版本仍会把它们
+        // 合并成同一计数器，导致第 2 个接口的（n）接着前一个接口继续编号（出现
+        // （11）（12）…）；只有独立定义才能保证每个小节从（1）重新开始
         StringBuilder numbering = new StringBuilder(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n"
                 + "<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
                 + abstractNum("0", "japaneseCounting", "%1、")
-                + abstractNum("1", "decimal", "%1、")
-                + abstractNum("2", "decimal", "（%1）")
-                + "<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num>"
-                + "<w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num>");
+                + abstractNum("1", "decimal", "%1、"));
+        for (int i = 1; i <= apiCount; i++) {
+            numbering.append(abstractNum(String.valueOf(1 + i), "decimal", "（%1）"));
+        }
+        numbering.append("<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num>")
+                .append("<w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num>");
         for (int i = 1; i <= apiCount; i++) {
             numbering.append("<w:num w:numId=\"").append(2 + i)
-                    .append("\"><w:abstractNumId w:val=\"2\"/>")
-                    .append("<w:startOverride w:val=\"1\"/></w:num>");
+                    .append("\"><w:abstractNumId w:val=\"").append(1 + i).append("\"/></w:num>");
         }
         numbering.append("</w:numbering>");
         String numberingXml = numbering.toString();
