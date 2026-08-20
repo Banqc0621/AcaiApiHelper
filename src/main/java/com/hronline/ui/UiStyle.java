@@ -150,7 +150,10 @@ public final class UiStyle {
      */
     public static JButton button(String text, Icon icon, ActionListener listener) {
         JButton btn = new JButton(text, icon);
-        btn.putClientProperty("JButton.buttonType", "roundRect");
+        // 一伦优化 #47：不设 "JButton.buttonType"="roundRect" ——
+        // IntelliJ LaF 的 roundRect 渲染忽略组件自身 foreground，浅色主题下
+        // 用浅底 + 浅色字，自定义白字会白字白底看不见。改用默认按钮外观，
+        // 文字色始终跟随组件 foreground，明暗主题都可见。
         btn.putClientProperty("JButton.minimumWidth", 0);
         btn.setMargin(new Insets(2, 8, 2, 8));
         btn.setFont(btn.getFont().deriveFont(Font.PLAIN, FONT_HINT));
@@ -211,17 +214,43 @@ public final class UiStyle {
     }
 
     /**
-     * 一轮优化 #9：把 accent 主题色应用到一个按钮上。
-     * <p>使用 {@code setBackground}/{@code setForeground} 直接着色，
-     * 跳过 LaF 渲染差异，保证明暗主题下都看得见。</p>
+     * 一轮优化 #9 / #47：把 accent 主题色应用到一个按钮上。
+     * <p>#47 根因修复：IntelliJ LaF 的按钮背景由 LaF 自绘（浅色主题=浅底），
+     * 组件 {@code setBackground} 不生效，而白色文字照画 → 「浅底白字」看不见。
+     * 改为<b>自绘圆角实底 Border</b>：背景色取自组件 background（JBColor 明暗自适应），
+     * 不依赖任何 LaF 背景渲染，明暗主题下都是「accent 底 + 白字」。</p>
      */
     public static void applyAccent(JButton btn, AccentColor accent) {
         if (btn == null || accent == null) return;
         btn.setBackground(accent.color());
         btn.setForeground(accent.onAccent());
-        btn.setOpaque(true);
-        btn.setBorderPainted(false);
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(true);
+        btn.setBorder(ACCENT_FILL_BORDER);
+        // 同步交互反馈 base 色：hover/pressed/禁用态从 accent 色计算，
+        // 禁用恢复后也回到 accent 而不是 LaF 默认色
+        btn.putClientProperty(INTERACTION_BASE_BG, accent.color());
+        btn.putClientProperty(INTERACTION_BASE_BG + "_fg", accent.onAccent());
     }
+
+    /** 自绘圆角实底 Border：用组件当前 background 填充圆角矩形（hover/pressed/禁用态自动跟随） */
+    private static final javax.swing.border.Border ACCENT_FILL_BORDER = new javax.swing.border.Border() {
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(c.getBackground());
+                int arc = Math.min(12, Math.min(width, height) / 2);
+                g2.fillRoundRect(x, y, width - 1, height - 1, arc, arc);
+            } finally {
+                g2.dispose();
+            }
+        }
+        @Override public Insets getBorderInsets(Component c) { return new Insets(0, 0, 0, 0); }
+        @Override public boolean isBorderOpaque() { return false; }
+    };
 
     // ── 按钮交互反馈（一轮优化 #12：统一悬停/按下/加载态）──
 
@@ -244,35 +273,42 @@ public final class UiStyle {
         if (Boolean.TRUE.equals(btn.getClientProperty(INTERACTION_FEEDBACK_ATTACHED))) return;
         btn.putClientProperty(INTERACTION_FEEDBACK_ATTACHED, Boolean.TRUE);
 
-        final Color base = btn.getBackground();
-        final Color baseForeground = btn.getForeground();
-        final Color hover = shift(base, 0.92f);
-        final Color pressed = shift(base, 0.82f);
+        // 一伦优化 #47：base 色不再在 attach 时快照，而是每次事件动态读取
+        // （applyAccent 可能在 attach 之后才设置 INTERACTION_BASE_BG，
+        // 快照会导致 hover/pressed 用 LaF 默认色覆盖 accent 底色）。
         final Color disabled = JBColor.namedColor("Button.disabledText", new Color(0x9E, 0x9E, 0x9E));
         // v15 修复：把 base 色保存到 clientProperty，业务侧（如 sendRequest → spinner → idle 重置）
         // 可以拿到真正的 base 色，而不是 hover 态的 currentBackground
-        btn.putClientProperty(INTERACTION_BASE_BG, base);
-        btn.putClientProperty(INTERACTION_BASE_BG + "_fg", baseForeground);
+        if (btn.getClientProperty(INTERACTION_BASE_BG) == null) {
+            btn.putClientProperty(INTERACTION_BASE_BG, btn.getBackground());
+        }
+        if (btn.getClientProperty(INTERACTION_BASE_BG + "_fg") == null) {
+            btn.putClientProperty(INTERACTION_BASE_BG + "_fg", btn.getForeground());
+        }
 
         btn.addMouseListener(new MouseInputAdapter() {
+            private Color base(JButton b) {
+                Object o = b.getClientProperty(INTERACTION_BASE_BG);
+                return o instanceof Color c ? c : b.getBackground();
+            }
             @Override public void mouseEntered(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                btn.setBackground(hover);
+                btn.setBackground(shift(base(btn), 0.92f));
             }
             @Override public void mouseExited(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                btn.setBackground(base);
+                btn.setBackground(base(btn));
             }
             @Override public void mousePressed(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                if (SwingUtilities.isLeftMouseButton(e)) btn.setBackground(pressed);
+                if (SwingUtilities.isLeftMouseButton(e)) btn.setBackground(shift(base(btn), 0.82f));
             }
             @Override public void mouseReleased(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
                 // v15 修复：松开时不再根据 getMousePosition 决定 hover/base，
                 // 一律回到 base。鼠标若仍在按钮上，mouseEntered 已经触发（或在
                 // 同一事件链中紧随其后）会把背景刷到 hover，避免"点过后发亮残留"。
-                btn.setBackground(base);
+                btn.setBackground(base(btn));
                 // 强制 repaint 清掉 LaF 可能的旧 hover 残影（特别是刚 setIcon 之后）
                 btn.repaint();
             }
@@ -280,9 +316,11 @@ public final class UiStyle {
         // 禁用态：底色变灰，文字保留可读性
         btn.addPropertyChangeListener("enabled", evt -> {
             boolean en = (boolean) evt.getNewValue();
+            Object savedBase = btn.getClientProperty(INTERACTION_BASE_BG);
+            Object savedFg = btn.getClientProperty(INTERACTION_BASE_BG + "_fg");
             if (en) {
-                btn.setBackground(base);
-                btn.setForeground(baseForeground);
+                btn.setBackground(savedBase instanceof Color c ? c : btn.getBackground());
+                btn.setForeground(savedFg instanceof Color c ? c : btn.getForeground());
             } else {
                 btn.setBackground(JBColor.namedColor("Button.background", new Color(0xEE, 0xEE, 0xEE)).darker());
                 btn.setForeground(disabled);

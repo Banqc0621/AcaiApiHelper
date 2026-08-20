@@ -1425,6 +1425,7 @@ public class ApiDebuggerPanel extends JPanel {
     static class TabStripSendButtonLayer extends JLayeredPane {
         private final JTabbedPane pane;
         private final JButton button;
+        private final JScrollPane scroll;
 
         TabStripSendButtonLayer(Component center, JButton sendBtn) {
             setLayout(null);
@@ -1432,8 +1433,9 @@ public class ApiDebuggerPanel extends JPanel {
             add(sendBtn, JLayeredPane.PALETTE_LAYER);
 
             this.button = sendBtn;
-            this.pane = (center instanceof JScrollPane sp && sp.getViewport() != null
-                    && sp.getViewport().getView() instanceof JTabbedPane tp) ? tp : null;
+            this.scroll = center instanceof JScrollPane sp ? sp : null;
+            this.pane = (scroll != null && scroll.getViewport() != null
+                    && scroll.getViewport().getView() instanceof JTabbedPane tp) ? tp : null;
 
             addComponentListener(new ComponentAdapter() {
                 @Override
@@ -1441,6 +1443,17 @@ public class ApiDebuggerPanel extends JPanel {
                     reposition();
                 }
             });
+            // 一伦优化 #47：垂直滚动条出现/消失会收窄内容列可见宽度，
+            // 按钮右缘必须跟随 viewport 可见右缘，才能与下方内容（AI 配置卡等）右对齐，
+            // 不再硬贴容器右缘显得突出
+            if (scroll != null && scroll.getViewport() != null) {
+                scroll.getViewport().addComponentListener(new ComponentAdapter() {
+                    @Override
+                    public void componentResized(ComponentEvent e) {
+                        reposition();
+                    }
+                });
+            }
         }
 
         @Override
@@ -1462,7 +1475,7 @@ public class ApiDebuggerPanel extends JPanel {
             return JBUI.size(1, 1);
         }
 
-        /** 覆盖层定位：content 占满整行，按钮硬贴 tab 条右缘（垂直居中对齐 tab 标题行）。 */
+        /** 覆盖层定位：content 占满整行，按钮右缘与内容列可见右缘对齐（垂直居中对齐 tab 标题行）。 */
         private void reposition() {
             int w = getWidth();
             int h = getHeight();
@@ -1482,9 +1495,17 @@ public class ApiDebuggerPanel extends JPanel {
                 }
             }
 
+            // 一伦优化 #47：右缘对齐内容列可见宽度（viewport），而不是容器硬边 ——
+            // 垂直滚动条出现时内容列收窄，按钮同步内移，与下方 AI 配置卡右缘齐平；
+            // 8px 内缩与内容卡右内边距（cardBorder 8）一致
+            int rightEdge = w;
+            if (scroll != null && scroll.getViewport() != null && scroll.getViewport().getWidth() > 0) {
+                Point vp = SwingUtilities.convertPoint(scroll.getViewport(), new Point(0, 0), this);
+                rightEdge = vp.x + scroll.getViewport().getWidth();
+            }
             Dimension ps = button.getPreferredSize();
-            int rightInset = 4;
-            int x = Math.max(stripX, w - ps.width - rightInset);
+            int rightInset = 8;
+            int x = Math.max(stripX, rightEdge - ps.width - rightInset);
             int y = stripY + Math.max(0, (stripH - ps.height) / 2);
 
             for (Component c : getComponents()) {

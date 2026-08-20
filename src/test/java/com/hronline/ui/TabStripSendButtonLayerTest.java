@@ -51,10 +51,10 @@ class TabStripSendButtonLayerTest {
                 assertEquals(width, content.getWidth(), "content 应占满整行宽度");
                 assertEquals(400, content.getHeight());
 
-                // 按钮钉死最右端：右缘 = 容器右缘 - 4px
+                // 按钮右缘与内容列可见右缘对齐（8px 内缩，与内容卡右内边距一致）
                 Dimension ps = btn.getPreferredSize();
                 assertTrue(ps.width > 0, "按钮 preferredSize 应有效");
-                assertEquals(width - ps.width - 4, btn.getX(), "按钮应硬贴容器右缘");
+                assertEquals(width - ps.width - 8, btn.getX(), "按钮右缘应对齐内容列右缘");
                 assertEquals(ps.width, btn.getWidth());
 
                 // 按钮不居中（右对齐，明显偏离水平中心）

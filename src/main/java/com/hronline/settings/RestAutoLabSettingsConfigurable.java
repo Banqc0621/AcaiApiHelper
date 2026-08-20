@@ -257,7 +257,14 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         s.setRequestTimeout(parseInt(fieldText(timeoutField), RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS));
         s.setMaxAiCallsPerScan(parseInt(fieldText(maxAiCallsField), 50));
         s.setAutoScanOnStartup(autoScanBox.isSelected());
-        s.setScanPackageFilter(fieldText(scanPackageField));
+        String oldFilter = s.getScanPackageFilter();
+        String newFilter = fieldText(scanPackageField);
+        s.setScanPackageFilter(newFilter);
+        // 一伦优化 #47：包过滤变更后自动重扫，让左侧接口列表立即按新过滤生效，
+        // 避免用户保存后还要手动点「扫描API」才看到效果
+        if (!oldFilter.equals(newFilter)) {
+            com.hronline.scanner.ApiScannerService.getInstance(project).scanProjectApisAsync();
+        }
         s.setAiSystemPrompt(systemPromptArea.getText());
         s.setAiUserPromptTemplate(userPromptTemplateArea.getText());
     }
