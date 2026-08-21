@@ -73,7 +73,10 @@ public class ApiDebuggerPanel extends JPanel {
     private final JBTextField urlField = new JBTextField();
     /** 一伦优化 v11：发送/停止合并为单一按钮 —— 空闲时显示「Execute」图标，请求中显示自旋 spinner，再点一次即取消。 */
     private final JButton sendButton = new JButton(AllIcons.Actions.Execute);
-    private final UiStyle.LoadingSpinnerIcon sendSpinner = new UiStyle.LoadingSpinnerIcon();
+    // 一伦优化 #48：spinner 绘制在 accent 实底主按钮上，用白色才能看清；
+    // 默认 accent 蓝与 Component.accentColor 几乎同色，黑色主题下 spinner 不可见
+    private final UiStyle.LoadingSpinnerIcon sendSpinner =
+            new UiStyle.LoadingSpinnerIcon(16, new JBColor(Color.WHITE, Color.WHITE));
     private final JBTextField baseUrlField = new JBTextField();
     private final JBLabel activeEnvInfoLabel = new JBLabel("当前环境: -");
     private final JBTextArea preRequestScriptArea = new JBTextArea(4, 32);

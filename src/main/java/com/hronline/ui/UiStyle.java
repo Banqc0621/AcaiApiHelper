@@ -16,7 +16,7 @@ import java.awt.event.MouseEvent;
  * <p>设计理念：简洁大方、一目了然。</p>
  * <ul>
  *   <li>字号略小但仍易读（基准 12 → 11，次要 11 → 10）</li>
- *   <li>按钮统一用 roundRect（圆角描边），告别「方块中间有字」的生硬感</li>
+ *   <li>主按钮用 accent 实底（通过 LaF client property 渲染，明暗主题均「accent 底 + 白字」可见）</li>
  *   <li>表格去除粗网格，仅保留行高与悬停/选中的柔和反馈，视觉更轻盈</li>
  *   <li>边框以留白为主，分隔用极细线条</li>
  * </ul>
@@ -26,6 +26,15 @@ public final class UiStyle {
     private static final String INTERACTION_FEEDBACK_ATTACHED = "__interaction_feedback_attached";
     /** v15 修复：注册 attachInteractionFeedback 时保存的原始背景色，供业务侧（重置按钮态）使用 */
     public static final String INTERACTION_BASE_BG = "__interaction_base_bg";
+    /**
+     * IntelliJ LaF（DarculaButtonUI）背景色 client property ——
+     * 一旦设置，LaF 渲染背景时<b>只看它、完全忽略组件 {@code setBackground()}</b>
+     * （2026.1 SDK 字节码确认：getBackground() 先读该 property）。
+     * 因此主按钮的 hover/按下/禁用反馈必须同步写这个 key，不能只 setBackground。
+     */
+    public static final String LAF_BUTTON_BG = "JButton.backgroundColor";
+    /** IntelliJ LaF 文字色 client property —— 同理优先于组件 {@code setForeground()} */
+    public static final String LAF_BUTTON_FG = "JButton.textColor";
     private static final String LOADING_TEXT = "__loading_text";
     private static final String LOADING_CURSOR = "__loading_cursor";
 
@@ -179,10 +188,10 @@ public final class UiStyle {
      */
     public static JButton primaryButton(String text, Icon icon, ActionListener listener, AccentColor accent) {
         JButton btn = button(text, icon, listener);
-        // 注意:不设 "JButton.buttonType" = "default",
-        // 否则 IntelliJ LaF 的 DefaultButtonUI 会用 LaF 自身的前景色,
-        // 覆盖 setForeground(白色),导致 "保存" 字看不见。
-        // 保留 roundRect 描边样式 + setOpaque(true) 走我们自己的着色,明暗主题都生效。
+        // 一伦优化 #48：不设 "JButton.buttonType" = "default"，
+        // 否则 IntelliJ LaF 会按默认按钮渲染（LaF 渐变底 + LaF 前景色），
+        // 覆盖我们的 accent 底 + 白字。accent 实底渲染走 applyAccent 的
+        // JButton.backgroundColor / JButton.textColor client property，明暗主题都生效。
         btn.setFont(btn.getFont().deriveFont(Font.BOLD, FONT_HINT));
         applyAccent(btn, accent);
         // 一轮优化 #12：主操作按钮自动挂上悬停/按下/禁用三态反馈
@@ -214,43 +223,28 @@ public final class UiStyle {
     }
 
     /**
-     * 一轮优化 #9 / #47：把 accent 主题色应用到一个按钮上。
-     * <p>#47 根因修复：IntelliJ LaF 的按钮背景由 LaF 自绘（浅色主题=浅底），
-     * 组件 {@code setBackground} 不生效，而白色文字照画 → 「浅底白字」看不见。
-     * 改为<b>自绘圆角实底 Border</b>：背景色取自组件 background（JBColor 明暗自适应），
-     * 不依赖任何 LaF 背景渲染，明暗主题下都是「accent 底 + 白字」。</p>
+     * 一轮优化 #9 / #47 / #48：把 accent 主题色应用到一个按钮上。
+     * <p>#48 根因修复：IntelliJ LaF 的 roundRect 按钮在 {@code contentAreaFilled=false} 时
+     * 根本不绘制文字（Darcula 下 whiteText=0 像素）。改用 {@code contentAreaFilled=true}
+     * 配合 {@code JButton.backgroundColor} / {@code JButton.textColor} client property，
+     * LaF 在明暗主题下都正确渲染「accent 底 + 白字」。</p>
      */
     public static void applyAccent(JButton btn, AccentColor accent) {
         if (btn == null || accent == null) return;
         btn.setBackground(accent.color());
         btn.setForeground(accent.onAccent());
-        btn.setOpaque(false);
-        btn.setContentAreaFilled(false);
+        btn.setOpaque(true);
+        btn.setContentAreaFilled(true);
         btn.setBorderPainted(true);
-        btn.setBorder(ACCENT_FILL_BORDER);
-        // 同步交互反馈 base 色：hover/pressed/禁用态从 accent 色计算，
-        // 禁用恢复后也回到 accent 而不是 LaF 默认色
+        // IntelliJ LaF 的 DarculaButtonUI 渲染背景/文字时只看这两个 client property
+        // （组件 setBackground/setForeground 会被忽略，2026.1 SDK 字节码确认），
+        // 明暗主题都渲染成「accent 底 + 白字」
+        btn.putClientProperty(LAF_BUTTON_BG, accent.color());
+        btn.putClientProperty(LAF_BUTTON_FG, accent.onAccent());
+        // 同步交互反馈 base 色
         btn.putClientProperty(INTERACTION_BASE_BG, accent.color());
         btn.putClientProperty(INTERACTION_BASE_BG + "_fg", accent.onAccent());
     }
-
-    /** 自绘圆角实底 Border：用组件当前 background 填充圆角矩形（hover/pressed/禁用态自动跟随） */
-    private static final javax.swing.border.Border ACCENT_FILL_BORDER = new javax.swing.border.Border() {
-        @Override
-        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(c.getBackground());
-                int arc = Math.min(12, Math.min(width, height) / 2);
-                g2.fillRoundRect(x, y, width - 1, height - 1, arc, arc);
-            } finally {
-                g2.dispose();
-            }
-        }
-        @Override public Insets getBorderInsets(Component c) { return new Insets(0, 0, 0, 0); }
-        @Override public boolean isBorderOpaque() { return false; }
-    };
 
     // ── 按钮交互反馈（一轮优化 #12：统一悬停/按下/加载态）──
 
@@ -293,22 +287,22 @@ public final class UiStyle {
             }
             @Override public void mouseEntered(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                btn.setBackground(shift(base(btn), 0.92f));
+                paintBackground(btn, shift(base(btn), 0.92f));
             }
             @Override public void mouseExited(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                btn.setBackground(base(btn));
+                paintBackground(btn, base(btn));
             }
             @Override public void mousePressed(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
-                if (SwingUtilities.isLeftMouseButton(e)) btn.setBackground(shift(base(btn), 0.82f));
+                if (SwingUtilities.isLeftMouseButton(e)) paintBackground(btn, shift(base(btn), 0.82f));
             }
             @Override public void mouseReleased(MouseEvent e) {
                 if (!btn.isEnabled() || !btn.isVisible()) return;
                 // v15 修复：松开时不再根据 getMousePosition 决定 hover/base，
                 // 一律回到 base。鼠标若仍在按钮上，mouseEntered 已经触发（或在
                 // 同一事件链中紧随其后）会把背景刷到 hover，避免"点过后发亮残留"。
-                btn.setBackground(base(btn));
+                paintBackground(btn, base(btn));
                 // 强制 repaint 清掉 LaF 可能的旧 hover 残影（特别是刚 setIcon 之后）
                 btn.repaint();
             }
@@ -319,13 +313,57 @@ public final class UiStyle {
             Object savedBase = btn.getClientProperty(INTERACTION_BASE_BG);
             Object savedFg = btn.getClientProperty(INTERACTION_BASE_BG + "_fg");
             if (en) {
-                btn.setBackground(savedBase instanceof Color c ? c : btn.getBackground());
-                btn.setForeground(savedFg instanceof Color c ? c : btn.getForeground());
+                Color bg = savedBase instanceof Color c ? c : btn.getBackground();
+                Color fg = savedFg instanceof Color c ? c : btn.getForeground();
+                // #48：若禁用前是 accent 主按钮（有暂存的 client property），恢复之 ——
+                // 否则 LaF 会退回普通按钮渲染，accent 底白字丢失
+                Object accentBg = btn.getClientProperty(LAF_BUTTON_BG + "__accent_saved");
+                Object accentFg = btn.getClientProperty(LAF_BUTTON_FG + "__accent_saved");
+                if (accentBg instanceof Color c) btn.putClientProperty(LAF_BUTTON_BG, c);
+                if (accentFg instanceof Color c) btn.putClientProperty(LAF_BUTTON_FG, c);
+                btn.putClientProperty(LAF_BUTTON_BG + "__accent_saved", null);
+                btn.putClientProperty(LAF_BUTTON_FG + "__accent_saved", null);
+                btn.setBackground(bg);
+                btn.setForeground(fg);
             } else {
+                // #48：禁用时把 LaF 背景/文字 client property 暂存后清掉 ——
+                // 若留着 accent 底，LaF 禁用态会渲染「accent 底 + 灰字」不可读；
+                // 清掉后 LaF 走标准「灰底 + disabledText」，恢复启用时再还原
+                Object bgProp = btn.getClientProperty(LAF_BUTTON_BG);
+                Object fgProp = btn.getClientProperty(LAF_BUTTON_FG);
+                btn.putClientProperty(LAF_BUTTON_BG + "__accent_saved", bgProp);
+                btn.putClientProperty(LAF_BUTTON_FG + "__accent_saved", fgProp);
+                btn.putClientProperty(LAF_BUTTON_BG, null);
+                btn.putClientProperty(LAF_BUTTON_FG, null);
                 btn.setBackground(JBColor.namedColor("Button.background", new Color(0xEE, 0xEE, 0xEE)).darker());
                 btn.setForeground(disabled);
             }
         });
+    }
+
+    /**
+     * 一伦优化 #48：写按钮背景色 —— 组件 {@code setBackground} 永远写；
+     * LaF client property {@code JButton.backgroundColor} 仅在按钮已经使用它时
+     * （主按钮，applyAccent 设过）同步写。DarculaButtonUI 渲染背景时
+     * client property 优先于组件色：
+     * <ul>
+     *   <li>主按钮：hover/按下反馈必须写 client property 才真正生效</li>
+     *   <li>普通按钮：无 client property，保持 LaF 自带渲染，只更新组件色</li>
+     * </ul>
+     */
+    private static void paintBackground(JButton btn, Color color) {
+        btn.setBackground(color);
+        if (btn.getClientProperty(LAF_BUTTON_BG) != null) {
+            btn.putClientProperty(LAF_BUTTON_BG, color);
+        }
+    }
+
+    /** 同 {@link #paintBackground}：仅在按钮已使用 {@code JButton.textColor} 时同步写 */
+    private static void paintForeground(JButton btn, Color color) {
+        btn.setForeground(color);
+        if (btn.getClientProperty(LAF_BUTTON_FG) != null) {
+            btn.putClientProperty(LAF_BUTTON_FG, color);
+        }
     }
 
     /**
@@ -341,6 +379,11 @@ public final class UiStyle {
     public static void clearAccent(JButton btn) {
         if (btn == null) return;
         btn.putClientProperty("JButton.buttonType", "borderless");
+        // #48：必须清掉 LaF 背景/文字 client property，否则 LaF 仍按 accent 底渲染
+        btn.putClientProperty(LAF_BUTTON_BG, null);
+        btn.putClientProperty(LAF_BUTTON_FG, null);
+        btn.putClientProperty(INTERACTION_BASE_BG, null);
+        btn.putClientProperty(INTERACTION_BASE_BG + "_fg", null);
         btn.setOpaque(false);
         btn.setContentAreaFilled(false);
         btn.setBorderPainted(false);
