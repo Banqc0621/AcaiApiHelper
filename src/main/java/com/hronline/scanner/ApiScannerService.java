@@ -385,12 +385,21 @@ public final class ApiScannerService {
         return apis;
     }
 
-    /** 解析包过滤配置：按逗号/分号/空白拆分，去空白；空配置返回空列表（=不过滤） */
-    private List<String> parsePackageFilter(String raw) {
+    /**
+     * 解析包过滤配置：按逗号/分号/空白拆分，去空白并去掉尾部点；
+     * 空配置返回空列表（=不过滤）。
+     * <p>包私有 + static：便于单元测试直接调用。</p>
+     */
+    static List<String> parsePackageFilter(String raw) {
         if (raw == null || raw.isBlank()) return List.of();
         List<String> prefixes = new ArrayList<>();
         for (String part : raw.split("[,;\\s]+")) {
             String p = part.trim();
+            // 去掉尾部点：用户写 "com.foo." 也归一化为 "com.foo"，
+            // 否则后续 prefix + "." 会拼成 "com.foo.." 永远匹配不到
+            while (p.endsWith(".")) {
+                p = p.substring(0, p.length() - 1);
+            }
             if (!p.isEmpty()) prefixes.add(p);
         }
         return prefixes;
@@ -400,8 +409,27 @@ public final class ApiScannerService {
     private boolean matchesPackageFilter(PsiClass cls, List<String> prefixes) {
         String qfn = cls.getQualifiedName();
         if (qfn == null) return true;
+        return matchesPackagePrefix(qfn, prefixes);
+    }
+
+    /**
+     * 包前缀匹配（纯字符串逻辑，便于单元测试）。
+     * <p>匹配规则（含包段边界校验）：</p>
+     * <ul>
+     *   <li>完全相等：prefix == qfn（配置精确到类名的少见场景）</li>
+     *   <li>包前缀：qfn 以 prefix + "." 开头，命中该包及其所有子包</li>
+     * </ul>
+     * <p>边界校验保证配置 <code>com.foo</code> 不会误命中
+     * <code>com.foobar.Xxx</code>（不同包）——这是「只显示指定包下接口」的关键。</p>
+     *
+     * @param qfn      类全限定名，null 时保留（不过滤）
+     * @param prefixes 包前缀列表
+     */
+    static boolean matchesPackagePrefix(String qfn, List<String> prefixes) {
+        if (qfn == null) return true;
         for (String prefix : prefixes) {
-            if (qfn.startsWith(prefix)) return true;
+            if (qfn.equals(prefix)) return true;
+            if (qfn.startsWith(prefix + ".")) return true;
         }
         return false;
     }
