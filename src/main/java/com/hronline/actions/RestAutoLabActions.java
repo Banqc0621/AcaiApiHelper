@@ -15,6 +15,7 @@ import com.intellij.notification.NotificationType;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
+import com.intellij.openapi.actionSystem.PlatformCoreDataKeys;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
@@ -22,10 +23,13 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
+import com.intellij.psi.JavaDirectoryService;
 import com.intellij.psi.PsiDocumentManager;
+import com.intellij.psi.PsiDirectory;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiPackage;
 import com.intellij.psi.util.PsiTreeUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -286,6 +290,122 @@ public static final class RunAllTestsAction extends AnAction {
     @Override
     public void update(@NotNull AnActionEvent e) {
         e.getPresentation().setEnabledAndVisible(e.getProject() != null);
+    }
+}
+
+/**
+ * 添加包到扫描过滤
+ *
+ * <p>在项目视图右键包（包目录）时，将该包的完整包名添加到「扫描包过滤」配置中，
+ * 随后自动触发重扫，左侧全量接口列表只显示指定包下的接口。</p>
+ *
+ * <p>可见性与包名解析必须同时兼容多种数据形态（否则菜单项会"不显示"）：</p>
+ * <ul>
+ *   <li>{@code CommonDataKeys.PSI_ELEMENT} 为 {@code PsiPackage}：Scope 视图等</li>
+ *   <li>{@code CommonDataKeys.PSI_ELEMENT} 为 {@code PsiDirectory}：<b>标准 Project 视图右键包目录的默认形态</b>，
+ *       必须经 {@link JavaDirectoryService} 反查包名——只认 PsiPackage 时该入口永远不出现，
+ *       这是此前"右键包不能过滤"的根因</li>
+ *   <li>{@code PlatformCoreDataKeys.PSI_ELEMENT_ARRAY}：多选时逐个收集包/目录</li>
+ * </ul>
+ */
+public static final class AddToScanPackageAction extends AnAction {
+    @Override
+    public void actionPerformed(@NotNull AnActionEvent e) {
+        Project project = e.getProject();
+        if (project == null) return;
+
+        List<String> packageNames = resolvePackageNames(e);
+        if (packageNames.isEmpty()) return;
+
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        String currentFilter = settings.getScanPackageFilter();
+
+        // 去重：拆分现有配置，已存在的包不重复添加
+        List<String> existing = new java.util.ArrayList<>();
+        if (currentFilter != null && !currentFilter.isBlank()) {
+            for (String part : currentFilter.split("[,;\\s]+")) {
+                String trimmed = part.trim();
+                if (!trimmed.isEmpty()) existing.add(trimmed);
+            }
+        }
+
+        List<String> added = new java.util.ArrayList<>();
+        for (String pkg : packageNames) {
+            if (!existing.contains(pkg)) {
+                existing.add(pkg);
+                added.add(pkg);
+            }
+        }
+
+        String newFilter = String.join(",", existing);
+        settings.setScanPackageFilter(newFilter);
+
+        // 触发重扫（扫描层按过滤裁剪，完成后左侧全量列表自动刷新为过滤结果）
+        ApiScannerService scanner = ApiScannerService.getInstance(project);
+        scanner.scanProjectApisAsync();
+
+        String title = "添加扫描包过滤";
+        String content;
+        if (added.isEmpty()) {
+            content = "包 " + String.join(", ", packageNames) + " 已在扫描过滤列表中";
+        } else {
+            content = "已添加包 " + String.join(", ", added) + "，正在重新扫描...\n当前过滤: " + newFilter;
+        }
+        try {
+            NotificationGroupManager.getInstance()
+                    .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                    .createNotification(title, content, NotificationType.INFORMATION)
+                    .notify(project);
+        } catch (Exception ex) {
+            Messages.showInfoMessage(project, content, title);
+        }
+    }
+
+    @Override
+    public void update(@NotNull AnActionEvent e) {
+        e.getPresentation().setEnabledAndVisible(
+                e.getProject() != null && !resolvePackageNames(e).isEmpty());
+    }
+
+    /**
+     * 从事件上下文解析包名列表；解析不到（右键的不是包/包目录）返回空列表。
+     * <p>包私有 static：便于单元测试拆分验证。</p>
+     */
+    @NotNull
+    static List<String> resolvePackageNames(@NotNull AnActionEvent e) {
+        List<String> result = new java.util.ArrayList<>();
+        // 1) 单选元素：PsiPackage 或 PsiDirectory（标准 Project 视图的默认形态）
+        PsiElement element = e.getData(CommonDataKeys.PSI_ELEMENT);
+        addFromElement(result, element);
+        // 2) 多选元素数组
+        PsiElement[] elements = e.getData(PlatformCoreDataKeys.PSI_ELEMENT_ARRAY);
+        if (elements != null) {
+            for (PsiElement el : elements) {
+                addFromElement(result, el);
+            }
+        }
+        return result;
+    }
+
+    /** 将 PsiPackage / PsiDirectory 解析出的包名加入结果（去重） */
+    private static void addFromElement(@NotNull List<String> result, @Nullable PsiElement element) {
+        if (element instanceof PsiPackage pkg) {
+            addQualifiedName(result, pkg);
+        } else if (element instanceof PsiDirectory dir) {
+            try {
+                PsiPackage pkg = JavaDirectoryService.getInstance().getPackage(dir);
+                if (pkg != null) addQualifiedName(result, pkg);
+            } catch (Exception ignored) {
+                // 非源码根目录等异常情况：忽略，不阻断其它来源
+            }
+        }
+    }
+
+    private static void addQualifiedName(@NotNull List<String> result, @NotNull PsiPackage pkg) {
+        String name = pkg.getQualifiedName();
+        if (name != null && !name.isEmpty() && !result.contains(name)) {
+            result.add(name);
+        }
     }
 }
 
