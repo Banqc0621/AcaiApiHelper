@@ -2149,36 +2149,57 @@ public class ApiTreePanel extends JPanel {
 
     /**
      * 双击跳转到API源码位置
+     *
+     * 线程修复：原实现在 EDT 上直接执行 LocalFileSystem.refresh(false) 全量同步刷新 VFS，
+     * 刷新路径需获取写锁应用模型变更，而 EDT 未持有写锁，触发
+     * "Access is allowed from write thread only"。现将文件解析移到后台线程，
+     * 解析完成后回 EDT 打开编辑器（openTextEditor 必须在 EDT 执行）。
      */
     private void navigateToSource() {
         ApiDefinition api = getSelectedApi();
         if (api == null) return;
-        if (api.getSourceFilePath().isBlank()) return;
+        String recordedPath = api.getSourceFilePath();
+        if (recordedPath.isBlank()) return;
+        int line = api.getSourceLineNumber();
 
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            VirtualFile virtualFile = resolveSourceFile(recordedPath);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                if (virtualFile == null) {
+                    Messages.showWarningDialog(project, "找不到源文件：\n" + recordedPath, "跳转失败");
+                    return;
+                }
+                openSourceFile(virtualFile, line, recordedPath);
+            }, ModalityState.defaultModalityState());
+        });
+    }
+
+    /**
+     * 后台解析跳转源文件（禁止在 EDT 调用）。
+     * 修复提单「快速跳转无效」：扫描时记录的绝对路径可能已失效（项目换目录/换盘符），
+     * 先对目标路径做定向刷新（refreshAndFindFileByPath，仅刷新该路径，不做全量 VFS 刷新），
+     * 仍找不到时按文件名在项目内回退查找。
+     */
+    private VirtualFile resolveSourceFile(String recordedPath) {
+        VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(recordedPath);
+        if (virtualFile == null || !virtualFile.isValid()) {
+            virtualFile = locateByFileName(recordedPath);
+        }
+        return virtualFile;
+    }
+
+    /** 打开编辑器并跳转到指定行（必须在 EDT 调用） */
+    private void openSourceFile(VirtualFile virtualFile, int line, String recordedPath) {
         try {
-            VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
-            // 修复提单「快速跳转无效」：扫描时记录的绝对路径可能已失效（项目换目录/换盘符），
-            // 先刷新 VFS，再按文件名在项目内回退查找，尽量保证跳转成功。
-            if (virtualFile == null) {
-                LocalFileSystem.getInstance().refresh(false);
-                virtualFile = LocalFileSystem.getInstance().findFileByPath(api.getSourceFilePath());
-            }
-            if (virtualFile == null) {
-                virtualFile = locateByFileName(api.getSourceFilePath());
-            }
-            if (virtualFile == null) {
-                Messages.showWarningDialog(project, "找不到源文件：\n" + api.getSourceFilePath(), "跳转失败");
-                return;
-            }
             // 行号从 1 开始；非法行号（<=0）退化为不指定行，避免 OpenFileDescriptor 抛 IllegalArgumentException
-            int line = api.getSourceLineNumber();
             int offsetLine = line > 0 ? line - 1 : -1;
             OpenFileDescriptor descriptor = offsetLine >= 0
                     ? new OpenFileDescriptor(project, virtualFile, offsetLine, 0)
                     : new OpenFileDescriptor(project, virtualFile);
             FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
         } catch (Exception ex) {
-            LOG.warn("跳转到源码失败: " + api.getSourceFilePath(), ex);
+            LOG.warn("跳转到源码失败: " + recordedPath, ex);
             Messages.showErrorDialog(project, "跳转到源码失败：" + ex.getMessage(), "跳转失败");
         }
     }
