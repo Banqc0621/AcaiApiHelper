@@ -12,15 +12,17 @@ import com.hronline.ui.ApiDebuggerPanel;
 import com.hronline.ui.ApiTreePanel;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
-import com.intellij.openapi.actionSystem.PlatformCoreDataKeys;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.psi.JavaDirectoryService;
@@ -28,6 +30,7 @@ import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiDirectory;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiPackage;
 import com.intellij.psi.util.PsiTreeUtil;
@@ -156,6 +159,12 @@ public static final class ScanApisAction extends AnAction {
     public void update(@NotNull AnActionEvent e) {
         e.getPresentation().setEnabledAndVisible(e.getProject() != null);
     }
+
+    /** update() 只读 project，声明 BGT 让平台在后台线程更新，兼容新版 EDT 限制 */
+    @Override
+    public @NotNull ActionUpdateThread getActionUpdateThread() {
+        return ActionUpdateThread.BGT;
+    }
 }
 
 /**
@@ -242,6 +251,12 @@ public static final class DebugApiAction extends AnAction {
     public void update(@NotNull AnActionEvent e) {
         e.getPresentation().setEnabledAndVisible(e.getProject() != null && e.getData(CommonDataKeys.EDITOR) != null);
     }
+
+    /** update() 只读 project/editor，声明 BGT 让平台在后台线程更新，兼容新版 EDT 限制 */
+    @Override
+    public @NotNull ActionUpdateThread getActionUpdateThread() {
+        return ActionUpdateThread.BGT;
+    }
 }
 
 /**
@@ -291,6 +306,12 @@ public static final class RunAllTestsAction extends AnAction {
     public void update(@NotNull AnActionEvent e) {
         e.getPresentation().setEnabledAndVisible(e.getProject() != null);
     }
+
+    /** update() 只读 project，声明 BGT 让平台在后台线程更新，兼容新版 EDT 限制 */
+    @Override
+    public @NotNull ActionUpdateThread getActionUpdateThread() {
+        return ActionUpdateThread.BGT;
+    }
 }
 
 /**
@@ -299,23 +320,37 @@ public static final class RunAllTestsAction extends AnAction {
  * <p>在项目视图右键包（包目录）时，将该包的完整包名添加到「扫描包过滤」配置中，
  * 随后自动触发重扫，左侧全量接口列表只显示指定包下的接口。</p>
  *
- * <p>可见性与包名解析必须同时兼容多种数据形态（否则菜单项会"不显示"）：</p>
- * <ul>
- *   <li>{@code CommonDataKeys.PSI_ELEMENT} 为 {@code PsiPackage}：Scope 视图等</li>
- *   <li>{@code CommonDataKeys.PSI_ELEMENT} 为 {@code PsiDirectory}：<b>标准 Project 视图右键包目录的默认形态</b>，
- *       必须经 {@link JavaDirectoryService} 反查包名——只认 PsiPackage 时该入口永远不出现，
- *       这是此前"右键包不能过滤"的根因</li>
- *   <li>{@code PlatformCoreDataKeys.PSI_ELEMENT_ARRAY}：多选时逐个收集包/目录</li>
- * </ul>
+ * <p><b>线程模型（#51 二次修复根因）</b>：右键菜单展开时平台会调用 {@link #update}，
+ * 而本 action 的可见性判定需要 PSI 数据。若不声明 {@link ActionUpdateThread#BGT}，
+ * 平台按遗留语义强制在 EDT 上跑 update()，此时读取 {@code psi.Element} /
+ * {@code psi.Element.array} 会触发平台 SEVERE（"is requested on EDT ... See ActionUpdateThread
+ * javadoc"），菜单项因此被抑制——表现为「右键包看不到/点了不生效」。
+ * 声明 BGT 后 update() 在后台读线程（自带读锁）执行，PSI 访问合法。</p>
+ *
+ * <p>{@link #actionPerformed} 在 EDT 执行，包名解析改用 EDT 安全的
+ * {@code VIRTUAL_FILE_ARRAY} + {@link ReadAction} 反查，绝不在 EDT 上直接读 PSI 数据键。</p>
  */
 public static final class AddToScanPackageAction extends AnAction {
+
+    private static final Logger LOG = Logger.getInstance(AddToScanPackageAction.class);
+
+    /** update() 需读 PSI（判断右键目标是否为包），必须声明 BGT，见类注释 */
+    @Override
+    public @NotNull ActionUpdateThread getActionUpdateThread() {
+        return ActionUpdateThread.BGT;
+    }
+
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
         if (project == null) return;
 
-        List<String> packageNames = resolvePackageNames(e);
-        if (packageNames.isEmpty()) return;
+        List<String> packageNames = resolvePackageNames(project,
+                e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY));
+        if (packageNames.isEmpty()) {
+            LOG.info("添加到扫描包过滤：未解析到包名（右键目标不是源码包目录）");
+            return;
+        }
 
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         String currentFilter = settings.getScanPackageFilter();
@@ -339,6 +374,7 @@ public static final class AddToScanPackageAction extends AnAction {
 
         String newFilter = String.join(",", existing);
         settings.setScanPackageFilter(newFilter);
+        LOG.info("添加到扫描包过滤：包 " + packageNames + "，过滤配置更新为 [" + newFilter + "]");
 
         // 触发重扫（扫描层按过滤裁剪，完成后左侧全量列表自动刷新为过滤结果）
         ApiScannerService scanner = ApiScannerService.getInstance(project);
@@ -363,41 +399,43 @@ public static final class AddToScanPackageAction extends AnAction {
 
     @Override
     public void update(@NotNull AnActionEvent e) {
-        e.getPresentation().setEnabledAndVisible(
-                e.getProject() != null && !resolvePackageNames(e).isEmpty());
+        Project project = e.getProject();
+        boolean visible = project != null && !resolvePackageNames(project,
+                e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)).isEmpty();
+        e.getPresentation().setEnabledAndVisible(visible);
     }
 
     /**
-     * 从事件上下文解析包名列表；解析不到（右键的不是包/包目录）返回空列表。
-     * <p>包私有 static：便于单元测试拆分验证。</p>
+     * 将右键选中的目录解析为包名列表（读动作内执行，EDT/后台线程均可调用）；
+     * 解析不到（选的不是源码包目录）返回空列表。
+     *
+     * <p>只经 {@link JavaDirectoryService} 反查 {@code PsiDirectory} 所属包，
+     * 标准 Project 视图右键包目录即此形态；非 Java 源码根目录等异常目录被跳过。</p>
      */
     @NotNull
-    static List<String> resolvePackageNames(@NotNull AnActionEvent e) {
-        List<String> result = new java.util.ArrayList<>();
-        // 1) 单选元素：PsiPackage 或 PsiDirectory（标准 Project 视图的默认形态）
-        PsiElement element = e.getData(CommonDataKeys.PSI_ELEMENT);
-        addFromElement(result, element);
-        // 2) 多选元素数组
-        PsiElement[] elements = e.getData(PlatformCoreDataKeys.PSI_ELEMENT_ARRAY);
-        if (elements != null) {
-            for (PsiElement el : elements) {
-                addFromElement(result, el);
-            }
-        }
-        return result;
-    }
-
-    /** 将 PsiPackage / PsiDirectory 解析出的包名加入结果（去重） */
-    private static void addFromElement(@NotNull List<String> result, @Nullable PsiElement element) {
-        if (element instanceof PsiPackage pkg) {
-            addQualifiedName(result, pkg);
-        } else if (element instanceof PsiDirectory dir) {
-            try {
-                PsiPackage pkg = JavaDirectoryService.getInstance().getPackage(dir);
-                if (pkg != null) addQualifiedName(result, pkg);
-            } catch (Exception ignored) {
-                // 非源码根目录等异常情况：忽略，不阻断其它来源
-            }
+    static List<String> resolvePackageNames(@NotNull Project project, @Nullable VirtualFile[] files) {
+        if (files == null || files.length == 0) return List.of();
+        try {
+            com.intellij.openapi.util.Computable<List<String>> compute = () -> {
+                List<String> result = new java.util.ArrayList<>();
+                PsiManager psiManager = PsiManager.getInstance(project);
+                for (VirtualFile vf : files) {
+                    if (vf == null || !vf.isDirectory()) continue;
+                    PsiDirectory dir = psiManager.findDirectory(vf);
+                    if (dir == null) continue;
+                    try {
+                        PsiPackage pkg = JavaDirectoryService.getInstance().getPackage(dir);
+                        if (pkg != null) addQualifiedName(result, pkg);
+                    } catch (Exception ignored) {
+                        // 非源码根目录等异常情况：忽略，不阻断其它目录
+                    }
+                }
+                return result;
+            };
+            return ApplicationManager.getApplication().runReadAction(compute);
+        } catch (Exception ex) {
+            LOG.warn("解析右键包名失败: " + ex.getMessage());
+            return List.of();
         }
     }
 
