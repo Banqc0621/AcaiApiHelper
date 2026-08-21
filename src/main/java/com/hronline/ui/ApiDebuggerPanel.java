@@ -73,10 +73,8 @@ public class ApiDebuggerPanel extends JPanel {
     private final JBTextField urlField = new JBTextField();
     /** 一伦优化 v11：发送/停止合并为单一按钮 —— 空闲时显示「Execute」图标，请求中显示自旋 spinner，再点一次即取消。 */
     private final JButton sendButton = new JButton(AllIcons.Actions.Execute);
-    // 一伦优化 #48：spinner 绘制在 accent 实底主按钮上，用白色才能看清；
-    // 默认 accent 蓝与 Component.accentColor 几乎同色，黑色主题下 spinner 不可见
-    private final UiStyle.LoadingSpinnerIcon sendSpinner =
-            new UiStyle.LoadingSpinnerIcon(16, new JBColor(Color.WHITE, Color.WHITE));
+    // 一伦优化 #49：按钮无填充背景（LaF 默认外观），spinner 用 IDE accent 色在明暗主题下都清晰
+    private final UiStyle.LoadingSpinnerIcon sendSpinner = new UiStyle.LoadingSpinnerIcon();
     private final JBTextField baseUrlField = new JBTextField();
     private final JBLabel activeEnvInfoLabel = new JBLabel("当前环境: -");
     private final JBTextArea preRequestScriptArea = new JBTextArea(4, 32);
@@ -1711,14 +1709,7 @@ public class ApiDebuggerPanel extends JPanel {
         final long requestId = requestSequence.incrementAndGet();
 
         // 一伦优化 v11：发送按钮切到自旋 spinner 态 —— 再点一次即取消
-        // v15 修复：setIcon 之前显式重置背景色 = attachInteractionFeedback 注册时保存的 base 色。
-        // 原因：若用户刚 hover 过 sendButton 还没移出，setIcon 触发的重绘可能把
-        // "hover 深色"残影带进 spinner 态，看起来"点过后还发亮"。
-        // setContentAreaFilled(true) 保证 setBackground 在 LaF borderless 下也生效。
-        Object savedSendBase = sendButton.getClientProperty(UiStyle.INTERACTION_BASE_BG);
-        Color sendBase = savedSendBase instanceof Color ? (Color) savedSendBase : sendButton.getBackground();
-        sendButton.setContentAreaFilled(true);
-        sendButton.setBackground(sendBase);
+        // 一伦优化 #49：按钮无自定义填充背景，LaF 原生渲染 hover/按下态，不再手动重置背景色
         sendButton.setIcon(sendSpinner);
         sendButton.setToolTipText("请求中…点击取消");
         sendSpinner.start();
@@ -1771,22 +1762,13 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * v15 修复：把发送按钮恢复成空闲态（Execute 图标 + 原始 tooltip + 原始背景色），
+     * v15 修复：把发送按钮恢复成空闲态（Execute 图标 + 原始 tooltip），
      * 集中处理 spinner → Execute 的所有视觉重置，避免每个调用点（stopRequest、
      * 请求完成回调）单独遗漏。
-     * <p>调用前若 sendButton 处于 hover/pressed 态，{@code setBackground(sendBase)} 会
-     * 把背景刷回 accent base，再由 {@code mouseEntered/mouseExited} 接管 hover 反馈。</p>
-     * <p>注意：base 色从 {@link UiStyle#INTERACTION_BASE_BG} 取，不能用
-     * {@code sendButton.getBackground()}（已经可能是 hover/pressed 残影）。</p>
+     * <p>一伦优化 #49：按钮无自定义填充背景，hover/按下全部交给 LaF 原生渲染，无需重置背景色。</p>
      */
     private void resetSendButtonToIdle() {
         sendSpinner.stop();
-        // 从 attachInteractionFeedback 注册时保存的 base 色取，避免拿到 hover/pressed 残影
-        Object savedBase = sendButton.getClientProperty(UiStyle.INTERACTION_BASE_BG);
-        Color base = savedBase instanceof Color ? (Color) savedBase : sendButton.getBackground();
-        // 强制 setContentAreaFilled(true) 确保 setBackground 在任何 LaF 下都生效
-        sendButton.setContentAreaFilled(true);
-        sendButton.setBackground(base);
         sendButton.setIcon(AllIcons.Actions.Execute);
         sendButton.setToolTipText("发送请求到当前接口 (Ctrl+Enter)");
         sendButton.repaint();
