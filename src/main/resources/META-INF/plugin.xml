@@ -212,7 +212,7 @@
                 class="com.hronline.actions.RestAutoLabActions$AddToScanPackageAction"
                 text="添加到扫描包过滤"
                 description="将此包添加到扫描过滤列表，扫描后只显示该包下的接口"
-                icon="AllIcons.Actions.Filter">
+                icon="AllIcons.Actions.GroupByPackage">
             <add-to-group group-id="RestAutoLab.ActionGroup" anchor="last"/>
         </action>
     </actions>
