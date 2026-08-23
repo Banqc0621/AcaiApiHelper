@@ -368,47 +368,66 @@ public static final class AddToScanPackageAction extends AnAction {
 
         ApiScannerService scanner = ApiScannerService.getInstance(project);
 
-        // 1) PSI 解析包名（标准路径）
-        List<String> packageNames = resolvePackageNames(project, dirs.toArray(new VirtualFile[0]));
-        LOG.info("仅显示此包接口：PSI 解析包名 = " + packageNames);
-        // 2) 回退：按目录路径推导（Maven/Gradle 标准 src/main/java 布局）
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackageNamesByPath(dirs);
-            LOG.info("仅显示此包接口：路径推导包名 = " + packageNames);
-        }
-        // 3) 回退：模块根目录等非源码目录——收集已扫描接口中位于该目录下的源文件所属包。
-        //    用户常直接右键模块根（如 nft-turbo-gateway），此时按「目录下的已扫描接口」
-        //    推导包集合，同样能实现「仅显示该模块下接口」的诉求。
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackagesFromCachedApis(scanner.getCachedApis(), dirs);
-            LOG.info("仅显示此包接口：已扫描接口推导包名 = " + packageNames);
-        }
-        // 4) 回退：磁盘遍历（右键模块根且已扫描缓存里没有该模块接口时，前三级全部失败，
-        //    沙箱日志 8/23 15:44:31 实锤）。递归搜集目录下源文件，推导各文件包名并
-        //    取最长公共包前缀（模块根 → 模块根包），不再静默失败。
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackagesFromDisk(dirs);
-            LOG.info("仅显示此包接口：磁盘遍历推导包名 = " + packageNames);
-        }
-        // 5) 兜底：向上寻包（右键纯资源目录/空目录/非标准布局时，磁盘遍历找不到任何源文件。
-        //    沿父目录链逐级向上递归找第一个含 .java/.kt 的祖先，按其包前缀收窄——通常是
-        //    模块根或父包，仍可达成「仅显示该目录下/附近接口」的诉求）。
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackagesFromAncestors(dirs);
-            LOG.info("仅显示此包接口：向上寻包推导包名 = " + packageNames);
-        }
-        // 6) 兜底：模块描述符（向上找 pom.xml / build.gradle[.kts] / settings.gradle[.kts]，
-        //    提取 groupId 或目录 basename 作为松散包前缀。子模块是纯配置/Scala 等无 Java
-        //    源码的场景仍能定位到模块根）。
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackagesFromModuleDescriptor(dirs);
-            LOG.info("仅显示此包接口：模块描述符推导包名 = " + packageNames);
-        }
-        // 7) 兜底：目录名宽松匹配（向上找最近一个有意义的目录名作为 filter hint，
-        //    按包前缀匹配规则仍能收窄到同名包下的接口）。
-        if (packageNames.isEmpty()) {
-            packageNames = resolvePackagesFromDirName(dirs);
-            LOG.info("仅显示此包接口：目录名兜底推导包名 = " + packageNames);
+        List<String> packageNames;
+        try {
+            // 1) PSI 解析包名（标准路径）
+            packageNames = resolvePackageNames(project, dirs.toArray(new VirtualFile[0]));
+            LOG.info("仅显示此包接口：PSI 解析包名 = " + packageNames);
+            // 2) 回退：按目录路径推导（Maven/Gradle 标准 src/main/java 布局）
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackageNamesByPath(dirs);
+                LOG.info("仅显示此包接口：路径推导包名 = " + packageNames);
+            }
+            // 3) 回退：模块根目录等非源码目录——收集已扫描接口中位于该目录下的源文件所属包。
+            //    用户常直接右键模块根（如 nft-turbo-gateway），此时按「目录下的已扫描接口」
+            //    推导包集合，同样能实现「仅显示该模块下接口」的诉求。
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackagesFromCachedApis(scanner.getCachedApis(), dirs);
+                LOG.info("仅显示此包接口：已扫描接口推导包名 = " + packageNames);
+            }
+            // 4) 回退：磁盘遍历（右键模块根且已扫描缓存里没有该模块接口时，前三级全部失败，
+            //    沙箱日志 8/23 15:44:31 实锤）。递归搜集目录下源文件，推导各文件包名并
+            //    取最长公共包前缀（模块根 → 模块根包），不再静默失败。
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackagesFromDisk(dirs);
+                LOG.info("仅显示此包接口：磁盘遍历推导包名 = " + packageNames);
+            }
+            // 5) 兜底：向上寻包（右键纯资源目录/空目录/非标准布局时，磁盘遍历找不到任何源文件。
+            //    沿父目录链逐级向上，每层先做廉价单层探测再决定要不要做完整磁盘遍历，
+            //    避免每层都跑 2 万次 IO 卡死 EDT）。找到第一个含 .java/.kt 的祖先后
+            //    只在该层做一次完整扫描——通常已能定位到模块根或父包。
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackagesFromAncestors(dirs);
+                LOG.info("仅显示此包接口：向上寻包推导包名 = " + packageNames);
+            }
+            // 6) 兜底：模块描述符（向上找 pom.xml / build.gradle[.kts] / settings.gradle[.kts]，
+            //    提取 groupId 或目录 basename 作为松散包前缀。子模块是纯配置/Scala 等无 Java
+            //    源码的场景仍能定位到模块根）。
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackagesFromModuleDescriptor(dirs);
+                LOG.info("仅显示此包接口：模块描述符推导包名 = " + packageNames);
+            }
+            // 7) 兜底：目录名宽松匹配（向上找最近一个有意义的目录名作为 filter hint，
+            //    按包前缀匹配规则仍能收窄到同名包下的接口）。
+            if (packageNames.isEmpty()) {
+                packageNames = resolvePackagesFromDirName(dirs);
+                LOG.info("仅显示此包接口：目录名兜底推导包名 = " + packageNames);
+            }
+        } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
+            // 用户按 Esc 或 IDE 因内存压力取消时不弹错、记录日志后正常退出
+            LOG.warn("仅显示此包接口：包名解析被取消（ProcessCanceledException），右键目录 = " + dirs);
+            return;
+        } catch (Exception ex) {
+            LOG.warn("仅显示此包接口：包名解析异常", ex);
+            try {
+                NotificationGroupManager.getInstance()
+                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                        .createNotification("仅显示此包接口",
+                                "解析右键目录的包名时发生异常：" + ex.getMessage(),
+                                NotificationType.WARNING)
+                        .notify(project);
+            } catch (Exception ignored) {}
+            return;
         }
         if (packageNames.isEmpty()) {
             // 7 级全部失败时不再弹模态阻塞对话框，改用通知气泡轻提示，
@@ -683,15 +702,18 @@ public static final class AddToScanPackageAction extends AnAction {
         return String.join(".", java.util.Arrays.copyOf(a, i));
     }
 
-    /** 5 级兜底：向上寻包时最多向上走的层数（防止死循环 + 兼顾多模块嵌套场景） */
-    private static final int ANCESTOR_WALK_MAX_DEPTH = 12;
+    /** 5 级兜底：向上寻包时最多向上走的层数（防多模块嵌套 + 卡 EDT） */
+    private static final int ANCESTOR_WALK_MAX_DEPTH = 6;
+
+    /** 5 级兜底中「单层廉价探测」时最多检查的子项数（避免超宽目录树慢查） */
+    private static final int SHALLOW_HINT_MAX_CHECKS = 50;
 
     /**
      * 5 级兜底（向上寻包）：右键纯资源目录/空目录/非标准布局时，磁盘遍历在 dir 内部找不到
-     * 任何源文件。此时沿父目录链逐级向上，每一级递归调 {@link #resolvePackagesFromDisk}
-     * 找含 .java/.kt 的祖先，按其包前缀收窄——通常是模块根或父包，仍可达成
-     * 「仅显示该目录附近的接口」诉求。
-     * <p>深度受限避免极端深目录树循环；遇到 VFS 根（parent 为 null）即停。</p>
+     * 任何源文件。沿父目录链向上找第一个"看起来有源文件"的祖先，再在该祖先做<b>一次</b>
+     * 完整磁盘扫描——避免之前每层祖先都跑 2 万次 IO 卡死 EDT。
+     * <p>"看起来有源文件"的判定用 {@link #hasShallowSourceHint} 单层廉价探测
+     * （限深 2 层、最多检查 50 个子项），O(6 × 50) = O(300) 次廉价操作 + 1 次深扫，EDT 上也快。</p>
      */
     @NotNull
     static List<String> resolvePackagesFromAncestors(@NotNull List<VirtualFile> dirs) {
@@ -700,7 +722,7 @@ public static final class AddToScanPackageAction extends AnAction {
             VirtualFile cur = dir.getParent();
             int depth = 0;
             while (cur != null && depth++ < ANCESTOR_WALK_MAX_DEPTH) {
-                if (cur.isDirectory()) {
+                if (cur.isDirectory() && hasShallowSourceHint(cur)) {
                     List<String> found = resolvePackagesFromDisk(java.util.Collections.singletonList(cur));
                     if (!found.isEmpty()) return found;
                 }
@@ -708,6 +730,34 @@ public static final class AddToScanPackageAction extends AnAction {
             }
         }
         return List.of();
+    }
+
+    /**
+     * 单层廉价探测：当前目录及其直接子目录（限深 1 层、最多 50 个子项）中是否有
+     * {@code .java}/{@code .kt} 文件。命中即返回 true，给 {@link #resolvePackagesFromAncestors}
+     * 作为「值得深扫」的信号——避免每层都跑完整磁盘遍历把 EDT 卡死。
+     */
+    private static boolean hasShallowSourceHint(@NotNull VirtualFile dir) {
+        int[] checks = {0};
+        return scanShallowForSource(dir, 0, 1, checks);
+    }
+
+    private static boolean scanShallowForSource(@NotNull VirtualFile dir, int depth, int maxDepth, int[] checks) {
+        if (depth > maxDepth) return false;
+        if (checks[0] >= SHALLOW_HINT_MAX_CHECKS) return false;
+        VirtualFile[] children = dir.getChildren();
+        if (children == null) return false;
+        for (VirtualFile child : children) {
+            if (++checks[0] > SHALLOW_HINT_MAX_CHECKS) return false;
+            if (child.isDirectory()) {
+                if (DISK_SCAN_SKIP_DIRS.contains(child.getName())) continue;
+                if (scanShallowForSource(child, depth + 1, maxDepth, checks)) return true;
+            } else {
+                String ext = child.getExtension();
+                if ("java".equalsIgnoreCase(ext) || "kt".equalsIgnoreCase(ext)) return true;
+            }
+        }
+        return false;
     }
 
     /** Maven groupId / Gradle project name 的常见分隔符 */
