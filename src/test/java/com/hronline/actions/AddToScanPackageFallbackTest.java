@@ -2,6 +2,8 @@ package com.hronline.actions;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -16,6 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * 保证「右键模块根 → 推导模块根包 → 覆盖 controller 等全部子包」的语义。</p>
  */
 class AddToScanPackageFallbackTest {
+
+    @org.junit.jupiter.api.io.TempDir
+    Path tempDirRoot;
 
     @Test
     void commonPrefix_parentAndChildPackage_returnsParent() {
@@ -159,6 +164,79 @@ class AddToScanPackageFallbackTest {
     void dirNameHint_emptyChain_handlesNullSegment() {
         // null 段不能 NPE（防御性）
         assertNotNull(RestAutoLabActions.AddToScanPackageAction.pickDirNameHint(Arrays.asList(null, "src", "myfeature")));
+    }
+
+    // ================================================================
+    // 8 级兜底：单文件右键包名推导 resolvePackagesFromFiles
+    //   - 路径标记命中（src/main/java 等）→ 不读 package 声明，零 IO 命中
+    //   - 路径标记未命中 → 读 package 声明（#53 新增单文件右键支持）
+    // ================================================================
+
+    @Test
+    void files_packagesFromPathMarker_singleFile() throws Exception {
+        // 单文件位于标准 Maven 布局 src/main/java/cn/hollis/auth/controller/UserController.java
+        // → 路径标记截取包名 cn.hollis.auth.controller（不读 package 声明，零 IO 命中）
+        Path javaRoot = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/controller"));
+        Path file = Files.writeString(javaRoot.resolve("UserController.java"),
+                "package cn.hollis.auth.controller;\nclass UserController {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
+                List.of(file.toString()),
+                p -> { throw new AssertionError("路径标记命中时不应回退到读 package 声明"); });
+        assertEquals(List.of("cn.hollis.auth.controller"), pkgs);
+    }
+
+    @Test
+    void files_packagesFromPathMarker_multipleFilesSamePkg() throws Exception {
+        // 多文件同一包 → 取集合后取最长公共前缀仍是该包
+        Path javaRoot = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/controller"));
+        Path f1 = Files.writeString(javaRoot.resolve("UserController.java"),
+                "package cn.hollis.auth.controller;\nclass UserController {}\n");
+        Path f2 = Files.writeString(javaRoot.resolve("OrderController.java"),
+                "package cn.hollis.auth.controller;\nclass OrderController {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
+                List.of(f1.toString(), f2.toString()),
+                p -> { throw new AssertionError("路径标记命中时不应回退到读 package 声明"); });
+        assertEquals(List.of("cn.hollis.auth.controller"), pkgs);
+    }
+
+    @Test
+    void files_packagesFromPackageDeclaration_nonStandardLayout() throws Exception {
+        // 非标准布局（无 src/main/java 标记）→ 退化读 package 声明
+        Path file = Files.writeString(tempDirRoot.resolve("Legacy.java"),
+                "package com.foo.legacy.api;\nclass Legacy {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
+                List.of(file.toString()),
+                p -> {
+                    try {
+                        return Files.readString(java.nio.file.Paths.get(p));
+                    } catch (Exception ex) {
+                        return null;
+                    }
+                });
+        assertEquals(List.of("com.foo.legacy.api"), pkgs);
+    }
+
+    @Test
+    void files_multipleFilesDifferentPkg_returnsLongestCommonPrefix() throws Exception {
+        // 多文件跨子包：auth.controller + auth.service → cn.hollis.auth
+        Path ctrl = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/controller"));
+        Path svc = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/service"));
+        Path f1 = Files.writeString(ctrl.resolve("UserController.java"),
+                "package cn.hollis.auth.controller;\nclass UserController {}\n");
+        Path f2 = Files.writeString(svc.resolve("UserService.java"),
+                "package cn.hollis.auth.service;\nclass UserService {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
+                List.of(f1.toString(), f2.toString()),
+                p -> { throw new AssertionError("路径标记命中时不应回退到读 package 声明"); });
+        assertEquals(List.of("cn.hollis.auth"), pkgs);
+    }
+
+    @Test
+    void files_emptyList_returnsEmpty() {
+        // 空列表 → 空结果（与目录版本语义一致）
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
+                List.of(), p -> null);
+        assertEquals(List.of(), pkgs);
     }
 
     // ================================================================

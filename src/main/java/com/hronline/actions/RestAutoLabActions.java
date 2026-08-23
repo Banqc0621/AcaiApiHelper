@@ -355,20 +355,29 @@ public static final class AddToScanPackageAction extends AnAction {
 
         VirtualFile[] files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY);
         List<VirtualFile> dirs = new java.util.ArrayList<>();
+        List<VirtualFile> javaFiles = new java.util.ArrayList<>();
         if (files != null) {
             for (VirtualFile vf : files) {
-                if (vf != null && vf.isDirectory()) dirs.add(vf);
+                if (vf == null) continue;
+                if (vf.isDirectory()) {
+                    dirs.add(vf);
+                } else if (isJavaOrKtFile(vf)) {
+                    // 单文件右键支持（#53 新增）：右键 1 个或多个 .java/.kt 文件，
+                    // 收窄到「这些文件内定义的接口」——常见诉求：调试单文件时不想被全包淹没
+                    javaFiles.add(vf);
+                }
             }
         }
-        LOG.info("仅显示此包接口：触发，右键目录 = " + dirs);
-        if (dirs.isEmpty()) {
-            Messages.showWarningDialog(project, "请先在项目视图中右键一个包目录。", "仅显示此包接口");
+        LOG.info("仅显示此包接口：触发，目录数 = " + dirs.size() + "，文件数 = " + javaFiles.size());
+        if (dirs.isEmpty() && javaFiles.isEmpty()) {
+            Messages.showWarningDialog(project,
+                    "请先在项目视图中右键一个包目录或 .java/.kt 源文件。", "仅显示此包接口");
             return;
         }
 
         ApiScannerService scanner = ApiScannerService.getInstance(project);
 
-        List<String> packageNames;
+        List<String> packageNames = java.util.Collections.emptyList();
         try {
             // 1) PSI 解析包名（标准路径）
             packageNames = resolvePackageNames(project, dirs.toArray(new VirtualFile[0]));
@@ -413,6 +422,17 @@ public static final class AddToScanPackageAction extends AnAction {
                 packageNames = resolvePackagesFromDirName(dirs);
                 LOG.info("仅显示此包接口：目录名兜底推导包名 = " + packageNames);
             }
+            // 8) 单文件右键快路径（#53 新增）：上面 7 级目录兜底链全部失败、但用户实际选的是
+            //    1 个或多个 .java/.kt 文件时，再走一遍文件粒度的包名推导——这种情形常见于
+            //    「右键单个 controller 文件调试」，目录链上不一定能拿到该文件所属包。
+            //    文件粒度命中后写 filter 即可生效；不命中时直接走 7 级失败提示。
+            if (packageNames.isEmpty() && !javaFiles.isEmpty()) {
+                List<String> filePackages = resolvePackagesFromFiles(javaFiles);
+                LOG.info("仅显示此包接口：文件推导包名 = " + filePackages);
+                if (!filePackages.isEmpty()) {
+                    packageNames = filePackages;
+                }
+            }
         } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
             // 用户按 Esc 或 IDE 因内存压力取消时不弹错、记录日志后正常退出
             LOG.warn("仅显示此包接口：包名解析被取消（ProcessCanceledException），右键目录 = " + dirs);
@@ -432,15 +452,23 @@ public static final class AddToScanPackageAction extends AnAction {
         if (packageNames.isEmpty()) {
             // 7 级全部失败时不再弹模态阻塞对话框，改用通知气泡轻提示，
             // 并把右键目录路径写入诊断日志便于排查——之前强弹窗被反馈「始终处理不好」。
-            LOG.warn("仅显示此包接口：7 级兜底仍无法解析，右键目录 = " + dirs);
+            LOG.warn("仅显示此包接口：7 级兜底仍无法解析，右键目录 = " + dirs + "，右键文件 = " + javaFiles);
             try {
+                String selectionDesc;
+                if (!javaFiles.isEmpty()) {
+                    selectionDesc = "右键文件：" + javaFiles.get(0).getPath();
+                } else if (!dirs.isEmpty()) {
+                    selectionDesc = "右键目录：" + dirs.get(0).getPath();
+                } else {
+                    selectionDesc = "右键项：(空)";
+                }
                 NotificationGroupManager.getInstance()
                         .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
                         .createNotification(
                                 "仅显示此包接口",
-                                "所选目录及其祖先链中均未发现 Java/Kotlin 源文件，过滤未生效。\n" +
-                                        "右键目录：" + (dirs.isEmpty() ? "(空)" : dirs.get(0).getPath()) +
-                                        "\n请尝试在含 .java/.kt 文件的目录上右键。",
+                                "所选目录/文件及其祖先链中均未发现 Java/Kotlin 源文件，过滤未生效。\n" +
+                                        selectionDesc +
+                                        "\n请尝试在含 .java/.kt 文件的目录或源文件本身上右键。",
                                 NotificationType.WARNING)
                         .notify(project);
             } catch (Exception ex) {
@@ -457,14 +485,31 @@ public static final class AddToScanPackageAction extends AnAction {
         settings.setScanPackageFilter(newFilter);
         LOG.info("仅显示此包接口：过滤配置更新为 [" + newFilter + "]");
 
-        // 4) 立即收窄：用「源文件位于右键目录下」即时过滤已扫描缓存并刷新左侧树，
-        //    用户不必等重扫就能看到收窄效果
+        // 4) 立即收窄：用「源文件位于右键目录下」或「源文件路径等于选中文件」
+        //    即时过滤已扫描缓存并刷新左侧树，用户不必等重扫就能看到收窄效果
+        //    （#53 新增文件精确匹配：单文件右键时按 .java/.kt 路径精准收窄到该文件内接口）
         List<ApiDefinition> cached = scanner.getCachedApis();
         if (!cached.isEmpty()) {
+            // 预先归一化选中文件的路径（大小写不敏感按平台默认值）
+            java.util.Set<String> selectedFilePaths = new java.util.HashSet<>();
+            for (VirtualFile f : javaFiles) {
+                if (f != null) selectedFilePaths.add(f.getPath());
+            }
             List<ApiDefinition> narrowed = new java.util.ArrayList<>();
             for (ApiDefinition api : cached) {
                 String path = api.getSourceFilePath();
                 if (path == null || path.isEmpty()) continue;
+                // a) 文件精确匹配（最高优先级：仅匹配选中的 .java/.kt 路径本身）
+                if (!selectedFilePaths.isEmpty()) {
+                    boolean hit = false;
+                    for (String fp : selectedFilePaths) {
+                        if (path.equals(fp)) { hit = true; break; }
+                    }
+                    if (hit) { narrowed.add(api); continue; }
+                    // 选中文件但当前接口不在选中文件里 → 即使在选中目录下也不算（用户明确选文件）
+                    continue;
+                }
+                // b) 目录前缀匹配（原有行为：所有选中目录下源文件接口都收窄）
                 for (VirtualFile dir : dirs) {
                     String dirPath = dir.getPath();
                     if (path.equals(dirPath) || path.startsWith(dirPath + "/")) {
@@ -473,7 +518,8 @@ public static final class AddToScanPackageAction extends AnAction {
                     }
                 }
             }
-            LOG.info("仅显示此包接口：即时过滤 缓存 " + cached.size() + " -> " + narrowed.size());
+            LOG.info("仅显示此包接口：即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
+                    + "（选中目录数 = " + dirs.size() + "，选中文件数 = " + javaFiles.size() + "）");
             RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
             ApiTreePanel treePanel = holder.getTreePanel();
             if (treePanel != null) treePanel.updateTree(narrowed);
@@ -486,10 +532,17 @@ public static final class AddToScanPackageAction extends AnAction {
         scanner.scanProjectApisAsync();
 
         String title = "仅显示此包接口";
-        String content = "已收窄为包 " + String.join(", ", packageNames)
-                + " 及其子包下的接口，正在重新扫描...\n"
-                + "（支持右键任意层级包，无需精确到 controller 层）\n"
-                + "点击左侧「全量」按钮可恢复全量列表";
+        String content;
+        if (!javaFiles.isEmpty()) {
+            content = "已收窄为 " + javaFiles.size() + " 个源文件内的接口，正在重新扫描...\n" +
+                    "（单文件/多文件右键——按文件精确匹配，非文件内接口会被过滤）\n" +
+                    "点击左侧「全量」按钮可恢复全量列表";
+        } else {
+            content = "已收窄为包 " + String.join(", ", packageNames)
+                    + " 及其子包下的接口，正在重新扫描...\n"
+                    + "（支持右键任意层级包，无需精确到 controller 层）\n"
+                    + "点击左侧「全量」按钮可恢复全量列表";
+        }
         try {
             NotificationGroupManager.getInstance()
                     .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
@@ -505,13 +558,15 @@ public static final class AddToScanPackageAction extends AnAction {
         Project project = e.getProject();
         boolean visible = false;
         if (project != null && !project.isDisposed()) {
-            // 只做轻量判定：选中包含目录即显示。不在此处做 PSI 包名解析——
-            // 以解析结果决定可见性，会让任一解析波动导致菜单项静默消失（#51 根因）。
-            // 包名解析放到 actionPerformed 中执行，失败也有明确弹窗反馈。
+            // 只做轻量判定：选中包含目录或 .java/.kt 文件即显示（#53 新增文件支持）。
+            // 不在此处做 PSI 包名解析——以解析结果决定可见性，会让任一解析波动
+            // 导致菜单项静默消失（#51 根因）。包名解析放到 actionPerformed 中执行，
+            // 失败也有明确弹窗反馈。
             VirtualFile[] files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY);
             if (files != null) {
                 for (VirtualFile vf : files) {
-                    if (vf != null && vf.isDirectory()) { visible = true; break; }
+                    if (vf == null) continue;
+                    if (vf.isDirectory() || isJavaOrKtFile(vf)) { visible = true; break; }
                 }
             }
         }
@@ -522,6 +577,73 @@ public static final class AddToScanPackageAction extends AnAction {
      * 回退包名推导：按目录路径中的源码根标记（src/main/java 等标准布局）截取相对路径并转为包名。
      * <p>仅当 PSI 反查失败时兜底使用；无法识别返回空列表。</p>
      */
+    /**
+     * 文件后缀判定（仅 .java / .kt）。右键单文件时用于识别源文件，
+     * 避免把 .class / .jar 等附属文件当成源文件去推包名。
+     */
+    private static boolean isJavaOrKtFile(@NotNull VirtualFile vf) {
+        String ext = vf.getExtension();
+        return "java".equalsIgnoreCase(ext) || "kt".equalsIgnoreCase(ext);
+    }
+
+    /**
+     * 单文件右键包名推导（#53 新增）：从 1 个或多个 .java/.kt 文件推包名。
+     * <p>每个文件先按路径标记（src/main/java 等）截；截不到再读 package 声明；
+     * 最终对所有非空包名取<b>最长公共包前缀</b>——多文件跨包时仍能收紧到合适的祖先包。</p>
+     */
+    @NotNull
+    static List<String> resolvePackagesFromFiles(@NotNull List<VirtualFile> files) {
+        Set<String> packages = new java.util.HashSet<>();
+        int readCount = 0;
+        for (VirtualFile vf : files) {
+            if (vf == null || !isJavaOrKtFile(vf)) continue;
+            String pkg = packageFromSourcePath(vf.getPath());
+            if (pkg == null && readCount < DISK_READ_PACKAGE_LIMIT) {
+                readCount++;
+                pkg = readPackageDeclaration(vf);
+            }
+            if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
+        }
+        return aggregateToCommonPrefix(packages);
+    }
+
+    /**
+     * 包名集合收尾：从非空集合取最长公共前缀，单元素原样返回，空集合返回空列表。
+     * 与 {@link #longestCommonPackagePrefix} 配合使用，封装"空集合→空列表"的语义。
+     */
+    @NotNull
+    static List<String> aggregateToCommonPrefix(@NotNull Set<String> packages) {
+        if (packages.isEmpty()) return List.of();
+        String prefix = longestCommonPackagePrefix(packages);
+        return prefix.isEmpty() ? List.of() : List.of(prefix);
+    }
+
+    /**
+     * 文件粒度包名推导（可测试纯字符串版，#53 新增）：与 {@link #resolvePackagesFromFiles}
+     * 行为一致，但接受路径字符串+可选内容回调，便于单测在无 VFS 的沙箱里直接验证。
+     * <p>每个文件按路径标记截包；截不到时回调 reader 读取首部 package 声明。</p>
+     */
+    @NotNull
+    static List<String> resolvePackagesFromPathStrings(@NotNull List<String> paths,
+                                                       @NotNull java.util.function.Function<String, String> reader) {
+        Set<String> packages = new java.util.HashSet<>();
+        int readCount = 0;
+        for (String path : paths) {
+            if (path == null) continue;
+            String pkg = packageFromSourcePath(path);
+            if (pkg == null && readCount < DISK_READ_PACKAGE_LIMIT) {
+                readCount++;
+                String content = reader.apply(path);
+                if (content != null) {
+                    java.util.regex.Matcher m = PACKAGE_DECL.matcher(content);
+                    if (m.find()) pkg = m.group(1);
+                }
+            }
+            if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
+        }
+        return aggregateToCommonPrefix(packages);
+    }
+
     @NotNull
     static List<String> resolvePackageNamesByPath(@NotNull List<VirtualFile> dirs) {
         List<String> result = new java.util.ArrayList<>();
@@ -613,8 +735,7 @@ public static final class AddToScanPackageAction extends AnAction {
             if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) break;
         }
         if (packages.isEmpty()) return List.of();
-        String prefix = longestCommonPackagePrefix(packages);
-        return prefix.isEmpty() ? List.of() : List.of(prefix);
+        return aggregateToCommonPrefix(packages);
     }
 
     /** 递归搜集目录下源文件的包名（受 {@link #DISK_SCAN_FILE_LIMIT} 与采样上限约束） */
