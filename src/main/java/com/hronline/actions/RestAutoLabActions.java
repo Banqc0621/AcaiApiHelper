@@ -390,11 +390,45 @@ public static final class AddToScanPackageAction extends AnAction {
             packageNames = resolvePackagesFromDisk(dirs);
             LOG.info("仅显示此包接口：磁盘遍历推导包名 = " + packageNames);
         }
+        // 5) 兜底：向上寻包（右键纯资源目录/空目录/非标准布局时，磁盘遍历找不到任何源文件。
+        //    沿父目录链逐级向上递归找第一个含 .java/.kt 的祖先，按其包前缀收窄——通常是
+        //    模块根或父包，仍可达成「仅显示该目录下/附近接口」的诉求）。
         if (packageNames.isEmpty()) {
-            LOG.warn("仅显示此包接口：无法解析包名，右键目录 = " + dirs);
-            Messages.showWarningDialog(project,
-                    "无法解析所选目录对应的 Java 包。\n请在 Java 源码包目录或模块根上右键（任意层级均可）。",
-                    "仅显示此包接口");
+            packageNames = resolvePackagesFromAncestors(dirs);
+            LOG.info("仅显示此包接口：向上寻包推导包名 = " + packageNames);
+        }
+        // 6) 兜底：模块描述符（向上找 pom.xml / build.gradle[.kts] / settings.gradle[.kts]，
+        //    提取 groupId 或目录 basename 作为松散包前缀。子模块是纯配置/Scala 等无 Java
+        //    源码的场景仍能定位到模块根）。
+        if (packageNames.isEmpty()) {
+            packageNames = resolvePackagesFromModuleDescriptor(dirs);
+            LOG.info("仅显示此包接口：模块描述符推导包名 = " + packageNames);
+        }
+        // 7) 兜底：目录名宽松匹配（向上找最近一个有意义的目录名作为 filter hint，
+        //    按包前缀匹配规则仍能收窄到同名包下的接口）。
+        if (packageNames.isEmpty()) {
+            packageNames = resolvePackagesFromDirName(dirs);
+            LOG.info("仅显示此包接口：目录名兜底推导包名 = " + packageNames);
+        }
+        if (packageNames.isEmpty()) {
+            // 7 级全部失败时不再弹模态阻塞对话框，改用通知气泡轻提示，
+            // 并把右键目录路径写入诊断日志便于排查——之前强弹窗被反馈「始终处理不好」。
+            LOG.warn("仅显示此包接口：7 级兜底仍无法解析，右键目录 = " + dirs);
+            try {
+                NotificationGroupManager.getInstance()
+                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                        .createNotification(
+                                "仅显示此包接口",
+                                "所选目录及其祖先链中均未发现 Java/Kotlin 源文件，过滤未生效。\n" +
+                                        "右键目录：" + (dirs.isEmpty() ? "(空)" : dirs.get(0).getPath()) +
+                                        "\n请尝试在含 .java/.kt 文件的目录上右键。",
+                                NotificationType.WARNING)
+                        .notify(project);
+            } catch (Exception ex) {
+                Messages.showWarningDialog(project,
+                        "所选目录及其祖先链中均未发现 Java/Kotlin 源文件。",
+                        "仅显示此包接口");
+            }
             return;
         }
 
@@ -647,6 +681,152 @@ public static final class AddToScanPackageAction extends AnAction {
         int i = 0;
         while (i < n && a[i].equals(b[i])) i++;
         return String.join(".", java.util.Arrays.copyOf(a, i));
+    }
+
+    /** 5 级兜底：向上寻包时最多向上走的层数（防止死循环 + 兼顾多模块嵌套场景） */
+    private static final int ANCESTOR_WALK_MAX_DEPTH = 12;
+
+    /**
+     * 5 级兜底（向上寻包）：右键纯资源目录/空目录/非标准布局时，磁盘遍历在 dir 内部找不到
+     * 任何源文件。此时沿父目录链逐级向上，每一级递归调 {@link #resolvePackagesFromDisk}
+     * 找含 .java/.kt 的祖先，按其包前缀收窄——通常是模块根或父包，仍可达成
+     * 「仅显示该目录附近的接口」诉求。
+     * <p>深度受限避免极端深目录树循环；遇到 VFS 根（parent 为 null）即停。</p>
+     */
+    @NotNull
+    static List<String> resolvePackagesFromAncestors(@NotNull List<VirtualFile> dirs) {
+        for (VirtualFile dir : dirs) {
+            if (dir == null || !dir.isDirectory()) continue;
+            VirtualFile cur = dir.getParent();
+            int depth = 0;
+            while (cur != null && depth++ < ANCESTOR_WALK_MAX_DEPTH) {
+                if (cur.isDirectory()) {
+                    List<String> found = resolvePackagesFromDisk(java.util.Collections.singletonList(cur));
+                    if (!found.isEmpty()) return found;
+                }
+                cur = cur.getParent();
+            }
+        }
+        return List.of();
+    }
+
+    /** Maven groupId / Gradle project name 的常见分隔符 */
+    private static final java.util.regex.Pattern MODULE_NAME_SPLIT =
+            java.util.regex.Pattern.compile("[.\\-_/]+");
+
+    /**
+     * 6 级兜底（模块描述符）：向上找 {@code pom.xml} / {@code build.gradle} /
+     * {@code build.gradle.kts} / {@code settings.gradle} / {@code settings.gradle.kts}，
+     * 按以下优先级提取一个松散包前缀：
+     * <ol>
+     *   <li>pom.xml：正则匹配 {@code <groupId>...</groupId>}（取首个非空匹配）</li>
+     *   <li>build.gradle / .kts：匹配 {@code rootProject.name = '...'} 或 {@code group = '...'}</li>
+     *   <li>settings.gradle / .kts：匹配 {@code rootProject.name = '...'}</li>
+     *   <li>未匹配到 → 用模块描述符所在目录的 basename 作为单段 filter（至少能让用户
+     *       点开「仅显示此包接口」后有可见的过滤效果，而不是完全 no-op）</li>
+     * </ol>
+     * 适用于纯配置模块、Scala/纯前端子模块、或右键目录在标准布局之外但能定位到
+     * 模块根的场景。
+     */
+    @NotNull
+    static List<String> resolvePackagesFromModuleDescriptor(@NotNull List<VirtualFile> dirs) {
+        for (VirtualFile dir : dirs) {
+            if (dir == null || !dir.isDirectory()) continue;
+            VirtualFile cur = dir;
+            int depth = 0;
+            while (cur != null && depth++ < ANCESTOR_WALK_MAX_DEPTH) {
+                String[] candidates = {"pom.xml", "build.gradle", "build.gradle.kts",
+                        "settings.gradle", "settings.gradle.kts"};
+                for (String name : candidates) {
+                    VirtualFile child = cur.findChild(name);
+                    if (child == null) continue;
+                    String pkg = extractPackageFromModuleFile(child);
+                    if (pkg != null && !pkg.isEmpty()) return java.util.Collections.singletonList(pkg);
+                }
+                cur = cur.getParent();
+            }
+        }
+        return List.of();
+    }
+
+    /**
+     * 从模块描述符文件提取包/模块名（纯字符串逻辑，便于单测）。
+     * pom.xml → groupId（XML 标签内容），无则退化 artifactId；
+     * gradle → {@code group = 'x'} 或 {@code rootProject.name = 'x'}；
+     * 无匹配返回 null。
+     */
+    @Nullable
+    static String extractPackageFromModuleText(@NotNull String filename, @NotNull String content) {
+        if ("pom.xml".equals(filename)) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("<groupId>\\s*([\\w.\\-_]+)\\s*</groupId>").matcher(content);
+            if (m.find()) return m.group(1);
+            m = java.util.regex.Pattern
+                    .compile("<artifactId>\\s*([\\w.\\-_]+)\\s*</artifactId>").matcher(content);
+            return m.find() ? m.group(1) : null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("(?:rootProject\\.name|project\\.name|group)\\s*=?\\s*['\"]([^'\"]+)['\"]")
+                .matcher(content);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * 从模块描述符文件读取并提取包名（VFS 包装层）。
+     */
+    @Nullable
+    private static String extractPackageFromModuleFile(@NotNull VirtualFile file) {
+        try {
+            String content = new String(file.contentsToByteArray(), file.getCharset());
+            return extractPackageFromModuleText(file.getName(), content);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 7 级兜底（目录名宽松匹配）：用右键目录链中第一个"看起来像包名片段"的目录
+     * basename 作为单段 filter hint。{@code matchesPackagePrefix} 会按段边界匹配，
+     * 任何含同名段的包都会被收窄——例如右键 {@code docs} 会过滤含 {@code .docs.} 的接口
+     * （多数为 false positive，但至少不会完全 no-op）。
+     * <p>过滤规则：跳过 {@code .} / {@code ..} / {@code src} / 噪音目录 / 全数字目录；
+     * 优先用最深的有意义目录名（最贴近用户意图）。</p>
+     */
+    @NotNull
+    static List<String> resolvePackagesFromDirName(@NotNull List<VirtualFile> dirs) {
+        for (VirtualFile dir : dirs) {
+            if (dir == null || !dir.isDirectory()) continue;
+            // 从 dir 开始向上找第一个有意义的目录名
+            java.util.List<String> chain = new java.util.ArrayList<>();
+            VirtualFile cur = dir;
+            int depth = 0;
+            while (cur != null && depth++ < ANCESTOR_WALK_MAX_DEPTH) {
+                chain.add(cur.getName());
+                cur = cur.getParent();
+            }
+            String hint = pickDirNameHint(chain);
+            if (hint != null) return java.util.Collections.singletonList(hint);
+        }
+        return List.of();
+    }
+
+    /**
+     * 从「目录链」（从最深到最浅）中挑第一个有意义的目录名作为 filter hint。
+     * 噪音集合来自 IDE 构建产物 / 标准源码目录 / VFS 元目录。
+     */
+    @Nullable
+    static String pickDirNameHint(@NotNull java.util.List<String> dirChain) {
+        Set<String> noise = new java.util.HashSet<>(DISK_SCAN_SKIP_DIRS);
+        noise.add("src"); noise.add("main"); noise.add("test"); noise.add("java"); noise.add("kotlin");
+        noise.add("resources"); noise.add("public"); noise.add("private"); noise.add(".");
+        noise.add("..");
+        for (String name : dirChain) {
+            if (name == null || noise.contains(name)) continue;
+            if (!name.matches(".*[A-Za-z].*")) continue; // 全数字/全符号目录也跳过
+            String norm = name.replaceAll("[^A-Za-z0-9_]", "");
+            if (!norm.isEmpty()) return norm;
+        }
+        return null;
     }
 
     /**
