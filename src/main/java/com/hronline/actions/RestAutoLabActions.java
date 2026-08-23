@@ -714,54 +714,151 @@ public static final class AddToScanPackageAction extends AnAction {
             java.util.regex.Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;?");
 
     /**
-     * 回退包名推导（终极兜底，沙箱日志 8/23 15:44:31 实锤场景）：右键模块根且已扫描缓存里
-     * 没有该模块接口时，PSI/路径标记/缓存推导三级全部失败。此时直接递归遍历磁盘，搜集
-     * {@code .java/.kt} 源文件推导包名：
+     * 回退包名推导（终极兜底）：右键模块根/聚合目录且已扫描缓存里没有该模块接口时，
+     * PSI/路径标记/缓存推导全部失败。此时用 {@code java.nio} <b>直接遍历真实文件系统</b>
+     * （沙箱日志 8/23 17:47:17 实锤：旧实现走 IntelliJ VFS {@code getChildren()}，项目刚打开、
+     * VFS 子树尚未刷新时返回空，2ms 误判「无源文件」弹「无法解析」；NIO 遍历免疫 VFS 状态）。
+     *
+     * <p>包名推导规则：</p>
      * <ol>
      *   <li>路径含 {@code src/main/java} 等标准标记 → 按标记截取（零 IO，绝大多数 Maven/Gradle 模块命中）；</li>
      *   <li>无标记 → 读文件首部 {@code package} 声明（采样上限内）。</li>
      * </ol>
-     * 最后对所有包名取<b>最长公共包前缀</b>（模块根 → 模块根包，如 {@code cn.hollis.nft.turbo.auth}），
-     * 按「包前缀 + 段边界」匹配天然覆盖 controller 等全部子包。
+     *
+     * <p><b>按模块根分组取前缀</b>（而非全量取公共前缀）：聚合模块（如右键
+     * {@code nft-turbo-business}，下挂 collection/box/order 等多个子模块）若整体取公共前缀
+     * 会得到过粗的 {@code cn.hollis.nft.turbo}，把 auth/admin/gateway 等其它模块接口也误纳入。
+     * 现按「源文件所属模块根」（最近的 src/main/java 标记之上的目录）分组，每组各取最长公共
+     * 包前缀——单模块目录仍得到唯一前缀，聚合目录得到每个子模块一条精确前缀。</p>
      */
     @NotNull
     static List<String> resolvePackagesFromDisk(@NotNull List<VirtualFile> dirs) {
-        Set<String> packages = new java.util.HashSet<>();
-        int[] fileCount = {0};
-        int[] readCount = {0};
+        List<String> dirPaths = new java.util.ArrayList<>();
         for (VirtualFile dir : dirs) {
-            if (dir == null || !dir.isDirectory()) continue;
-            collectSourcePackagesFromDir(dir, packages, fileCount, readCount);
-            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) break;
+            if (dir != null && dir.isDirectory()) dirPaths.add(dir.getPath());
         }
-        if (packages.isEmpty()) return List.of();
-        return aggregateToCommonPrefix(packages);
+        return resolvePackagesFromDiskPaths(dirPaths);
     }
 
-    /** 递归搜集目录下源文件的包名（受 {@link #DISK_SCAN_FILE_LIMIT} 与采样上限约束） */
-    private static void collectSourcePackagesFromDir(@NotNull VirtualFile dir, @NotNull Set<String> packages,
-                                                     int[] fileCount, int[] readCount) {
-        if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return;
-        VirtualFile[] children = dir.getChildren();
-        if (children == null) return;
-        for (VirtualFile child : children) {
-            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return;
-            if (child.isDirectory()) {
-                if (!DISK_SCAN_SKIP_DIRS.contains(child.getName())) {
-                    collectSourcePackagesFromDir(child, packages, fileCount, readCount);
-                }
-                continue;
-            }
-            String ext = child.getExtension();
-            if (!"java".equalsIgnoreCase(ext) && !"kt".equalsIgnoreCase(ext)) continue;
-            fileCount[0]++;
-            String pkg = packageFromSourcePath(child.getPath());
-            if (pkg == null && readCount[0] < DISK_READ_PACKAGE_LIMIT) {
-                readCount[0]++;
-                pkg = readPackageDeclaration(child);
-            }
-            if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
+    /**
+     * 磁盘遍历推导的纯 NIO 版本（不依赖 VFS，单测可直接用 {@code @TempDir} 验证）。
+     * 搜集各目录下源文件 → 按模块根分组 → 每组取最长公共包前缀。
+     */
+    @NotNull
+    static List<String> resolvePackagesFromDiskPaths(@NotNull List<String> dirPaths) {
+        java.util.Map<String, Set<String>> byModuleRoot = new java.util.LinkedHashMap<>();
+        int[] fileCount = {0};
+        int[] readCount = {0};
+        for (String dirPath : dirPaths) {
+            if (dirPath == null || dirPath.isEmpty()) continue;
+            collectSourcePackagesFromDiskPath(dirPath, byModuleRoot, fileCount, readCount);
+            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) break;
         }
+        List<String> result = new java.util.ArrayList<>();
+        for (Set<String> packages : byModuleRoot.values()) {
+            if (packages.isEmpty()) continue;
+            String prefix = longestCommonPackagePrefix(packages);
+            if (!prefix.isEmpty() && !result.contains(prefix)) result.add(prefix);
+        }
+        return result;
+    }
+
+    /** NIO 深度遍历的目录层数上限（聚合模块嵌套 3~4 层 + src/main/java + 包深已足够） */
+    private static final int DISK_WALK_MAX_DEPTH = 40;
+
+    /** NIO 遍历单个目录，按模块根分组搜集源文件包名（受文件数与采样上限约束） */
+    private static void collectSourcePackagesFromDiskPath(@NotNull String dirPath,
+                                                          @NotNull java.util.Map<String, Set<String>> byModuleRoot,
+                                                          int[] fileCount, int[] readCount) {
+        java.nio.file.Path root;
+        try {
+            root = java.nio.file.Paths.get(dirPath);
+        } catch (Exception e) {
+            return;
+        }
+        if (!java.nio.file.Files.isDirectory(root)) return;
+        try {
+            java.nio.file.Files.walkFileTree(root, java.util.EnumSet.noneOf(java.nio.file.FileVisitOption.class),
+                    DISK_WALK_MAX_DEPTH, new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                        @Override
+                        public java.nio.file.FileVisitResult preVisitDirectory(java.nio.file.Path dir,
+                                                                               java.nio.file.attribute.BasicFileAttributes attrs) {
+                            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return java.nio.file.FileVisitResult.TERMINATE;
+                            if (dir.equals(root)) return java.nio.file.FileVisitResult.CONTINUE;
+                            String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
+                            if (DISK_SCAN_SKIP_DIRS.contains(name) || name.startsWith(".")) {
+                                return java.nio.file.FileVisitResult.SKIP_SUBTREE;
+                            }
+                            return java.nio.file.FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public java.nio.file.FileVisitResult visitFile(java.nio.file.Path file,
+                                                                       java.nio.file.attribute.BasicFileAttributes attrs) {
+                            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return java.nio.file.FileVisitResult.TERMINATE;
+                            String name = file.getFileName() == null ? "" : file.getFileName().toString();
+                            String lower = name.toLowerCase(java.util.Locale.ROOT);
+                            if (!lower.endsWith(".java") && !lower.endsWith(".kt")) {
+                                return java.nio.file.FileVisitResult.CONTINUE;
+                            }
+                            fileCount[0]++;
+                            String normalized = file.toString().replace(java.io.File.separatorChar, '/');
+                            String pkg = packageFromSourcePath(normalized);
+                            if (pkg == null && readCount[0] < DISK_READ_PACKAGE_LIMIT) {
+                                readCount[0]++;
+                                pkg = readPackageDeclarationFromDisk(file);
+                            }
+                            if (pkg != null && !pkg.isEmpty()) {
+                                Set<String> group = byModuleRoot.computeIfAbsent(
+                                        moduleRootOf(normalized), k -> new java.util.HashSet<>());
+                                group.add(pkg);
+                                // 同时登记上一级包：单文件/单子包场景下 LCP 才能回退到
+                                // 模块根包（否则单元素集合的 LCP 就是文件自身的深层包）
+                                int lastDot = pkg.lastIndexOf('.');
+                                if (lastDot > 0) group.add(pkg.substring(0, lastDot));
+                            }
+                            return java.nio.file.FileVisitResult.CONTINUE;
+                        }
+
+                        @Override
+                        public java.nio.file.FileVisitResult visitFileFailed(java.nio.file.Path file, java.io.IOException exc) {
+                            return java.nio.file.FileVisitResult.CONTINUE; // 单文件失败不阻断整体推导
+                        }
+                    });
+        } catch (java.io.IOException ignored) {
+            // 单目录遍历失败不阻断其它目录推导
+        }
+    }
+
+    /**
+     * 源文件所属「模块根」：路径中最近的 src/main/java 等标记<b>之上</b>的目录；
+     * 无标记时取文件父目录。用于聚合目录按子模块分组取前缀。
+     */
+    @NotNull
+    static String moduleRootOf(@NotNull String normalizedPath) {
+        String[] markers = {"/src/main/java/", "/src/test/java/", "/src/main/kotlin/", "/src/test/kotlin/"};
+        for (String marker : markers) {
+            int idx = normalizedPath.indexOf(marker);
+            if (idx >= 0) return normalizedPath.substring(0, idx);
+        }
+        int lastSlash = normalizedPath.lastIndexOf('/');
+        return lastSlash > 0 ? normalizedPath.substring(0, lastSlash) : normalizedPath;
+    }
+
+    /** 读磁盘源文件首部 package 声明（最多扫 200 行）；读失败或无声明返回 null */
+    @Nullable
+    private static String readPackageDeclarationFromDisk(@NotNull java.nio.file.Path file) {
+        try (java.io.BufferedReader reader = java.nio.file.Files.newBufferedReader(file)) {
+            String line;
+            int lines = 0;
+            while ((line = reader.readLine()) != null && lines++ < 200) {
+                java.util.regex.Matcher m = PACKAGE_DECL.matcher(line);
+                if (m.find()) return m.group(1);
+            }
+        } catch (Exception ignored) {
+            // 单文件读取失败不阻断整体推导
+        }
+        return null;
     }
 
     /** 按 src/main/java 等标准布局标记从源文件路径推导包名；无标记返回 null */

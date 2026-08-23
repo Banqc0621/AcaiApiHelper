@@ -278,6 +278,10 @@ public final class ApiScannerService {
                     List<ApiDefinition> classApis = parseControllerClass(psiClass);
                     apis.addAll(classApis);
                     // 详细的逐控制器日志已在 parseControllerClass 内输出（含 qfn、映射方法数、被过滤方法）
+                } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
+                    // 用户取消扫描时立即向上抛——之前的 catch Exception 会把 PCE 当作普通
+                    // 解析失败吞掉，导致取消信号丢失、扫描继续跑空轮、UI 不响应取消
+                    throw pce;
                 } catch (Exception e) {
                     LOG.warn("解析控制器类失败: " + psiClass.getName() + " - " + e.getMessage(), e);
                 }
@@ -350,19 +354,24 @@ public final class ApiScannerService {
                                 + "（来自 " + controllerName + "." + method.getName() + "）");
                         api.setUrl(cleaned);
                     }
-                    // 去重键：控制器 + 方法名 + 参数签名 + uniqueKey(METHOD|URL)。
-                    // 这样能去掉 getAllMethods() 对同一方法的重复返回，
-                    // 同时保留重载方法（同 URL 不同参数）。
+                    // 去重键：控制器 qfn + 方法名 + 参数签名 + uniqueKey(METHOD|URL)。
+                    // 加入 qfn 是为了防止 com.foo.UserController 与 com.bar.UserController
+                    // 同名方法 + 同 URL 时第二个被误丢弃（之前只按 simpleName 去重）
                     StringBuilder paramSig = new StringBuilder();
                     for (PsiParameter p : method.getParameterList().getParameters()) {
                         paramSig.append(p.getType().getCanonicalText()).append(',');
                     }
-                    String dedupKey = controllerName + "#" + method.getName()
+                    String dedupKey = (psiClass.getQualifiedName() != null ? psiClass.getQualifiedName() : controllerName)
+                            + "#" + method.getName()
                             + "(" + paramSig + ")|" + api.uniqueKey();
                     if (seenKeys.add(dedupKey)) {
                         apis.add(api);
                     }
                 }
+            } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
+                // 用户取消时立即向上抛——之前的 catch Exception 会把 PCE 当作普通
+                // 解析失败吞掉，导致取消信号丢失、扫描继续跑空轮、UI 不响应取消
+                throw pce;
             } catch (Exception e) {
                 LOG.warn("解析方法失败: " + controllerName + "." + method.getName()
                         + " - " + e.getMessage());
@@ -1018,6 +1027,9 @@ public final class ApiScannerService {
             try {
                 List<ApiParameter> parsed = parseSingleParameter(param);
                 params.addAll(parsed);
+            } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
+                // 用户取消时立即向上抛——之前 catch Exception 会把 PCE 吞掉
+                throw pce;
             } catch (Exception e) {
                 LOG.warn("解析参数失败: " + param.getName() + " - " + e.getMessage());
             }
@@ -1663,8 +1675,16 @@ public final class ApiScannerService {
         // 递归解析实体类字段
         try {
             return new ArrayList<>(parseComplexType(t, new HashSet<>()));
+        } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
+            // 用户取消时立即向上抛——之前的兜底只 catch Exception 会把 PCE 当作普通
+            // 解析失败吞掉，导致取消信号丢失、扫描继续跑空轮、UI 不响应取消
+            throw pce;
         } catch (Exception ex) {
-            // 解析失败时返回空列表（导出器会回退到按类型名推断）
+            // 解析失败时记录日志并返回空列表（导出器会回退到按类型名推断）——
+            // 之前完全静默吞掉导致「接口看起来正常但 responseSchema 为空」，用户
+            // 无任何线索可排查；这里把异常路径暴露到日志里
+            LOG.warn("解析响应类型失败（已回退为空 schema）: " + t.getCanonicalText()
+                    + " - " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
             return new ArrayList<>();
         }
     }

@@ -240,6 +240,84 @@ class AddToScanPackageFallbackTest {
     }
 
     // ================================================================
+    // 4 级兜底 NIO 磁盘遍历：resolvePackagesFromDiskPaths（纯文件系统，@TempDir 直接验证）
+    //   沙箱日志 8/23 17:47:17 实锤场景：右键聚合模块 nft-turbo-business（下挂多个子模块）
+    //   时旧 VFS 实现返回 []。NIO 版必须能遍历到真实磁盘上的 .java 文件并按模块根分组取前缀。
+    // ================================================================
+
+    @Test
+    void disk_singleModule_returnsModuleRootPackage() throws Exception {
+        // 单模块：nft-turbo-auth/src/main/java/cn/hollis/auth/{controller,service}
+        Path ctrl = Files.createDirectories(tempDirRoot.resolve(
+                "nft-turbo-auth/src/main/java/cn/hollis/auth/controller"));
+        Files.createDirectories(tempDirRoot.resolve("nft-turbo-auth/src/main/java/cn/hollis/auth/service"));
+        Files.writeString(ctrl.resolve("AuthController.java"),
+                "package cn.hollis.auth.controller;\nclass AuthController {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromDiskPaths(
+                List.of(tempDirRoot.resolve("nft-turbo-auth").toString()));
+        assertEquals(List.of("cn.hollis.auth"), pkgs);
+    }
+
+    @Test
+    void disk_aggregateModule_perSubmodulePrefix() throws Exception {
+        // 聚合模块：business 下挂 goods/collection 两个子模块，各含不同根包
+        Path goods = Files.createDirectories(tempDirRoot.resolve(
+                "business/nft-turbo-goods/src/main/java/cn/hollis/goods/controller"));
+        Files.writeString(goods.resolve("GoodsController.java"),
+                "package cn.hollis.goods.controller;\nclass GoodsController {}\n");
+        Path coll = Files.createDirectories(tempDirRoot.resolve(
+                "business/nft-turbo-collection/src/main/java/cn/hollis/collection/controller"));
+        Files.writeString(coll.resolve("CollectionController.java"),
+                "package cn.hollis.collection.controller;\nclass CollectionController {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromDiskPaths(
+                List.of(tempDirRoot.resolve("business").toString()));
+        // 每个子模块一条精确前缀（不再整体合成过粗的 cn.hollis），顺序按目录遍历序
+        assertEquals(2, pkgs.size());
+        org.junit.jupiter.api.Assertions.assertTrue(pkgs.contains("cn.hollis.goods"),
+                "应包含 goods 模块前缀，实际: " + pkgs);
+        org.junit.jupiter.api.Assertions.assertTrue(pkgs.contains("cn.hollis.collection"),
+                "应包含 collection 模块前缀，实际: " + pkgs);
+    }
+
+    @Test
+    void disk_skipsTargetAndHiddenDirs() throws Exception {
+        // target/ 与 .git/ 下的 .java 不能被计入（构建产物/生成代码会污染前缀）
+        Path real = Files.createDirectories(tempDirRoot.resolve(
+                "mod/src/main/java/cn/hollis/mod/api"));
+        Files.writeString(real.resolve("ApiController.java"),
+                "package cn.hollis.mod.api;\nclass ApiController {}\n");
+        Path gen = Files.createDirectories(tempDirRoot.resolve(
+                "mod/target/generated-sources/annotations/com/generated"));
+        Files.writeString(gen.resolve("Gen.java"), "package com.generated;\nclass Gen {}\n");
+        Path git = Files.createDirectories(tempDirRoot.resolve("mod/.git/hooks"));
+        Files.writeString(git.resolve("Hook.java"), "package com.hooks;\nclass Hook {}\n");
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromDiskPaths(
+                List.of(tempDirRoot.resolve("mod").toString()));
+        assertEquals(List.of("cn.hollis.mod"), pkgs);
+    }
+
+    @Test
+    void disk_emptyDir_returnsEmpty() throws Exception {
+        Path empty = Files.createDirectories(tempDirRoot.resolve("empty-module"));
+        List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromDiskPaths(
+                List.of(empty.toString()));
+        assertEquals(List.of(), pkgs);
+    }
+
+    @Test
+    void moduleRootOf_markerPath_returnsAboveMarker() {
+        assertEquals("/repo/mod",
+                RestAutoLabActions.AddToScanPackageAction.moduleRootOf(
+                        "/repo/mod/src/main/java/com/foo/Bar.java"));
+    }
+
+    @Test
+    void moduleRootOf_noMarker_returnsParentDir() {
+        assertEquals("/repo/mod",
+                RestAutoLabActions.AddToScanPackageAction.moduleRootOf("/repo/mod/Legacy.java"));
+    }
+
+    // ================================================================
     // 5 级兜底浅层探测：hasShallowSourceHint（VirtualFile 入参，集成测试；
     //   用 Java.io 的临时目录 + LightFileBasedTestFixture 在沙箱中跑较重，本单测覆盖纯字符串逻辑）
     // ================================================================
