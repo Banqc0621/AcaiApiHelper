@@ -416,16 +416,15 @@ public static final class AddToScanPackageAction extends AnAction {
                 packageNames = resolvePackagesFromModuleDescriptor(dirs);
                 LOG.info("仅显示此包接口：模块描述符推导包名 = " + packageNames);
             }
-            // 7) 兜底：目录名宽松匹配（向上找最近一个有意义的目录名作为 filter hint，
-            //    按包前缀匹配规则仍能收窄到同名包下的接口）。
-            if (packageNames.isEmpty()) {
-                packageNames = resolvePackagesFromDirName(dirs);
-                LOG.info("仅显示此包接口：目录名兜底推导包名 = " + packageNames);
-            }
-            // 8) 单文件右键快路径（#53 新增）：上面 7 级目录兜底链全部失败、但用户实际选的是
-            //    1 个或多个 .java/.kt 文件时，再走一遍文件粒度的包名推导——这种情形常见于
-            //    「右键单个 controller 文件调试」，目录链上不一定能拿到该文件所属包。
-            //    文件粒度命中后写 filter 即可生效；不命中时直接走 7 级失败提示。
+            // 7) 单文件右键快路径（#53 新增）：上面 1-6 级目录兜底链全部失败、但用户实际
+            //    选的是 1 个或多个 .java/.kt 文件时，再走一遍文件粒度的包名推导——常见
+            //    于「右键单个 controller 文件调试」，目录链上不一定能拿到该文件所属包。
+            //    文件粒度命中后写 filter 即可生效；不命中时直接走失败提示。
+            //
+            // 一伦反馈 #55：原 7 级「目录名宽松匹配」已删除——按 dir basename 猜包名是
+            // 降级操作，会把同名但不同包的 Controller 误收进当前右键目录的结果里（典型场景：
+            // 右键 my-feature（无 Controller）却看到其它模块 com.myfeature.* 下的接口）。
+            // 用户明确要求「没扫到就是没扫到」「不要降级」：扫不到就显示为空，恢复请用左侧「全量」按钮。
             if (packageNames.isEmpty() && !javaFiles.isEmpty()) {
                 List<String> filePackages = resolvePackagesFromFiles(javaFiles);
                 LOG.info("仅显示此包接口：文件推导包名 = " + filePackages);
@@ -450,9 +449,13 @@ public static final class AddToScanPackageAction extends AnAction {
             return;
         }
         if (packageNames.isEmpty()) {
-            // 7 级全部失败时不再弹模态阻塞对话框，改用通知气泡轻提示，
+            // 兜底链全部失败（无 PSI / 无路径标记 / 无缓存 / 无磁盘源文件 / 无祖先链源 /
+            // 无模块描述符 / 无文件推导）时不再弹模态阻塞对话框，改用通知气泡轻提示，
             // 并把右键目录路径写入诊断日志便于排查——之前强弹窗被反馈「始终处理不好」。
-            LOG.warn("仅显示此包接口：7 级兜底仍无法解析，右键目录 = " + dirs + "，右键文件 = " + javaFiles);
+            // 一伦反馈 #55：当前右键目录若无对外 Controller，过滤后树自然为空，用户用
+            // 左侧「全量」按钮恢复全量列表；不弹任何"猜的"包名兜底。
+            LOG.warn("仅显示此包接口：兜底链全失败（当前右键目录/文件无对外 Controller 接口），右键目录 = "
+                    + dirs + "，右键文件 = " + javaFiles);
             try {
                 String selectionDesc;
                 if (!javaFiles.isEmpty()) {
@@ -466,14 +469,15 @@ public static final class AddToScanPackageAction extends AnAction {
                         .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
                         .createNotification(
                                 "仅显示此包接口",
-                                "所选目录/文件及其祖先链中均未发现 Java/Kotlin 源文件，过滤未生效。\n" +
+                                "所选目录/文件中没有可解析的 Java/Kotlin 源文件，过滤未生效。\n" +
                                         selectionDesc +
-                                        "\n请尝试在含 .java/.kt 文件的目录或源文件本身上右键。",
+                                        "\n（这是预期的【无】——不要按任何目录名猜包）" +
+                                        "\n如需恢复全量列表，请点击左侧「全量」按钮。",
                                 NotificationType.WARNING)
                         .notify(project);
             } catch (Exception ex) {
                 Messages.showWarningDialog(project,
-                        "所选目录及其祖先链中均未发现 Java/Kotlin 源文件。",
+                        "所选目录/文件中没有可解析的 Java/Kotlin 源文件。如需恢复全量列表，请点击左侧「全量」按钮。",
                         "仅显示此包接口");
             }
             return;
