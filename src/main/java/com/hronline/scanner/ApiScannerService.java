@@ -549,39 +549,75 @@ public final class ApiScannerService {
      * 提取控制器类级别的基础路径列表（支持多路径）。
      * <p>Spring <code>@RequestMapping({"/api/v1","/api/v2"})</code> 会返回两个基路径，
      * 方法路径会与每个基路径做笛卡尔积，确保多版本前缀下的接口都能被识别。</p>
+     * <p>组合语义（修复 #54）：当多个类级注解都贡献路径时（如 Feign 接口同时有
+     * <code>@FeignClient(path="/client")</code> + <code>@RequestMapping("/users")</code>），
+     * 不再二选一丢弃另一份，而是把所有路径来源两两组合——既保证已有扫描结果不变，
+     * 又把真实端点 <code>/client/users/...</code> 补回来。</p>
      * <p>无类级路径注解时返回 <code>[""]</code>（单元素空串），保持与旧逻辑兼容。</p>
      */
     private List<String> extractClassBasePaths(PsiClass psiClass) {
-        // Spring @RequestMapping（支持多路径）
-        PsiAnnotation requestMapping = psiClass.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_MAPPING);
-        if (requestMapping != null) {
-            List<String> paths = extractPathsFromAnnotation(requestMapping);
-            if (!paths.isEmpty()) return paths;
+        List<String> requestPaths = extractSpringRequestMappingPaths(psiClass);
+        List<String> jaxrsPaths = extractJaxrsClassPaths(psiClass);
+        List<String> feignPaths = extractFeignClientPaths(psiClass);
+
+        // 收集所有有内容的路径来源；笛卡尔积之前先按"是否真有路径"分类
+        List<List<String>> sources = new ArrayList<>();
+        if (!requestPaths.isEmpty()) sources.add(requestPaths);
+        if (!jaxrsPaths.isEmpty()) sources.add(jaxrsPaths);
+        if (!feignPaths.isEmpty()) sources.add(feignPaths);
+
+        if (sources.isEmpty()) return Collections.singletonList("");
+        if (sources.size() == 1) return sources.get(0);
+
+        // 多源路径：笛卡尔积组合——Feign 接口 @FeignClient(path) + @RequestMapping("/users")
+        // → 把每个 Feign path 与每个 RequestMapping path 两两 join，得到完整前缀集合
+        List<String> combined = new ArrayList<>();
+        combined.add(""); // 先放空串，与第一源第一元素组合时不让 joinPaths 吞掉前导斜杠
+        for (List<String> src : sources) {
+            List<String> next = new ArrayList<>();
+            for (String prefix : combined) {
+                for (String path : src) {
+                    String joined = joinPaths(prefix, path);
+                    if (!joined.isEmpty() && !next.contains(joined)) next.add(joined);
+                }
+            }
+            combined = next;
         }
-        // JAX-RS @Path（支持多路径）
+        return combined.isEmpty() ? Collections.singletonList("") : combined;
+    }
+
+    /** 提取 Spring 类级 @RequestMapping 多路径；无/为空返回空列表（非 [""]） */
+    private List<String> extractSpringRequestMappingPaths(@NotNull PsiClass psiClass) {
+        PsiAnnotation requestMapping = psiClass.getAnnotation(RestAutoLabConstants.ANNO_REQUEST_MAPPING);
+        if (requestMapping == null) return Collections.emptyList();
+        List<String> paths = extractPathsFromAnnotation(requestMapping);
+        return paths == null ? Collections.emptyList() : paths;
+    }
+
+    /** 提取 JAX-RS 类级 @Path（javax + jakarta 双 namespace）多路径；无/为空返回空列表 */
+    private List<String> extractJaxrsClassPaths(@NotNull PsiClass psiClass) {
         PsiAnnotation jaxrsPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAVAX);
         if (jaxrsPath == null) jaxrsPath = psiClass.getAnnotation(RestAutoLabConstants.JAXRS_PATH_JAKARTA);
-        if (jaxrsPath != null) {
-            List<String> paths = extractJaxrsPaths(jaxrsPath);
-            if (!paths.isEmpty()) return paths;
-        }
-        // FeignClient @FeignClient(path = "...")
+        if (jaxrsPath == null) return Collections.emptyList();
+        List<String> paths = extractJaxrsPaths(jaxrsPath);
+        return paths == null ? Collections.emptyList() : paths;
+    }
+
+    /** 提取 @FeignClient(path) 或 @FeignClient(value) 单路径；无/为空返回空列表 */
+    private List<String> extractFeignClientPaths(@NotNull PsiClass psiClass) {
         PsiAnnotation feignClient = psiClass.getAnnotation(RestAutoLabConstants.ANNO_FEIGN_CLIENT);
-        if (feignClient != null) {
-            PsiAnnotationMemberValue pathVal = feignClient.findAttributeValue("path");
-            if (pathVal != null) {
-                String path = cleanAnnotationValue(pathVal.getText());
-                if (!path.isEmpty()) return Collections.singletonList(path);
-            }
-            // 也尝试 value 属性
-            PsiAnnotationMemberValue valVal = feignClient.findAttributeValue("value");
-            if (valVal != null) {
-                String path = cleanAnnotationValue(valVal.getText());
-                if (!path.isEmpty() && path.startsWith("/")) return Collections.singletonList(path);
-            }
+        if (feignClient == null) return Collections.emptyList();
+        PsiAnnotationMemberValue pathVal = feignClient.findAttributeValue("path");
+        if (pathVal != null) {
+            String path = cleanAnnotationValue(pathVal.getText());
+            if (!path.isEmpty()) return Collections.singletonList(path);
         }
-        // 默认：单元素空串，兼容旧逻辑
-        return Collections.singletonList("");
+        PsiAnnotationMemberValue valVal = feignClient.findAttributeValue("value");
+        if (valVal != null) {
+            String path = cleanAnnotationValue(valVal.getText());
+            if (!path.isEmpty() && path.startsWith("/")) return Collections.singletonList(path);
+        }
+        return Collections.emptyList();
     }
 
     /**
