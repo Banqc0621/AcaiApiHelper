@@ -120,7 +120,9 @@ public final class ApiScannerService {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setIndeterminate(false);
-                indicator.setText("正在扫描REST控制器...");
+                // 一伦反馈 #58：移除所有 indicator.setText 调用——
+                // setText 会同时更新底部状态栏文字（"正在扫描…" / "正在解析: ClassName"），
+                // 用户明确要求「取消扫描时右下角的文字提示」；进度条/取消按钮仍由 Task 框架提供。
                 for (ScanListener listener : listeners) {
                     listener.onScanStarted();
                 }
@@ -145,7 +147,6 @@ public final class ApiScannerService {
                         .collect(Collectors.toList());
                 RestAutoLabSettingsState.getInstance(project).saveLastScanSignatures(newSignatures);
 
-                indicator.setText("扫描完成，发现 " + apis.size() + " 个接口");
                 indicator.setFraction(1.0);
 
                 for (ScanListener listener : listeners) {
@@ -297,9 +298,7 @@ public final class ApiScannerService {
                     indicator.setFraction((double) i / total);
                 }
                 PsiClass psiClass = uniqueControllers.get(i);
-                if (indicator != null) {
-                    indicator.setText("正在解析: " + psiClass.getName());
-                }
+                // 一伦反馈 #58：不调用 indicator.setText，底部状态栏不显示 "正在解析: X"
                 try {
                     List<ApiDefinition> classApis = parseControllerClass(psiClass);
                     apis.addAll(classApis);

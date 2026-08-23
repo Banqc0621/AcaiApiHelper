@@ -645,13 +645,16 @@ public static final class AddToScanPackageAction extends AnAction {
     }
 
     /**
-     * 单文件右键包名推导（#53 新增）：从 1 个或多个 .java/.kt 文件推包名。
-     * <p>每个文件先按路径标记（src/main/java 等）截；截不到再读 package 声明；
-     * 最终对所有非空包名取<b>最长公共包前缀</b>——多文件跨包时仍能收紧到合适的祖先包。</p>
+     * 单文件右键包名推导（#53 新增，#58 修正）：从 1 个或多个 .java/.kt 文件推包名。
+     * <p><b>#58 修正</b>：旧版用 {@link #aggregateToCommonPrefix} 把多文件的包名聚合成最长公共前缀，
+     * 导致多文件跨子包时（如 auth.controller + auth.service）公共前缀退到 auth.* —— 用户看到比预期更广的结果。
+     * 现在改为：每个文件独立取包名，按出现顺序去重，返回所有不同包名（逗号拼接传给过滤器）。</p>
+     * <p>推导路径：先按路径标记（src/main/java 等）截；截不到再读 package 声明（最多 DISK_READ_PACKAGE_LIMIT 个）。</p>
      */
     @NotNull
     static List<String> resolvePackagesFromFiles(@NotNull List<VirtualFile> files) {
-        Set<String> packages = new java.util.HashSet<>();
+        // LinkedHashSet 保证「首次出现顺序」稳定，单测断言与日志输出都更可读
+        java.util.LinkedHashSet<String> packages = new java.util.LinkedHashSet<>();
         int readCount = 0;
         for (VirtualFile vf : files) {
             if (vf == null || !isJavaOrKtFile(vf)) continue;
@@ -662,29 +665,25 @@ public static final class AddToScanPackageAction extends AnAction {
             }
             if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
         }
-        return aggregateToCommonPrefix(packages);
+        return new java.util.ArrayList<>(packages);
     }
 
-    /**
-     * 包名集合收尾：从非空集合取最长公共前缀，单元素原样返回，空集合返回空列表。
-     * 与 {@link #longestCommonPackagePrefix} 配合使用，封装"空集合→空列表"的语义。
-     */
-    @NotNull
-    static List<String> aggregateToCommonPrefix(@NotNull Set<String> packages) {
-        if (packages.isEmpty()) return List.of();
-        String prefix = longestCommonPackagePrefix(packages);
-        return prefix.isEmpty() ? List.of() : List.of(prefix);
-    }
+    // 注：#58 删除了 aggregateToCommonPrefix——多文件跨子包时聚合到公共前缀会让过滤范围过宽
+    // （auth.controller + auth.service 退化为 auth.*），改由 resolvePackagesFromFiles / resolvePackagesFromPathStrings
+    // 直接返回每个文件的包名。longestCommonPackagePrefix 仍保留作为核心纯字符串 helper 单测守住边界。
 
     /**
      * 文件粒度包名推导（可测试纯字符串版，#53 新增）：与 {@link #resolvePackagesFromFiles}
      * 行为一致，但接受路径字符串+可选内容回调，便于单测在无 VFS 的沙箱里直接验证。
+     * <p><b>#58 修正</b>：与 resolvePackagesFromFiles 同步改为「按文件独立返回包名」——
+     * 多文件跨子包时不再聚合成最长公共前缀（auth.controller + auth.service 之前会被退化成
+     * auth.*，过宽；现在按出现顺序返回所有不同包名）。</p>
      * <p>每个文件按路径标记截包；截不到时回调 reader 读取首部 package 声明。</p>
      */
     @NotNull
     static List<String> resolvePackagesFromPathStrings(@NotNull List<String> paths,
                                                        @NotNull java.util.function.Function<String, String> reader) {
-        Set<String> packages = new java.util.HashSet<>();
+        java.util.LinkedHashSet<String> packages = new java.util.LinkedHashSet<>();
         int readCount = 0;
         for (String path : paths) {
             if (path == null) continue;
@@ -699,7 +698,7 @@ public static final class AddToScanPackageAction extends AnAction {
             }
             if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
         }
-        return aggregateToCommonPrefix(packages);
+        return new java.util.ArrayList<>(packages);
     }
 
     @NotNull

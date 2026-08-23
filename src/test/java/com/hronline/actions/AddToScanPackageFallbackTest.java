@@ -24,7 +24,8 @@ class AddToScanPackageFallbackTest {
 
     // ================================================================
     // longestCommonPackagePrefix：聚合包集合取最长公共前缀（按段边界）。
-    //   resolvePackagesFromCachedApis / aggregateToCommonPrefix / files 路径都依赖此函数。
+    //   #58 修正后 resolvePackagesFromFiles 不再走聚合（多文件跨子包直接返回各包名逗号拼接），
+    //   但 longestCommonPackagePrefix 仍是核心纯字符串 helper，单测守住边界行为。
     // ================================================================
 
     @Test
@@ -126,8 +127,10 @@ class AddToScanPackageFallbackTest {
     }
 
     @Test
-    void files_multipleFilesDifferentPkg_returnsLongestCommonPrefix() throws Exception {
-        // 多文件跨子包：auth.controller + auth.service → cn.hollis.auth
+    void files_multipleFilesDifferentPkg_returnsEachPackageNoAggregation() throws Exception {
+        // #58 修正：多文件跨子包不再聚合成最长公共前缀（auth.controller + auth.service 旧版退化为
+        // auth.* 过宽；新版按文件独立返回各包名，过滤器收到 "auth.controller, auth.service"
+        // 精确收窄，不会误带上 auth 下其它无关子包）
         Path ctrl = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/controller"));
         Path svc = Files.createDirectories(tempDirRoot.resolve("src/main/java/cn/hollis/auth/service"));
         Path f1 = Files.writeString(ctrl.resolve("UserController.java"),
@@ -137,7 +140,8 @@ class AddToScanPackageFallbackTest {
         List<String> pkgs = RestAutoLabActions.AddToScanPackageAction.resolvePackagesFromPathStrings(
                 List.of(f1.toString(), f2.toString()),
                 p -> { throw new AssertionError("路径标记命中时不应回退到读 package 声明"); });
-        assertEquals(List.of("cn.hollis.auth"), pkgs);
+        // 按出现顺序：controller 在 service 之前；LinkedHashSet 保留顺序稳定断言
+        assertEquals(List.of("cn.hollis.auth.controller", "cn.hollis.auth.service"), pkgs);
     }
 
     @Test
