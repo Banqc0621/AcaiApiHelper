@@ -315,26 +315,33 @@ public static final class RunAllTestsAction extends AnAction {
 }
 
 /**
- * 添加包到扫描过滤
+ * 仅显示此包接口（项目视图右键包 → 收窄左侧全量接口列表）
  *
- * <p>在项目视图右键包（包目录）时，将该包的完整包名添加到「扫描包过滤」配置中，
- * 随后自动触发重扫，左侧全量接口列表只显示指定包下的接口。</p>
+ * <p>将右键包的完整包名写入「扫描包过滤」配置（<b>替换语义</b>：只保留当前右键的包，
+ * 与「仅显示当前包的接口」的预期一致），随后：</p>
  *
- * <p><b>线程模型（#51 二次修复根因）</b>：右键菜单展开时平台会调用 {@link #update}，
- * 而本 action 的可见性判定需要 PSI 数据。若不声明 {@link ActionUpdateThread#BGT}，
- * 平台按遗留语义强制在 EDT 上跑 update()，此时读取 {@code psi.Element} /
- * {@code psi.Element.array} 会触发平台 SEVERE（"is requested on EDT ... See ActionUpdateThread
- * javadoc"），菜单项因此被抑制——表现为「右键包看不到/点了不生效」。
- * 声明 BGT 后 update() 在后台读线程（自带读锁）执行，PSI 访问合法。</p>
+ * <p><b>支持任意层级包，不必右键到 controller 层</b>：过滤按「包前缀 + 段边界」匹配
+ * （见 {@code ApiScannerService.matchesPackagePrefix}），右键
+ * {@code cn.hollis.nft.turbo.auth} 即覆盖其下所有子包（含 {@code .controller}）中的接口；
+ * 即时收窄按「源文件位于右键目录下」判定，同样天然包含子目录。</p>
+ * <ol>
+ *   <li><b>立即收窄</b>：用「源文件位于右键目录下」对已扫描缓存做即时过滤并刷新左侧树，
+ *       用户无需等待重扫即可看到效果；</li>
+ *   <li><b>重扫固化</b>：触发异步重扫，扫描层按包前缀精确裁剪，结果覆盖缓存作为持久视图。</li>
+ * </ol>
+ * <p>点击左侧「全量」按钮会清空过滤并重扫，恢复全量列表（闭环）。</p>
  *
- * <p>{@link #actionPerformed} 在 EDT 执行，包名解析改用 EDT 安全的
- * {@code VIRTUAL_FILE_ARRAY} + {@link ReadAction} 反查，绝不在 EDT 上直接读 PSI 数据键。</p>
+ * <p><b>可见性教训（#51 四次修复）</b>：旧实现在 {@link #update} 里以「PSI 能否解析出包名」
+ * 决定菜单项可见性——解析任一环节返回空，菜单项就静默消失，{@link #actionPerformed}
+ * 永远得不到执行（沙箱日志实锤：actionPerformed 日志 0 次）。现在 update 只做
+ * 「选中包含目录」的轻量判定（不读 PSI），保证菜单项稳定出现；包名解析移到点击时执行，
+ * PSI 失败时回退按目录路径推导包名，仍失败则给出明确弹窗提示，不再静默失败。</p>
  */
 public static final class AddToScanPackageAction extends AnAction {
 
     private static final Logger LOG = Logger.getInstance(AddToScanPackageAction.class);
 
-    /** update() 需读 PSI（判断右键目标是否为包），必须声明 BGT，见类注释 */
+    /** update() 只读 VIRTUAL_FILE_ARRAY（轻量判定），声明 BGT 兼容新版线程模型 */
     @Override
     public @NotNull ActionUpdateThread getActionUpdateThread() {
         return ActionUpdateThread.BGT;
@@ -345,48 +352,83 @@ public static final class AddToScanPackageAction extends AnAction {
         Project project = e.getProject();
         if (project == null) return;
 
-        List<String> packageNames = resolvePackageNames(project,
-                e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY));
-        if (packageNames.isEmpty()) {
-            LOG.info("添加到扫描包过滤：未解析到包名（右键目标不是源码包目录）");
+        VirtualFile[] files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY);
+        List<VirtualFile> dirs = new java.util.ArrayList<>();
+        if (files != null) {
+            for (VirtualFile vf : files) {
+                if (vf != null && vf.isDirectory()) dirs.add(vf);
+            }
+        }
+        LOG.info("仅显示此包接口：触发，右键目录 = " + dirs);
+        if (dirs.isEmpty()) {
+            Messages.showWarningDialog(project, "请先在项目视图中右键一个包目录。", "仅显示此包接口");
             return;
         }
 
-        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-        String currentFilter = settings.getScanPackageFilter();
-
-        // 去重：拆分现有配置，已存在的包不重复添加
-        List<String> existing = new java.util.ArrayList<>();
-        if (currentFilter != null && !currentFilter.isBlank()) {
-            for (String part : currentFilter.split("[,;\\s]+")) {
-                String trimmed = part.trim();
-                if (!trimmed.isEmpty()) existing.add(trimmed);
-            }
-        }
-
-        List<String> added = new java.util.ArrayList<>();
-        for (String pkg : packageNames) {
-            if (!existing.contains(pkg)) {
-                existing.add(pkg);
-                added.add(pkg);
-            }
-        }
-
-        String newFilter = String.join(",", existing);
-        settings.setScanPackageFilter(newFilter);
-        LOG.info("添加到扫描包过滤：包 " + packageNames + "，过滤配置更新为 [" + newFilter + "]");
-
-        // 触发重扫（扫描层按过滤裁剪，完成后左侧全量列表自动刷新为过滤结果）
         ApiScannerService scanner = ApiScannerService.getInstance(project);
+
+        // 1) PSI 解析包名（标准路径）
+        List<String> packageNames = resolvePackageNames(project, dirs.toArray(new VirtualFile[0]));
+        LOG.info("仅显示此包接口：PSI 解析包名 = " + packageNames);
+        // 2) 回退：按目录路径推导（Maven/Gradle 标准 src/main/java 布局）
+        if (packageNames.isEmpty()) {
+            packageNames = resolvePackageNamesByPath(dirs);
+            LOG.info("仅显示此包接口：路径推导包名 = " + packageNames);
+        }
+        // 3) 回退：模块根目录等非源码目录——收集已扫描接口中位于该目录下的源文件所属包。
+        //    用户常直接右键模块根（如 nft-turbo-gateway），此时按「目录下的已扫描接口」
+        //    推导包集合，同样能实现「仅显示该模块下接口」的诉求。
+        if (packageNames.isEmpty()) {
+            packageNames = resolvePackagesFromCachedApis(scanner.getCachedApis(), dirs);
+            LOG.info("仅显示此包接口：已扫描接口推导包名 = " + packageNames);
+        }
+        if (packageNames.isEmpty()) {
+            LOG.warn("仅显示此包接口：无法解析包名，右键目录 = " + dirs);
+            Messages.showWarningDialog(project,
+                    "无法解析所选目录对应的 Java 包。\n请在 Java 源码包目录上右键（如 src/main/java/com/xxx，任意层级均可）。",
+                    "仅显示此包接口");
+            return;
+        }
+
+        // 3) 写入过滤配置（替换语义：只保留当前右键的包）
+        String newFilter = String.join(",", packageNames);
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        settings.setScanPackageFilter(newFilter);
+        LOG.info("仅显示此包接口：过滤配置更新为 [" + newFilter + "]");
+
+        // 4) 立即收窄：用「源文件位于右键目录下」即时过滤已扫描缓存并刷新左侧树，
+        //    用户不必等重扫就能看到收窄效果
+        List<ApiDefinition> cached = scanner.getCachedApis();
+        if (!cached.isEmpty()) {
+            List<ApiDefinition> narrowed = new java.util.ArrayList<>();
+            for (ApiDefinition api : cached) {
+                String path = api.getSourceFilePath();
+                if (path == null || path.isEmpty()) continue;
+                for (VirtualFile dir : dirs) {
+                    String dirPath = dir.getPath();
+                    if (path.equals(dirPath) || path.startsWith(dirPath + "/")) {
+                        narrowed.add(api);
+                        break;
+                    }
+                }
+            }
+            LOG.info("仅显示此包接口：即时过滤 缓存 " + cached.size() + " -> " + narrowed.size());
+            RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
+            ApiTreePanel treePanel = holder.getTreePanel();
+            if (treePanel != null) treePanel.updateTree(narrowed);
+        }
+        // 激活工具窗口，让用户立即看到收窄效果
+        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
+        if (tw != null) tw.activate(null);
+
+        // 5) 触发重扫（扫描层按包前缀精确裁剪，完成后覆盖缓存为持久的过滤结果）
         scanner.scanProjectApisAsync();
 
-        String title = "添加扫描包过滤";
-        String content;
-        if (added.isEmpty()) {
-            content = "包 " + String.join(", ", packageNames) + " 已在扫描过滤列表中";
-        } else {
-            content = "已添加包 " + String.join(", ", added) + "，正在重新扫描...\n当前过滤: " + newFilter;
-        }
+        String title = "仅显示此包接口";
+        String content = "已收窄为包 " + String.join(", ", packageNames)
+                + " 及其子包下的接口，正在重新扫描...\n"
+                + "（支持右键任意层级包，无需精确到 controller 层）\n"
+                + "点击左侧「全量」按钮可恢复全量列表";
         try {
             NotificationGroupManager.getInstance()
                     .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
@@ -400,9 +442,78 @@ public static final class AddToScanPackageAction extends AnAction {
     @Override
     public void update(@NotNull AnActionEvent e) {
         Project project = e.getProject();
-        boolean visible = project != null && !resolvePackageNames(project,
-                e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY)).isEmpty();
+        boolean visible = false;
+        if (project != null && !project.isDisposed()) {
+            // 只做轻量判定：选中包含目录即显示。不在此处做 PSI 包名解析——
+            // 以解析结果决定可见性，会让任一解析波动导致菜单项静默消失（#51 根因）。
+            // 包名解析放到 actionPerformed 中执行，失败也有明确弹窗反馈。
+            VirtualFile[] files = e.getData(CommonDataKeys.VIRTUAL_FILE_ARRAY);
+            if (files != null) {
+                for (VirtualFile vf : files) {
+                    if (vf != null && vf.isDirectory()) { visible = true; break; }
+                }
+            }
+        }
         e.getPresentation().setEnabledAndVisible(visible);
+    }
+
+    /**
+     * 回退包名推导：按目录路径中的源码根标记（src/main/java 等标准布局）截取相对路径并转为包名。
+     * <p>仅当 PSI 反查失败时兜底使用；无法识别返回空列表。</p>
+     */
+    @NotNull
+    static List<String> resolvePackageNamesByPath(@NotNull List<VirtualFile> dirs) {
+        List<String> result = new java.util.ArrayList<>();
+        String[] markers = {"/src/main/java/", "/src/test/java/", "/src/main/kotlin/", "/src/test/kotlin/"};
+        for (VirtualFile dir : dirs) {
+            if (dir == null) continue;
+            String path = dir.getPath() + "/";
+            for (String marker : markers) {
+                int idx = path.indexOf(marker);
+                if (idx >= 0) {
+                    String pkg = path.substring(idx + marker.length()).replace('/', '.');
+                    while (pkg.endsWith(".")) pkg = pkg.substring(0, pkg.length() - 1);
+                    if (!pkg.isEmpty() && !result.contains(pkg)) result.add(pkg);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 回退包名推导（模块根等非源码目录）：收集已扫描接口中源文件位于所选目录下的接口，
+     * 取其源文件所在包名作为过滤集合——实现「右键模块根 → 仅显示该模块下接口」。
+     * <p>源文件路径按 src/main/java 等标记截取包路径；无标记时取文件父目录相对项目根的最后一段近似处理失败则跳过。</p>
+     */
+    @NotNull
+    static List<String> resolvePackagesFromCachedApis(@NotNull List<ApiDefinition> apis, @NotNull List<VirtualFile> dirs) {
+        List<String> result = new java.util.ArrayList<>();
+        String[] markers = {"/src/main/java/", "/src/test/java/", "/src/main/kotlin/", "/src/test/kotlin/"};
+        for (ApiDefinition api : apis) {
+            String path = api.getSourceFilePath();
+            if (path == null || path.isEmpty()) continue;
+            boolean underDir = false;
+            for (VirtualFile dir : dirs) {
+                if (dir == null) continue;
+                String dirPath = dir.getPath();
+                if (path.equals(dirPath) || path.startsWith(dirPath + "/")) { underDir = true; break; }
+            }
+            if (!underDir) continue;
+            for (String marker : markers) {
+                int idx = path.indexOf(marker);
+                if (idx >= 0) {
+                    String rel = path.substring(idx + marker.length());
+                    int lastSlash = rel.lastIndexOf('/');
+                    if (lastSlash > 0) {
+                        String pkg = rel.substring(0, lastSlash).replace('/', '.');
+                        if (!pkg.isEmpty() && !result.contains(pkg)) result.add(pkg);
+                    }
+                    break;
+                }
+            }
+        }
+        return result;
     }
 
     /**

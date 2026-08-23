@@ -530,7 +530,16 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
-            // 「全量」点击时若缓存为空，主动触发一次扫描
+            // 一伦优化 #51：「全量」承担恢复全量列表职责——若配置了扫描包过滤
+            // （如右键包「仅显示此包接口」），先清空过滤再强制重扫，确保列表真正回到全量
+            RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+            boolean hadFilter = !settings.getScanPackageFilter().isBlank();
+            if (hadFilter) {
+                settings.setScanPackageFilter("");
+                LOG.info("[ApiTree] 「全量」清空扫描包过滤，触发全量重扫");
+                ApiScannerService.getInstance(project).scanProjectApisAsync();
+            }
+            // 缓存为空或刚清过过滤时，主动触发一次扫描
             triggerScanIfNeeded("全量");
             applyFilters();
         });

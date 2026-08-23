@@ -67,6 +67,22 @@ class ApiScannerPackageFilterTest {
     }
 
     @Test
+    void match_parentPackage_coversControllerSubPackage() {
+        // 一伦优化 #51：右键「任意层级包」即可，不必精确到 controller 层。
+        // 右键 cn.hollis.nft.turbo.auth（含 controller/vo/param 等子包）
+        // 应覆盖其 controller 子包下的接口。
+        assertTrue(ApiScannerService.matchesPackagePrefix(
+                "cn.hollis.nft.turbo.auth.controller.AuthController",
+                List.of("cn.hollis.nft.turbo.auth")));
+        assertTrue(ApiScannerService.matchesPackagePrefix(
+                "cn.hollis.nft.turbo.admin.controller.UserAdminController",
+                List.of("cn.hollis.nft.turbo")));
+        // 兄弟模块不受影响（段边界校验）
+        assertFalse(ApiScannerService.matchesPackagePrefix(
+                "cn.hollis.nft.turbo2.controller.X", List.of("cn.hollis.nft.turbo")));
+    }
+
+    @Test
     void match_siblingPackageWithSameTextPrefix_notMatched() {
         // 边界校验核心用例：com.foo 绝不能命中 com.foobar.*
         assertFalse(ApiScannerService.matchesPackagePrefix(

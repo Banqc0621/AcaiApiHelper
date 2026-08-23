@@ -207,11 +207,11 @@
             <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.DebugApi"/>
         </action>
 
-        <!-- 动作: 添加包到扫描过滤（右键包目录时显示） -->
+        <!-- 动作: 仅显示此包接口（项目视图右键包目录 → 收窄左侧全量接口列表） -->
         <action id="RestAutoLab.AddToScanPackage"
                 class="com.hronline.actions.RestAutoLabActions$AddToScanPackageAction"
-                text="添加到扫描包过滤"
-                description="将此包添加到扫描过滤列表，扫描后只显示该包下的接口"
+                text="仅显示此包接口"
+                description="左侧全量接口列表仅显示此包下的接口（点击左侧「全量」按钮恢复）"
                 icon="AllIcons.Actions.GroupByPackage">
             <add-to-group group-id="RestAutoLab.ActionGroup" anchor="last"/>
         </action>
