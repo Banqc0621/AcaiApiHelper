@@ -50,6 +50,14 @@ public final class ApiScannerService {
     /** 缓存已扫描的API列表 */
     private List<ApiDefinition> cachedApis = Collections.emptyList();
 
+    /**
+     * 最近一次「无包过滤」全量扫描的 API 列表（即 setScanPackageFilter("") 时的扫描结果）。
+     * <p>与 {@link #cachedApis} 的区别：cachedApis 会被任意扫描（含右键"仅显示此包接口"触发的包过滤扫描）
+     * 覆盖；lastFullScanApis 只在无过滤时更新。这样点击左侧「全量」按钮时可以从 lastFullScanApis
+     * 即时恢复全量列表，不必等待后台重扫，避免扫描期间用户看到空白列表的"降级感"。</p>
+     */
+    private List<ApiDefinition> lastFullScanApis = Collections.emptyList();
+
     /** 扫描监听器列表 */
     private final List<ScanListener> listeners = new ArrayList<>();
 
@@ -80,6 +88,15 @@ public final class ApiScannerService {
         return cachedApis;
     }
 
+    /**
+     * 获取最近一次「无包过滤」全量扫描的 API 列表。
+     * <p>只在包过滤为空时的扫描才会更新此缓存——点击「全量」按钮可直接从此缓存恢复列表，
+     * 不必等待后台重扫；若从未做过无过滤扫描，则返回空列表。</p>
+     */
+    public List<ApiDefinition> getLastFullScanApis() {
+        return lastFullScanApis;
+    }
+
     // ================================================================
     // 扫描入口
     // ================================================================
@@ -93,6 +110,11 @@ public final class ApiScannerService {
         List<String> beforeSignatures = cachedApis.stream()
                 .map(ApiDefinition::uniqueKey)
                 .collect(Collectors.toList());
+
+        // 一伦 #56：扫描前先看是否带包过滤 —— 仅当无过滤时，本次的扫描结果
+        // 才需要"备份"到 lastFullScanApis，供后续点「全量」按钮即时恢复列表
+        final boolean isFullScan = RestAutoLabSettingsState.getInstance(project)
+                .getScanPackageFilter().isBlank();
 
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "扫描项目API...", true) {
             @Override
@@ -112,6 +134,10 @@ public final class ApiScannerService {
                 restoreApiMetadata(apis);
 
                 cachedApis = apis;
+                if (isFullScan) {
+                    // 无包过滤的扫描才算"全量"，把结果备份；带过滤的扫描不能污染全量缓存
+                    lastFullScanApis = apis;
+                }
 
                 // v3: 保存签名
                 List<String> newSignatures = apis.stream()

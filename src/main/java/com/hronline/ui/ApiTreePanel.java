@@ -530,17 +530,26 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
-            // 一伦优化 #51：「全量」承担恢复全量列表职责——若配置了扫描包过滤
-            // （如右键包「仅显示此包接口」），先清空过滤再强制重扫，确保列表真正回到全量
+            // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
+            // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
+            // 即时恢复全量列表（不必等后台重扫），然后后台异步触发一次扫描刷新缓存。
             RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             boolean hadFilter = !settings.getScanPackageFilter().isBlank();
             if (hadFilter) {
                 settings.setScanPackageFilter("");
-                LOG.info("[ApiTree] 「全量」清空扫描包过滤，触发全量重扫");
-                ApiScannerService.getInstance(project).scanProjectApisAsync();
+                LOG.info("[ApiTree] 「全量」清空扫描包过滤，恢复全量列表");
+                ApiScannerService scanner = ApiScannerService.getInstance(project);
+                List<ApiDefinition> cachedFull = scanner.getLastFullScanApis();
+                if (!cachedFull.isEmpty()) {
+                    // 优先从备份的全量缓存恢复——即时显示，不必等扫描
+                    updateTree(cachedFull);
+                }
+                // 后台异步重扫刷新（让 lastFullScanApis 与项目当前实际接口一致）
+                scanner.scanProjectApisAsync();
+            } else {
+                // 缓存为空或失效时主动触发一次扫描
+                triggerScanIfNeeded("全量");
             }
-            // 缓存为空或刚清过过滤时，主动触发一次扫描
-            triggerScanIfNeeded("全量");
             applyFilters();
         });
         btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
