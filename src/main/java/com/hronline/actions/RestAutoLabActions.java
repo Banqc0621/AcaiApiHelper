@@ -38,6 +38,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * plugin.xml 可直接实例化的公开 Action 容器。
@@ -382,10 +383,17 @@ public static final class AddToScanPackageAction extends AnAction {
             packageNames = resolvePackagesFromCachedApis(scanner.getCachedApis(), dirs);
             LOG.info("仅显示此包接口：已扫描接口推导包名 = " + packageNames);
         }
+        // 4) 回退：磁盘遍历（右键模块根且已扫描缓存里没有该模块接口时，前三级全部失败，
+        //    沙箱日志 8/23 15:44:31 实锤）。递归搜集目录下源文件，推导各文件包名并
+        //    取最长公共包前缀（模块根 → 模块根包），不再静默失败。
+        if (packageNames.isEmpty()) {
+            packageNames = resolvePackagesFromDisk(dirs);
+            LOG.info("仅显示此包接口：磁盘遍历推导包名 = " + packageNames);
+        }
         if (packageNames.isEmpty()) {
             LOG.warn("仅显示此包接口：无法解析包名，右键目录 = " + dirs);
             Messages.showWarningDialog(project,
-                    "无法解析所选目录对应的 Java 包。\n请在 Java 源码包目录上右键（如 src/main/java/com/xxx，任意层级均可）。",
+                    "无法解析所选目录对应的 Java 包。\n请在 Java 源码包目录或模块根上右键（任意层级均可）。",
                     "仅显示此包接口");
             return;
         }
@@ -514,6 +522,131 @@ public static final class AddToScanPackageAction extends AnAction {
             }
         }
         return result;
+    }
+
+    /** 磁盘遍历兜底的采样上限：最多递归搜集多少个源文件（防止超大模块遍历失控） */
+    private static final int DISK_SCAN_FILE_LIMIT = 20000;
+
+    /** 磁盘遍历兜底中「读 package 声明」采样的上限（路径标记能推导的无需读文件，故采样数很小） */
+    private static final int DISK_READ_PACKAGE_LIMIT = 50;
+
+    /** 磁盘遍历兜底时跳过的高噪音目录（构建产物/依赖/版本库，不含业务源码） */
+    private static final Set<String> DISK_SCAN_SKIP_DIRS = Set.of(
+            "build", "target", "out", "bin", ".git", ".gradle", ".idea", "node_modules");
+
+    /** package 声明识别：仅匹配行首声明，避免被注释/字符串里的 "package" 误导 */
+    private static final java.util.regex.Pattern PACKAGE_DECL =
+            java.util.regex.Pattern.compile("^\\s*package\\s+([\\w.]+)\\s*;?");
+
+    /**
+     * 回退包名推导（终极兜底，沙箱日志 8/23 15:44:31 实锤场景）：右键模块根且已扫描缓存里
+     * 没有该模块接口时，PSI/路径标记/缓存推导三级全部失败。此时直接递归遍历磁盘，搜集
+     * {@code .java/.kt} 源文件推导包名：
+     * <ol>
+     *   <li>路径含 {@code src/main/java} 等标准标记 → 按标记截取（零 IO，绝大多数 Maven/Gradle 模块命中）；</li>
+     *   <li>无标记 → 读文件首部 {@code package} 声明（采样上限内）。</li>
+     * </ol>
+     * 最后对所有包名取<b>最长公共包前缀</b>（模块根 → 模块根包，如 {@code cn.hollis.nft.turbo.auth}），
+     * 按「包前缀 + 段边界」匹配天然覆盖 controller 等全部子包。
+     */
+    @NotNull
+    static List<String> resolvePackagesFromDisk(@NotNull List<VirtualFile> dirs) {
+        Set<String> packages = new java.util.HashSet<>();
+        int[] fileCount = {0};
+        int[] readCount = {0};
+        for (VirtualFile dir : dirs) {
+            if (dir == null || !dir.isDirectory()) continue;
+            collectSourcePackagesFromDir(dir, packages, fileCount, readCount);
+            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) break;
+        }
+        if (packages.isEmpty()) return List.of();
+        String prefix = longestCommonPackagePrefix(packages);
+        return prefix.isEmpty() ? List.of() : List.of(prefix);
+    }
+
+    /** 递归搜集目录下源文件的包名（受 {@link #DISK_SCAN_FILE_LIMIT} 与采样上限约束） */
+    private static void collectSourcePackagesFromDir(@NotNull VirtualFile dir, @NotNull Set<String> packages,
+                                                     int[] fileCount, int[] readCount) {
+        if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return;
+        VirtualFile[] children = dir.getChildren();
+        if (children == null) return;
+        for (VirtualFile child : children) {
+            if (fileCount[0] >= DISK_SCAN_FILE_LIMIT) return;
+            if (child.isDirectory()) {
+                if (!DISK_SCAN_SKIP_DIRS.contains(child.getName())) {
+                    collectSourcePackagesFromDir(child, packages, fileCount, readCount);
+                }
+                continue;
+            }
+            String ext = child.getExtension();
+            if (!"java".equalsIgnoreCase(ext) && !"kt".equalsIgnoreCase(ext)) continue;
+            fileCount[0]++;
+            String pkg = packageFromSourcePath(child.getPath());
+            if (pkg == null && readCount[0] < DISK_READ_PACKAGE_LIMIT) {
+                readCount[0]++;
+                pkg = readPackageDeclaration(child);
+            }
+            if (pkg != null && !pkg.isEmpty()) packages.add(pkg);
+        }
+    }
+
+    /** 按 src/main/java 等标准布局标记从源文件路径推导包名；无标记返回 null */
+    @Nullable
+    private static String packageFromSourcePath(String path) {
+        if (path == null) return null;
+        String[] markers = {"/src/main/java/", "/src/test/java/", "/src/main/kotlin/", "/src/test/kotlin/"};
+        for (String marker : markers) {
+            int idx = path.indexOf(marker);
+            if (idx >= 0) {
+                String rel = path.substring(idx + marker.length());
+                int lastSlash = rel.lastIndexOf('/');
+                if (lastSlash > 0) {
+                    return rel.substring(0, lastSlash).replace('/', '.');
+                }
+                return null; // 源码根直属文件，无包名
+            }
+        }
+        return null;
+    }
+
+    /** 读源文件首部 package 声明（最多扫 200 行）；读失败或无声明返回 null */
+    @Nullable
+    private static String readPackageDeclaration(@NotNull VirtualFile file) {
+        try {
+            String content = new String(file.contentsToByteArray(), file.getCharset());
+            int max = Math.min(content.length(), 8000); // 包声明必在文件首部，无需读全文
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.StringReader(content.substring(0, max)));
+            String line;
+            int lines = 0;
+            while ((line = reader.readLine()) != null && lines++ < 200) {
+                java.util.regex.Matcher m = PACKAGE_DECL.matcher(line);
+                if (m.find()) return m.group(1);
+            }
+        } catch (Exception ignored) {
+            // 单文件读取失败不阻断整体推导
+        }
+        return null;
+    }
+
+    /**
+     * 求包名集合的最长公共包前缀（按段边界）。
+     * <p>如 {cn.hollis.nft.turbo.auth, cn.hollis.nft.turbo.auth.controller} →
+     * {@code cn.hollis.nft.turbo.auth}；单元素集合原样返回。</p>
+     */
+    @NotNull
+    static String longestCommonPackagePrefix(@NotNull Set<String> packages) {
+        if (packages.isEmpty()) return "";
+        List<String> sorted = new java.util.ArrayList<>(packages);
+        java.util.Collections.sort(sorted);
+        String first = sorted.get(0);
+        String last = sorted.get(sorted.size() - 1);
+        String[] a = first.split("\\.");
+        String[] b = last.split("\\.");
+        int n = Math.min(a.length, b.length);
+        int i = 0;
+        while (i < n && a[i].equals(b[i])) i++;
+        return String.join(".", java.util.Arrays.copyOf(a, i));
     }
 
     /**
