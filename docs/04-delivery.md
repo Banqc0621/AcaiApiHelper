@@ -1,9 +1,9 @@
-# RestAutoLab 全量界面与交互优化 — 节点交付
+# RestAutoLab 全量界面与交互优化 — 节点交付（历史快照）
 
 - Task ID: `RAL-UI-OPT-20260814`
 - Revision: 1
 - 开发者：Banqc
-- 当前状态: `artifact_verified`（节点快照，不代表最终方案全部完成）
+- 当前状态: `artifact_verified`（历史节点快照；构建时使用内部版本号 2.0.0）
 - 分支: `2022.3.x-2026.1.x`
 
 ## 已交付并验证
@@ -19,7 +19,7 @@
 
 ## 产物
 
-- 路径: `build/distributions/RestAutoLab-2.0.0.zip`
+- 路径: `build/distributions/RestAutoLab-2.0.0.zip`（历史节点产物；当前公开构建产物为 `RestAutoLab-1.0.0.zip`）
 - 大小: 765104 bytes
 - SHA-256: `b8e5eaf293ee66754a0f95a22ae1a74719eb676b4a3de5dd599dac07cb689838`
 - 内容: 主插件 JAR、searchable options、Gson、Error Prone annotations；未包含依赖缓存或密钥。
@@ -30,7 +30,7 @@
 - `./gradlew test --rerun-tasks`：通过，17 tests，0 failures。
 - `./gradlew buildPlugin`：通过；真实加载阶段生成 355 个 configurable 的搜索索引，RestAutoLab 扩展无 ClassNotFound/IllegalAccess 错误。
 - 产物内存在更新后的 `ApiTreePanel`、`ApiDebuggerPanel`、`PreRequestProcessor`、`TestDataExporter$FavoritesExport` 和 `plugin.xml`。
-- `./gradlew runIde --args='<project>'`：沙箱 IDEA 2023.3.6 成功启动并记录 `Loaded custom plugins: RestAutoLab (2.0.0)`，未发现 RestAutoLab PluginException/ClassNotFound；桌面处于锁屏，未伪造界面截图。
+- `./gradlew runIde --args='<project>'`：沙箱 IDEA 2023.3.6 成功启动并记录 `Loaded custom plugins: RestAutoLab (2.0.0)`；该日志属于历史构建证据，当前版本请按 `RELEASE_ARCHIVE_v1.0.0.md` 重新验收。
 
 ## 尚未完成
 

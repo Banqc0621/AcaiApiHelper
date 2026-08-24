@@ -1,36 +1,61 @@
 #!/usr/bin/env bash
-# RestAutoLab → github 推送脚本
-# 沙箱里 github.com:443 不可达，本地一行跑这个即可
-# 当前：origin (codeup aliyun) 已推到 d8b8d7b, 这里只补 github
+# RestAutoLab v1.0.0 安全推送脚本。
+# 默认只推送发布分支，不强推、不删除远程分支、不移动标签。
+# REMOTE/BRANCH 可覆盖；仅显式设置 PUSH_TAG=1 时才推送 TAG。
 
 set -euo pipefail
 
-REMOTE=github
-BRANCH=2022.3.x-2026.1.x
-TAG=v2.0.0
+REMOTE="${REMOTE:-github}"
+BRANCH="${BRANCH:-2022.3.x-2026.1.x}"
+TAG="${TAG:-v1.0.0}"
+PUSH_TAG="${PUSH_TAG:-0}"
+EXPECTED_VERSION="1.0.0"
 
-echo "==> 当前 HEAD: $(git rev-parse --short HEAD) ($(git branch --show-current))"
-echo "==> 当前 $TAG tag: $(git rev-parse --short $TAG)"
-echo ""
+current_branch="$(git branch --show-current)"
+current_head="$(git rev-parse HEAD)"
+declared_version="$(sed -n 's/^version=//p' gradle.properties)"
 
-echo "==> 1/4 推送 $BRANCH 到 $REMOTE (force-with-lease: 若 github 有人推送会拒绝覆盖)"
-git push "$REMOTE" "$BRANCH" --force-with-lease
-echo ""
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "错误：工作树不干净。请先检查、提交并完成构建验证。" >&2
+  exit 1
+fi
 
-echo "==> 2/4 删除 $REMOTE 上旧分支 feat/optim-round3-global-style"
-git push "$REMOTE" --delete feat/optim-round3-global-style || echo "    (旧分支已不存在, 跳过)"
-echo ""
+if [[ "$current_branch" != "$BRANCH" ]]; then
+  echo "错误：当前分支为 $current_branch，预期为 $BRANCH。" >&2
+  exit 1
+fi
 
-echo "==> 3/4 推送 $TAG tag 到 $REMOTE (force 覆盖)"
-git push "$REMOTE" "$TAG" --force
-echo ""
+if [[ "$declared_version" != "$EXPECTED_VERSION" ]]; then
+  echo "错误：gradle.properties 版本为 $declared_version，预期为 $EXPECTED_VERSION。" >&2
+  exit 1
+fi
 
-echo "==> 4/4 验证 $REMOTE 远程状态"
-git ls-remote "$REMOTE" | grep -E "$BRANCH|feat/optim|$TAG" || true
-echo ""
+if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
+  echo "错误：远程 $REMOTE 不存在，请先配置公开仓库 remote。" >&2
+  exit 1
+fi
 
-echo "==> 全部完成 ✓"
-echo "    分支: $REMOTE/$BRANCH → $(git rev-parse --short HEAD)"
-echo "    tag:   $REMOTE/$TAG   → $(git rev-parse --short $TAG)"
-echo ""
-echo "==> 提示: 插件 ID 改为 com.banqc.restautolab, 已安装 com.ban.acai 的用户需卸载后重装"
+echo "==> 推送分支 $BRANCH 到 $REMOTE"
+git push "$REMOTE" "$BRANCH"
+
+if [[ "$PUSH_TAG" == "1" ]]; then
+  if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    echo "错误：本地标签 $TAG 不存在；脚本不会自动创建发布标签。" >&2
+    exit 1
+  fi
+
+  tagged_head="$(git rev-list -n 1 "$TAG")"
+  if [[ "$tagged_head" != "$current_head" ]]; then
+    echo "错误：本地 $TAG 指向 $(git rev-parse --short "$tagged_head")，当前 HEAD 为 $(git rev-parse --short "$current_head")。" >&2
+    echo "脚本不会移动或覆盖历史标签；请改用新的 TAG 名称。" >&2
+    exit 1
+  fi
+
+  echo "==> 推送标签 $TAG 到 $REMOTE"
+  git push "$REMOTE" "$TAG"
+fi
+
+echo "==> 验证远程分支"
+git ls-remote "$REMOTE" "refs/heads/$BRANCH"
+
+echo "发布分支已安全推送：$REMOTE/$BRANCH"

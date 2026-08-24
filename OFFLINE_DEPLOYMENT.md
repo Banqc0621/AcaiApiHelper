@@ -1,7 +1,7 @@
 # RestAutoLab 离线环境部署操作说明
 
 > 开发者：Banqc
-> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前版本：v2.0.0
+> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前公开版本：v1.0.0
 
 本文档指导将 RestAutoLab（`com.banqc.restautolab`，IntelliJ IDEA 插件）迁移到**无互联网**的离线环境正常运行。
 适用对象：构建/运维人员。
@@ -280,10 +280,10 @@ gradlew.bat clean buildPlugin --offline
 | cURL 导入导出 / 历史记录 / Diff 对比 | ✅ 完全可用 | 本地处理 |
 | 收藏文件夹 / 变更检测 | ✅ 完全可用 | 本地存储 |
 | **HTTP 接口调试** | ⚠️ 依赖目标服务器可达 | 离线机需能访问被测接口所在内网服务器 |
-| **AI 参数生成 / AI 断言生成** | ⚠️ 依赖 AI 服务器可达 | 需在 `Settings → Tools → RestAutoLab` 配置**内网** AI 服务器地址；若不可达，自动降级为本地启发式生成（phone/email/idcard/name 等字段仍可识别） |
+| **AI 参数生成 / AI 断言生成** | ⚠️ 依赖自部署模型网关可达 | 需在 `Settings → Tools → RestAutoLab` 配置**自部署模型**地址；若不可达，自动降级为本地启发式生成（phone/email/idcard/name 等字段仍可识别） |
 | 插件市场更新检查 | ❌ 不可用 | 离线环境预期行为，不影响使用 |
 
-> **结论**：除「联网更新」外，所有核心功能在离线环境均可正常运行；AI 与 HTTP 调试只要对应内网服务可达即不受影响。
+> **结论**：除「联网更新」外，所有核心功能在离线环境均可正常运行；自部署模型与 HTTP 调试只要对应服务可达即不受影响。
 
 ---
 
@@ -334,7 +334,7 @@ sudo xattr -dr com.apple.quarantine /Applications/IntelliJ\ IDEA.app
 - [ ] 右键菜单出现 `RestAutoLab` 分组
 - [ ] 在 Spring 项目中可扫描出接口
 - [ ] Controller 方法行号旁有 API gutter 图标
-- [ ] （如需 AI）Settings 中 AI 服务器地址已改为内网地址
+- [ ] （如需 AI）Settings 中已配置自部署模型网关地址
 - [ ] （如需 HTTP 调试）被测接口服务器从离线机可达
 
 全部勾选即代表离线环境运行正常。

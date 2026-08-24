@@ -8,7 +8,7 @@
     <!-- 插件显示名称 -->
     <name>RestAutoLab</name>
 
-    <version>2.0.0</version>
+    <version>1.0.0</version>
 
     <!-- 供应商信息 -->
     <vendor>RestAutoLab</vendor>
@@ -17,18 +17,18 @@
     <description><![CDATA[
         RestAutoLab is an enterprise-grade API debugging and automated testing plugin for IntelliJ IDEA. It provides built-in HTTP debugging, API scanning, AI parameter generation, test case management, and Git pre-commit checks.
         <h2>RestAutoLab - 企业级API调试与自动化测试插件</h2>
-        <p>功能全面的IDEA内置API调试工具，类似Apipost-Helper-2.0，专为内部企业环境定制：</p>
+        <p>面向 Java 服务开发与测试场景的 IDEA 内置 API 调试工具：</p>
         <ul>
             <li><b>API自动扫描</b>：自动识别Spring MVC / REST控制器中的接口定义</li>
             <li><b>接口树形管理</b>：按控制器分组展示所有API，支持搜索和代码跳转</li>
             <li><b>HTTP接口调试</b>：支持GET/POST/PUT/DELETE/PATCH等全部HTTP方法</li>
-            <li><b>AI参数生成</b>：对接内部模型算力，智能生成测试入参数据</li>
+            <li><b>AI参数生成</b>：支持自部署模型（兼容 OpenAI 协议），智能生成测试入参数据</li>
             <li><b>测试用例管理</b>：支持本地测试用例的导入/导出/编辑</li>
             <li><b>自动化测试</b>：批量执行接口测试，生成测试报告</li>
             <li><b>Git预提交检查</b>：接口测试未通过（非200状态码）时阻断提交</li>
             <li><b>编辑器Gutter导航</b>：在代码行号旁显示API图标，快速调试</li>
         </ul>
-        <h3>📦 兼容版本（v1.0.4）</h3>
+        <h3>📦 兼容版本（v1.0.0 公开版）</h3>
         <p>插件基于 <code>org.jetbrains.intellij.platform</code> 构建（<b>Java 17</b> 编译），<code>idea-version</code> 声明为 <b>since-build="223" / until-build="261.*"</b>，覆盖 <b>4 年</b>共 11 个大版本：</p>
         <ul>
             <li>✅ <b>IntelliJ IDEA 2022.3 / 2022.3.x</b>（最低支持）</li>
@@ -45,63 +45,14 @@
 
     <!-- 变更日志 -->
     <change-notes><![CDATA[
-        <h3>v2.0.0 UI 体验大升级版（2026-07-13）</h3>
+        <h3>v1.0.0 公开首发（整合开发阶段能力，2026-08-24）</h3>
         <ul>
-            <li><b>🎨 响应区 JSON 语法高亮</b>：新增 <code>JsonSyntaxPane</code>，对键名 / 字符串 / 数字 / 布尔 / null / 标点按语义着色，明暗主题自适应</li>
-            <li><b>🔍 响应区字体缩放</b>：支持 <code>Ctrl+滚轮</code> / <code>Ctrl++/-</code> / <code>Ctrl+0</code> 缩放（10–24px），右键菜单提供「放大 / 缩小 / 重置」</li>
-            <li><b>📋 响应区右键菜单</b>：复制选中 / 复制全部 / 全选 / 字体缩放，一键操作无需记忆快捷键</li>
-            <li><b>📝 参数智能编辑器</b>：抽取为独立 <code>SmartValueEditor</code>，支持文件选择、多行 JSON 编辑器、枚举智能提示（status/gender/sort/pay 等场景化建议）</li>
-            <li><b>📎 文件上传参数</b>：File / Multipart 类型或 FILE 位置参数显示「选择文件」按钮，选中后回写路径并同步附件标签</li>
-            <li><b>📐 多行 JSON 编辑器</b>：BODY 位置或疑似 JSON 值显示「展开」按钮，弹窗支持一键格式化 / 编辑 / 确定</li>
-            <li><b>⌨️ 请求体撤销 / 重做</b>：请求体编辑器支持 <code>Ctrl+Z</code> / <code>Ctrl+Y</code> 撤销重做</li>
-            <li><b>📏 请求体折叠展开</b>：失焦自动折叠为 6 行（给响应区让出空间），获焦自动展开为 18 行；长 JSON 不自动换行，水平滚动查看</li>
-            <li><b>🔄 响应视图切换增强</b>：切换到响应 Tab 时若处于树形视图自动切回文本视图，保证下次请求展示一致</li>
-            <li><b>🧹 清空响应联动</b>：清空按钮同时清空响应文本区、高亮视图，并重置视图状态</li>
-            <li><b>🎨 UI 语义色板</b>：<code>UiStyle</code> 新增 JSON 语义色板（KEY / STRING / NUMBER / BOOLEAN / NULL / PUNCTUATION）与 <code>ghostButton</code> 透明按钮样式</li>
-        </ul>
-        <h3>v1.0.5 收藏文件夹与异常加固版（2026-07-10）</h3>
-        <ul>
-            <li><b>⭐ 收藏文件夹管理</b>：新增「收藏」分类视图，支持自定义文件夹分组收藏接口；文件夹内接口支持重命名/删除/拖拽移动，同文件夹自动去重</li>
-            <li><b>🔁 「最新」分类过滤</b>：基于 Git 变更检测，展示最近 30 天有提交涉及的接口；后台线程预计算，避免阻塞 UI</li>
-            <li><b>🤖 批量 AI 生成参数</b>：文件夹右键一键为其中所有接口生成测试参数并持久化，进度实时反馈</li>
-            <li><b>⚡ 批量接口测试</b>：文件夹右键批量执行接口测试，结果按通过/失败标红高亮，支持「取消警示」手动清除</li>
-            <li><b>📝 参数独立归档</b>：同一接口在不同文件夹可保存各自独立的测试参数，互不干扰</li>
-            <li><b>📤 多选导出增强</b>：Markdown / Postman JSON 导出严格按用户多选节点生成，不再静默展开 Controller；导出前二次确认按 Controller 分组预览</li>
-            <li><b>🐛 编译错误修复</b>：修复「调试此接口」右键动作调用 <code>Consumer.accept(api, null)</code> 导致编译失败的问题（Consumer 仅接受单参数）</li>
-            <li><b>🛡️ 异常处理加固</b>：「调试此接口」回调与「跳转到源码」操作包裹 try-catch，非法行号退化为不指定行避免 <code>IllegalArgumentException</code>，错误以对话框形式提示并记录日志</li>
-        </ul>
-        <h3>v1.0.4 数据管理重构版（2026-07-09）</h3>
-        <ul>
-            <li><b>📂 数据管理统一入口</b>：合并导出/导入按钮为「数据管理」弹窗，分为「配置」与「接口数据」两类，职责清晰</li>
-            <li><b>⚙️ 导出配置</b>：一次导出 AI 设置 + 环境配置 + 测试 Profile；导出前实时摘要核对（服务器/模型/Key脱敏/提示词），确保导出的是当前实时配置而非默认占位值</li>
-            <li><b>📥 导入配置</b>：AI 设置覆盖当前；环境与 Profile 按"本地已有同名保留本地，否则新增"合并</li>
-            <li><b>🔌 导出接口数据</b>：导出全量接口定义 + 已测接口测试数据 + 统计/收藏</li>
-            <li><b>📤 导入接口数据</b>：按接口粒度合并——本地已测过的接口保留本地不覆盖，未测过的接口导入其测试记录；接口定义按 method|url 去重新增</li>
-            <li><b>🐛 AI 配置导出修复</b>：修复 <code>arkModelCode</code> 等字段导出为默认值而非实时值的问题；移除冗余轻量模型(code)字段，统一通过 getter 读取</li>
-            <li><b>🌐 环境切换✓修复</b>：修复环境下拉框对号始终指向开发环境的问题，改用渲染器实时跟随选中项</li>
-        </ul>
-        <h3>v1.0.3 体验优化版（2026-07-09）</h3>
-        <ul>
-            <li><b>🤖 AI 配置界面优化</b>：系统/用户提示词可折叠（互斥，高度自适应）；底部「恢复默认/确定/取消」同一排；横向拉伸真正生效（输入框撑满、API Key 小眼睛跟随右移）；API 路径允许留空保存，修复主 HTTP 入口硬编码 <code>/chat/completions</code> 的问题</li>
-            <li><b>🔍 API 接口扫描增强</b>：路径占位符 <code>${key:default}</code> 不再整条丢弃；补充按类级 <code>@RequestMapping</code> 搜索以发现组合注解控制器；方法级 <code>@*Mapping</code> 反向定位兜底 Kotlin/轻量控制器；多路径注解 <code>@GetMapping({"/list","/query"})</code> 完整展开为多个接口；去重键加入方法名+参数签名，方法重载不再被误去重</li>
-            <li><b>📝 AI 参数体 JSON 格式化修复</b>：修复请求体 <code>\"</code>/<code>\n</code> 双重转义乱码，新增 <code>mapToNestedJson</code> 还原嵌套结构，输出规整可读 JSON</li>
-            <li><b>🌐 环境管理回显修复</b>：对话框激活环境后主面板 Base URL / 请求头立即回显；下拉框切换环境时注入该环境的全局请求头；修复下拉框重建期间的误切换环境问题</li>
-        </ul>
-        <h3>v1.0.2 功能完善版</h3>
-        <ul>
-            <li><b>兼容版本</b>：<code>idea-version since-build="223" until-build="261.*"</code>，覆盖 IntelliJ IDEA 2022.3 ~ 2026.1.x（4 年共 11 个大版本）</li>
-            <li><b>编译目标</b>：Java 17（兼容老版本 IDE 运行时）</li>
-            <li><b>P0修复</b>：自定义状态码断言、环境变量全链路生效、测试用例持久化、Cookie管理、报告导出</li>
-            <li><b>P1增强</b>：请求历史持久化、接口收藏、form-data支持、可视化断言编辑器、环境管理面板、cURL导入导出</li>
-            <li><b>P2创意</b>：AI智能断言生成、API文档导出、变更检测、Diff对比、使用频率统计</li>
-        </ul>
-        <h3>v1.0.1</h3>
-        <ul>
-            <li>全新架构：完整实现Apipost-Helper-2.0核心功能</li>
-            <li>新增AI测试参数生成（对接内部模型算力）</li>
-            <li>新增Git预提交检查（阻断失败接口提交）</li>
-            <li>新增自动化测试与测试报告</li>
-            <li>新增编辑器Gutter图标导航</li>
+            <li><b>API 扫描</b>：支持按项目、目录或单个 Java 源文件精确扫描，空范围保持真实空态，不回退到旧结果。</li>
+            <li><b>扫描稳定性</b>：同一 Controller 下相同 HTTP 方法与路径只保留一条；异步扫描使用 generation 防止旧结果覆盖新结果。</li>
+            <li><b>IDEA 线程安全</b>：PSI、VFS、序列化和 UI 更新遵守后台读/写与 EDT 边界，异常统一转为可展示状态。</li>
+            <li><b>接口调试与测试</b>：环境变量、请求历史、Cookie、断言、批量测试、依赖链和 HTML 报告等能力一并提供。</li>
+            <li><b>数据与文档导出</b>：支持 cURL、Markdown、Postman、Word 模板及配置/接口数据导入导出。</li>
+            <li><b>AI 与编辑器集成</b>：支持自部署模型，提供参数/断言生成、Gutter 导航、收藏文件夹和 Git 预提交检查。</li>
         </ul>
     ]]></change-notes>
 
@@ -128,7 +79,7 @@
         <!-- 2. Application级全局配置: IDE级别共享配置 -->
         <applicationService serviceImplementation="com.hronline.settings.RestAutoLabGlobalSettings"/>
 
-        <!-- 2b. Project级持久化服务: 存储项目级配置（AI服务器地址、Token等） -->
+        <!-- 2b. Project级持久化服务: 存储项目级配置（自部署模型网关地址、Token等） -->
         <projectService serviceImplementation="com.hronline.settings.RestAutoLabSettingsState"/>
 
         <!-- 3. 设置页面: 在IDE Settings中注册插件配置页 -->

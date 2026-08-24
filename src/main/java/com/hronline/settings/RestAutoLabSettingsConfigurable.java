@@ -65,13 +65,13 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         RestAutoLabSettingsState.State state = settings.getState();
 
         baseUrlField = new JBTextField(state != null ? state.baseUrl : RestAutoLabConstants.DEFAULT_BASE_URL);
-        arkApiUrlField = new JBTextField(state != null ? state.arkApiUrl : RestAutoLabConstants.ARK_API_BASE_URL);
+        arkApiUrlField = new JBTextField(state != null ? state.arkApiUrl : RestAutoLabConstants.AI_DEFAULT_GATEWAY_URL);
         arkApiKeyField = new JBPasswordField();
         if (state != null) arkApiKeyField.setText(state.arkApiKey);
         arkApiPathField = new JBTextField(state != null && state.aiApiPath != null
                 ? state.aiApiPath : "");
-        arkModelProField = new JBTextField(state != null ? state.arkModelPro : RestAutoLabConstants.ARK_MODEL_PRO);
-        arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : RestAutoLabConstants.ARK_MODEL_CODE);
+        arkModelProField = new JBTextField(state != null ? state.arkModelPro : RestAutoLabConstants.AI_DEFAULT_PRIMARY_MODEL);
+        arkModelCodeField = new JBTextField(state != null ? state.arkModelCode : RestAutoLabConstants.AI_DEFAULT_SECONDARY_MODEL);
         aiEnabledBox = new JBCheckBox("启用AI参数生成", state != null && state.aiEnabled);
         // Accent 主题下拉，包含明确的高对比度方案
         accentColorCombo = new JComboBox<>();
@@ -130,12 +130,12 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
         apiHeader.setFont(sectionFont);
         JBLabel apiDesc = new JBLabel("<html><font color='#888888' size='2'>配置接口调试的基础参数</font></html>");
 
-        // ── Section 2: Volcano Ark AI ──
-        JBLabel aiHeader = new JBLabel("AI 模型配置（OpenAI 兼容协议）");
+        // ── Section 2: 自部署模型 AI ──
+        JBLabel aiHeader = new JBLabel("AI 模型配置（支持自部署模型）");
         aiHeader.setForeground(sectionColor);
         aiHeader.setFont(sectionFont);
         JBLabel aiDesc = new JBLabel("<html><font color='#888888' size='2'>"
-                + "支持火山方舟 / OpenAI / Qwen / vLLM 等 OpenAI 兼容服务。<br>"
+                + "支持自部署模型网关（兼容 OpenAI / Qwen / vLLM 等协议）。<br>"
                 + "认证方式：HTTP Header <code>Authorization: Bearer &lt;API Key&gt;</code>；"
                 + "请求体必含 <code>model</code> 字段。"
                 + "</font></html>");
@@ -184,7 +184,7 @@ public class RestAutoLabSettingsConfigurable implements Configurable {
                 .addComponent(aiDesc)
                 .addSeparator()
                 .addComponent(aiEnabledBox, 1)
-                .addLabeledComponent(new JBLabel("API 服务地址:"), arkApiUrlField, 1, false)
+                .addLabeledComponent(new JBLabel("自部署模型网关地址:"), arkApiUrlField, 1, false)
                 .addLabeledComponent(new JBLabel("API Key (Bearer):"), arkApiKeyField, 1, false)
                 .addLabeledComponent(new JBLabel("API 路径:"), arkApiPathField, 1, false)
                 .addLabeledComponent(new JBLabel("主模型(pro):"), arkModelProField, 1, false)

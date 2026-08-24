@@ -120,5 +120,10 @@ public class RestAutoLabConstantsTest {
         assertEquals(30, RestAutoLabConstants.HTTP_REQUEST_TIMEOUT_SECONDS);
         assertEquals("http://localhost:8080", RestAutoLabConstants.DEFAULT_BASE_URL);
         assertEquals("200", RestAutoLabConstants.DEFAULT_ALLOWED_STATUS_CODES);
+        assertEquals("http://localhost:8000/v1", RestAutoLabConstants.AI_DEFAULT_GATEWAY_URL);
+        assertEquals("Qwen3.5-35B-A3B", RestAutoLabConstants.AI_DEFAULT_PRIMARY_MODEL);
+        assertTrue(RestAutoLabConstants.isSelfHostedGatewayWithoutToken(""));
+        assertTrue(RestAutoLabConstants.isSelfHostedGatewayWithoutToken("Bearer"));
+        assertFalse(RestAutoLabConstants.isSelfHostedGatewayWithoutToken("private-token"));
     }
 }

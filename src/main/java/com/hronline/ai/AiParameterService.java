@@ -24,10 +24,10 @@ import java.time.Duration;
 import java.util.*;
 
 /**
- * AI参数生成服务 - 对接火山引擎ARK（OpenAI兼容协议）自动生成API测试入参
+ * AI参数生成服务 - 调用自部署模型网关（OpenAI兼容协议）自动生成API测试入参
  *
  * 核心功能：
- * 1. 使用OpenAI Chat Completions协议调用ARK大模型
+ * 1. 使用OpenAI Chat Completions协议调用自部署模型网关
  * 2. 将API元信息构建为Prompt发送给AI模型
  * 3. 解析AI返回的JSON参数值
  * 4. 支持正常值、边界值、异常值等多种测试场景
@@ -35,7 +35,7 @@ import java.util.*;
  * 6. 支持从JSON/API文档导入参数
  *
  * 通信协议：
- * - OpenAI Chat Completions API (POST /v3/chat/completions)
+ * - OpenAI Chat Completions API（默认 POST /chat/completions，可在设置中修改）
  * - 认证方式: Bearer Token
  * - 模型: doubao-seed-2.0-pro（可在设置中切换）
  */
@@ -59,13 +59,13 @@ public final class AiParameterService {
      * 构造 Authorization Header 值。
      * <p>规则：</p>
      * <ul>
-     *   <li>云端模型（token 非空、非字面量 "Bearer"）：返回 <code>Bearer {token}</code></li>
-     *   <li>本地模型（token 为空）：返回 <code>Bearer Bearer</code>，满足网关必须有 Bearer Header 的要求</li>
-     *   <li>本地模型（token 为字面量 "Bearer"）：返回 <code>Bearer Bearer</code></li>
+     *   <li>需要鉴权的自部署模型网关（token 非空、非字面量 "Bearer"）：返回 <code>Bearer {token}</code></li>
+     *   <li>不鉴权的自部署模型网关（token 为空）：返回 <code>Bearer Bearer</code> 占位值</li>
+     *   <li>不鉴权的自部署模型网关（token 为字面量 "Bearer"）：返回 <code>Bearer Bearer</code> 占位值</li>
      * </ul>
      */
     private String buildAuthHeader(String token) {
-        if (RestAutoLabConstants.isLocalModelToken(token)) {
+        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(token)) {
             return RestAutoLabConstants.BEARER_PREFIX + RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN;
         }
         return RestAutoLabConstants.BEARER_PREFIX + token;
@@ -107,17 +107,17 @@ public final class AiParameterService {
         log.info("[AI生成参数] 开始(简版) => API=" + api.getHttpMethod() + " " + api.getUrl()
                 + ", 场景=" + scenario + ", 参数个数=" + api.getParameters().size());
 
-        // 检查AI服务是否配置（本地模型无需 API Key，仅校验服务器URL）
+        // 检查自部署模型网关是否配置（不鉴权网关无需真实 API Key，仅校验网关地址）
         if (settings.getAiServerUrl().isBlank()) {
-            log.info("[AI生成参数] 跳过(简版)：AI服务器URL未配置，使用默认值生成策略");
+            log.info("[AI生成参数] 跳过(简版)：自部署模型网关地址未配置，使用默认值生成策略");
             return generateDefaultParameters(api, scenario);
         }
-        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
-            log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
+        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
+            log.info("[AI生成参数] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
         }
 
         try {
-            List<Map<String, String>> result = callArkChatCompletions(api, scenario, settings);
+            List<Map<String, String>> result = callModelChatCompletions(api, scenario, settings);
             log.info("[AI生成参数] 成功(简版) => API=" + api.getUrl() + ", 参数组数=" + result.size());
             return result;
         } catch (Exception e) {
@@ -170,20 +170,20 @@ public final class AiParameterService {
                 + ", 参数个数=" + api.getParameters().size());
 
         if (settings.getAiServerUrl().isBlank()) {
-            log.info("[AI生成参数] 跳过：AI服务器URL未配置，使用本地默认值生成策略");
+            log.info("[AI生成参数] 跳过：自部署模型网关地址未配置，使用本地默认值生成策略");
             return new GenerateResult(
-                    "⚠ AI未配置，使用本地默认值生成（非AI生成）\n请在AI Tab中配置服务器URL以使用AI生成真实参数",
+                    "⚠ 未配置自部署模型网关，使用本地默认值生成（非AI生成）\n请在 AI Tab 中配置模型网关地址以使用 AI 生成真实参数",
                     generateDefaultParameters(api, scenario),
                     false,
-                    "AI服务器URL未配置，请在「AI配置」中填写服务器URL"
+                    "自部署模型网关地址未配置，请在「AI配置」中填写网关地址"
             );
         }
-        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
-            log.info("[AI生成参数] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
+        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
+            log.info("[AI生成参数] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
         }
 
         try {
-            String rawContent = callArkChatCompletionsRaw(api, scenario, settings);
+            String rawContent = callModelChatCompletionsRaw(api, scenario, settings);
             String cleanedContent = cleanMarkdownCodeBlock(rawContent);
             List<Map<String, String>> params = parseParameterJson(cleanedContent);
             log.info("[AI生成参数] 成功 => API=" + api.getUrl()
@@ -217,15 +217,15 @@ public final class AiParameterService {
     }
 
     /**
-     * 调用ARK并返回原始响应内容（不解析）
+     * 调用自部署模型网关并返回原始响应内容（不解析）
      */
-    private String callArkChatCompletionsRaw(ApiDefinition api, TestScenario scenario,
+    private String callModelChatCompletionsRaw(ApiDefinition api, TestScenario scenario,
                                                RestAutoLabSettingsState settings) throws Exception {
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        // 路径可配置：OpenAI 标准用 /chat/completions，部分私有部署/Qwen 网关用 /chat；
-        // 留空时直接请求服务器URL根路径
+        // 路径可配置：自部署网关通常用 /chat/completions，部分 Qwen/vLLM 网关用 /chat；
+        // 留空时直接请求模型网关根路径
         String apiPath = settings.getAiApiPath();
         String fullUrl = apiPath.isBlank() ? baseUrl
                 : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
@@ -256,7 +256,7 @@ public final class AiParameterService {
                 || response.statusCode() > RestAutoLabConstants.HTTP_SUCCESS_MAX) {
             log.warn("[AI-HTTP] 失败 => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
+            throw new RuntimeException("自部署模型网关返回状态码: " + response.statusCode()
                     + " (URL: " + fullUrl + "), body: " + response.body());
         }
 
@@ -265,12 +265,12 @@ public final class AiParameterService {
         JsonArray choices = root.getAsJsonArray("choices");
         if (choices == null || choices.isEmpty()) {
             log.warn("[AI-HTTP] 响应解析失败：无choices字段, 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK响应中无choices字段");
+            throw new RuntimeException("模型网关响应中无choices字段");
         }
         JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
         if (message == null) {
             log.warn("[AI-HTTP] 响应解析失败：无message字段, 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK响应中无message字段");
+            throw new RuntimeException("模型网关响应中无message字段");
         }
         String content = message.get("content").getAsString();
         log.info("[AI-HTTP] 解析成功 => content长度=" + content.length()
@@ -279,18 +279,18 @@ public final class AiParameterService {
     }
 
     // ================================================================
-    // ARK Chat Completions 调用
+    // 自部署模型网关 Chat Completions 调用
     // ================================================================
 
     /**
-     * 调用火山引擎ARK Chat Completions API（OpenAI兼容协议）
+     * 调用自部署模型网关 Chat Completions API（OpenAI兼容协议）
      */
-    private List<Map<String, String>> callArkChatCompletions(ApiDefinition api, TestScenario scenario,
+    private List<Map<String, String>> callModelChatCompletions(ApiDefinition api, TestScenario scenario,
                                                               RestAutoLabSettingsState settings) throws Exception {
         // 构建 Chat Completions 请求体
         JsonObject requestBody = buildChatCompletionRequest(api, scenario, settings);
 
-        // 拼接完整URL（路径可配置，留空时直接请求服务器URL根路径）
+        // 拼接完整URL（路径可配置，留空时直接请求模型网关根路径）
         String baseUrl = settings.getAiServerUrl();
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
@@ -300,7 +300,7 @@ public final class AiParameterService {
                 : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
 
         String requestJson = gson.toJson(requestBody);
-        log.info("[AI-HTTP] 请求(callArkChatCompletions) => URL=" + fullUrl
+        log.info("[AI-HTTP] 请求(callModelChatCompletions) => URL=" + fullUrl
                 + ", model=" + settings.getAiModel()
                 + ", 请求体长度=" + requestJson.length());
 
@@ -316,21 +316,21 @@ public final class AiParameterService {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         long httpDuration = System.currentTimeMillis() - httpStart;
 
-        log.info("[AI-HTTP] 响(callArkChatCompletions) => 状态码=" + response.statusCode()
+        log.info("[AI-HTTP] 响(callModelChatCompletions) => 状态码=" + response.statusCode()
                 + ", 耗时=" + httpDuration + "ms"
                 + ", 响应体长度=" + (response.body() != null ? response.body().length() : 0));
 
         if (response.statusCode() < RestAutoLabConstants.HTTP_SUCCESS_MIN
                 || response.statusCode() > RestAutoLabConstants.HTTP_SUCCESS_MAX) {
-            log.warn("[AI-HTTP] 失败(callArkChatCompletions) => 状态码=" + response.statusCode()
+            log.warn("[AI-HTTP] 失败(callModelChatCompletions) => 状态码=" + response.statusCode()
                     + ", 响应体=" + truncate(response.body(), 2000));
-            throw new RuntimeException("ARK API返回状态码: " + response.statusCode()
+            throw new RuntimeException("自部署模型网关返回状态码: " + response.statusCode()
                     + " (URL: " + fullUrl + "), body: " + response.body());
         }
 
         // 解析 Chat Completions 响应
         List<Map<String, String>> result = parseChatCompletionResponse(response.body());
-        log.info("[AI-HTTP] 解析成功(callArkChatCompletions) => 参数组数=" + result.size());
+        log.info("[AI-HTTP] 解析成功(callModelChatCompletions) => 参数组数=" + result.size());
         return result;
     }
 
@@ -350,7 +350,7 @@ public final class AiParameterService {
      *
      * 兼容性说明：
      * - model 字段为必填，由设置中的"主模型"提供（如 doubao-seed-2.0-pro / Qwen3.5-35B-A3B）
-     * - stream:false 显式声明非流式响应，兼容 vLLM、Qwen 网关等私有部署
+     * - stream:false 显式声明非流式响应，兼容 vLLM、Qwen 等自部署网关
      * - 认证通过 HTTP Header Authorization: Bearer {token} 传递（在调用方设置）
      */
     private JsonObject buildChatCompletionRequest(ApiDefinition api, TestScenario scenario,
@@ -374,7 +374,7 @@ public final class AiParameterService {
 
         root.add("messages", messages);
         root.addProperty("temperature", 0.7);
-        // 显式声明非流式响应，兼容 vLLM/Qwen 等私有部署网关
+        // 显式声明非流式响应，兼容 vLLM/Qwen 等自部署网关
         root.addProperty("stream", false);
 
         return root;
@@ -634,13 +634,13 @@ public final class AiParameterService {
 
         JsonArray choices = root.getAsJsonArray("choices");
         if (choices == null || choices.isEmpty()) {
-            throw new RuntimeException("ARK响应中无choices字段");
+            throw new RuntimeException("模型网关响应中无choices字段");
         }
 
         JsonObject firstChoice = choices.get(0).getAsJsonObject();
         JsonObject message = firstChoice.getAsJsonObject("message");
         if (message == null) {
-            throw new RuntimeException("ARK响应中无message字段");
+            throw new RuntimeException("模型网关响应中无message字段");
         }
 
         String content = message.get("content").getAsString();
@@ -1024,18 +1024,18 @@ public final class AiParameterService {
                 + ", 返回类型=" + api.getResponseBodyType());
 
         if (settings.getAiServerUrl().isBlank()) {
-            log.info("[AI生成断言] 跳过：AI服务器URL未配置，生成默认断言");
+            log.info("[AI生成断言] 跳过：自部署模型网关地址未配置，生成默认断言");
             return generateDefaultAssertions(api);
         }
-        if (RestAutoLabConstants.isLocalModelToken(settings.getAiToken())) {
-            log.info("[AI生成断言] 检测到本地模型（token 为空或字面量 'Bearer'），将使用占位 Bearer 调用");
+        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
+            log.info("[AI生成断言] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
         }
 
         try {
             JsonObject requestBody = buildAssertionRequest(api, settings);
             String baseUrl = settings.getAiServerUrl();
             if (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-            // 路径可配置：与参数生成保持一致；留空时直接请求服务器URL根路径
+            // 路径可配置：与参数生成保持一致；留空时直接请求模型网关根路径
             String apiPath = settings.getAiApiPath();
             String fullUrl = apiPath.isBlank() ? baseUrl
                     : baseUrl + (apiPath.startsWith("/") ? apiPath : "/" + apiPath);
@@ -1115,7 +1115,7 @@ public final class AiParameterService {
 
         root.add("messages", messages);
         root.addProperty("temperature", 0.3);
-        // 显式声明非流式响应，兼容 vLLM/Qwen 等私有部署网关
+        // 显式声明非流式响应，兼容 vLLM/Qwen 等自部署网关
         root.addProperty("stream", false);
         return root;
     }

@@ -26,12 +26,12 @@ public class RestAutoLabGlobalSettings implements PersistentStateComponent<RestA
     public static class State {
         /** 字段1: 默认API基础URL */
         public String defaultBaseUrl = RestAutoLabConstants.DEFAULT_BASE_URL;
-        /** 字段2: 火山引擎方舟API全局地址 */
-        public String arkApiUrl = RestAutoLabConstants.ARK_API_BASE_URL;
-        /** 字段3: 方舟API Key */
+        /** 字段2: 自部署模型网关全局地址 */
+        public String arkApiUrl = RestAutoLabConstants.AI_DEFAULT_GATEWAY_URL;
+        /** 字段3: 自部署模型网关 API Key */
         public String arkApiKey = "";
-        /** 字段4: 默认AI模型 */
-        public String defaultAiModel = RestAutoLabConstants.ARK_MODEL_PRO;
+        /** 字段4: 默认模型名称 */
+        public String defaultAiModel = RestAutoLabConstants.AI_DEFAULT_PRIMARY_MODEL;
         /** 字段5: 是否启用AI功能 */
         public boolean aiEnabled = true;
         /** 字段6: 是否启用Git预提交检查 */
@@ -71,22 +71,22 @@ public class RestAutoLabGlobalSettings implements PersistentStateComponent<RestA
         myState.defaultBaseUrl = defaultBaseUrl;
     }
 
-    /** 字段2: 方舟API地址 - Getter */
+    /** 字段2: 自部署模型网关地址 - Getter */
     public String getArkApiUrl() {
         return myState.arkApiUrl;
     }
 
-    /** 字段2: 方舟API地址 - Setter */
+    /** 字段2: 自部署模型网关地址 - Setter */
     public void setArkApiUrl(String arkApiUrl) {
         myState.arkApiUrl = arkApiUrl;
     }
 
-    /** 字段3: 方舟API Key - Getter */
+    /** 字段3: 自部署模型网关 API Key - Getter */
     public String getArkApiKey() {
         return myState.arkApiKey;
     }
 
-    /** 字段3: 方舟API Key - Setter */
+    /** 字段3: 自部署模型网关 API Key - Setter */
     public void setArkApiKey(String arkApiKey) {
         myState.arkApiKey = arkApiKey;
     }

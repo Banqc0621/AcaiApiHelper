@@ -10,8 +10,8 @@ plugins {
 // ============================================================
 // 插件元信息
 // ============================================================
-group = "com.ban"
-version = "2.0.0"
+group = providers.gradleProperty("group").get()
+version = providers.gradleProperty("version").get()
 
 // ============================================================
 // Java 编译配置 - Java 17 (匹配 IntelliJ Platform 2022.3+ 运行时)
@@ -70,17 +70,17 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.banqc.restautolab"
         name = "RestAutoLab"
-        version = "2.0.0"
+        version = project.version.toString()
 
         ideaVersion {
             sinceBuild = "223"
-            untilBuild = "262.*"
+            untilBuild = "261.*"
         }
     }
 }
 
 // ============================================================
-// 源码集配置 - Kotlin源文件保留在src/kotlin/但不参与编译
+// 源码集配置 - 本插件只编译 Java 源码
 // ============================================================
 sourceSets {
     main {
@@ -103,7 +103,7 @@ tasks {
 
     patchPluginXml {
         sinceBuild = "223"
-        untilBuild = "262.*"
+        untilBuild = "261.*"
         // 不在此处设置 changeNotes，<change-notes> 段由 plugin.xml 自己提供
         // （若赋值会覆盖 plugin.xml 中完整的多版本变更日志，用户在插件管理器只能看到单行）
     }
@@ -113,7 +113,7 @@ tasks {
     }
 
     buildPlugin {
-        // 产物名与插件展示名保持一致：RestAutoLab-2.0.0.zip（默认取 rootProject.name 会是小写 restautolab）
+        // 产物名与插件展示名保持一致：RestAutoLab-1.0.0.zip（默认取 rootProject.name 会是小写 restautolab）
         archiveBaseName.set("RestAutoLab")
     }
 }

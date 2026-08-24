@@ -1,7 +1,7 @@
 # 构建与运行命令汇总
 
 > 开发者：Banqc
-> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前版本：v2.0.0
+> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前公开版本：v1.0.0
 
 本文档汇总了 RestAutoLab 插件的所有常用构建、运行、发布命令。
 项目基于 Gradle (Kotlin DSL) + IntelliJ Platform Plugin Gradle 插件构建。
@@ -13,7 +13,7 @@
 | JDK | 17+ |
 | Gradle | 使用项目自带 `./gradlew`（无需全局安装） |
 | IntelliJ Platform | 2022.3 ~ 2026.1.* |
-| 插件版本 | 2.0.0 |
+| 插件版本 | 1.0.0 |
 
 ---
 
@@ -36,7 +36,7 @@
 产物位于：
 
 ```
-build/distributions/RestAutoLab-2.0.0.zip
+build/distributions/RestAutoLab-1.0.0.zip
 ```
 
 这个 zip 可以直接通过 IDEA 的 `Settings → Plugins → ⚙️ → Install Plugin from Disk...` 安装。
@@ -147,14 +147,14 @@ build/distributions/RestAutoLab-2.0.0.zip
 ./gradlew publishPlugin -PideaPublishToken=YOUR_TOKEN
 ```
 
-> 通常本项目通过远程仓库（codeup）分发 zip 包，不走 Marketplace。
+> 开源发布可使用 GitHub Release 或 JetBrains Marketplace。Token 只通过本地参数或 CI Secret 注入，禁止写入仓库。
 
 ---
 
 ## 📤 推送到远程仓库（完整流程）
 
 > 项目主分支：`2022.3.x-2026.1.x`
-> 远程：`origin` → `https://codeup.aliyun.com/6a0e6fa19b7ce0afb00c17b8/ai-api-plugin.git`
+> 公开远程地址由发布者在本地 Git remote 配置中提供；本文不绑定内部仓库。
 
 ### 一次完整的「打包 + 提交 + 推送」流程：
 
@@ -163,7 +163,7 @@ build/distributions/RestAutoLab-2.0.0.zip
 ./gradlew buildPlugin
 
 # 2. 查看产物
-ls -lah build/distributions/RestAutoLab-2.0.0.zip
+ls -lah build/distributions/RestAutoLab-1.0.0.zip
 
 # 3. 查看待提交内容
 git status

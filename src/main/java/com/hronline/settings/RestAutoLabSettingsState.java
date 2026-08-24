@@ -28,16 +28,16 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
 
     public static class State {
         public String baseUrl = RestAutoLabConstants.DEFAULT_BASE_URL;
-        /** 火山引擎方舟 API Key */
+        /** 自部署模型网关 API Key */
         public String arkApiKey = "";
-        /** 方舟API地址 */
-        public String arkApiUrl = RestAutoLabConstants.ARK_API_BASE_URL;
+        /** 自部署模型网关地址 */
+        public String arkApiUrl = RestAutoLabConstants.AI_DEFAULT_GATEWAY_URL;
         /** AI API 路径（如 /chat/completions 或 /chat），可配置以适配不同模型网关 */
         public String aiApiPath = RestAutoLabConstants.AI_DEFAULT_API_PATH;
-        /** 主模型 */
-        public String arkModelPro = RestAutoLabConstants.ARK_MODEL_PRO;
-        /** 轻量模型 */
-        public String arkModelCode = RestAutoLabConstants.ARK_MODEL_CODE;
+        /** 主模型名称 */
+        public String arkModelPro = RestAutoLabConstants.AI_DEFAULT_PRIMARY_MODEL;
+        /** 轻量模型名称 */
+        public String arkModelCode = RestAutoLabConstants.AI_DEFAULT_SECONDARY_MODEL;
         /** 启用AI功能 */
         public boolean aiEnabled = true;
         public boolean gitCheckEnabled = true;
@@ -163,7 +163,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
 
     // ── AI Service compatibility getters (used by AiParameterService) ──
 
-    /** AI服务器URL（兼容方法，等价于arkApiUrl） */
+    /** 自部署模型网关 URL（兼容方法，等价于arkApiUrl） */
     public String getAiServerUrl() { return myState.arkApiUrl; }
 
     /** AI API Token（兼容方法，等价于arkApiKey） */
@@ -182,7 +182,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         return myState.aiApiPath;
     }
 
-    /** 设置AI服务器URL并同步到arkApiUrl */
+    /** 设置自部署模型网关 URL 并同步到arkApiUrl */
     public void setAiServerUrl(String url) { myState.arkApiUrl = url; }
 
     /** 设置AI Token并同步到arkApiKey */

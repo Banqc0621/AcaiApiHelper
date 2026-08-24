@@ -2667,7 +2667,7 @@ public class ApiDebuggerPanel extends JPanel {
         okBtn.addActionListener(e -> {
             if (panel.commit()) {
                 Messages.showInfoMessage(project,
-                        "AI配置已成功保存！\n\n服务器: " + RestAutoLabSettingsState.getInstance(project).getAiServerUrl()
+                        "AI配置已成功保存！\n\n自部署模型网关: " + RestAutoLabSettingsState.getInstance(project).getAiServerUrl()
                                 + "\nAPI 路径: " + RestAutoLabSettingsState.getInstance(project).getAiApiPath()
                                 + "\n模型: " + RestAutoLabSettingsState.getInstance(project).getAiModel(),
                         "保存成功");
@@ -2725,10 +2725,10 @@ public class ApiDebuggerPanel extends JPanel {
 
             RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             urlField = new JBTextField(settings.getAiServerUrl(), 35);
-            urlField.setToolTipText("例如: https://ark.cn-beijing.volces.com/api/v3 或 http://172.29.64.24:80");
+            urlField.setToolTipText("例如: http://localhost:8000/v1 或 http://model-gateway.internal/v1");
             keyField = new JBPasswordField();
             keyField.setText(settings.getAiToken());
-            keyField.setToolTipText("Bearer Token 值（无需带 'Bearer ' 前缀，插件会自动加）；留空表示使用本地模型");
+            keyField.setToolTipText("自部署模型网关的 Bearer Token（无需带 'Bearer ' 前缀，插件会自动加）；网关不鉴权时可留空");
 
             JButton toggleKeyBtn = new JButton(AllIcons.Actions.Preview);
             toggleKeyBtn.setToolTipText("显示/隐藏 API Key 内容");
@@ -2753,18 +2753,18 @@ public class ApiDebuggerPanel extends JPanel {
             keyFieldPanel.add(toggleKeyBtn, BorderLayout.EAST);
 
             apiPathField = new JBTextField(settings.getAiApiPath(), 20);
-            apiPathField.setToolTipText("<html>OpenAI 标准用 /chat/completions；Qwen/vLLM 等私有部署可能用 /chat。<br>留空则请求直接打到服务器URL根路径。</html>");
+            apiPathField.setToolTipText("<html>自部署模型网关通常使用 /chat/completions；Qwen/vLLM 等网关也可能使用 /chat。<br>留空则请求网关地址根路径。</html>");
 
             modelField = new JComboBox<>(RestAutoLabConstants.AI_MODEL_OPTIONS);
             modelField.setEditable(true);
             modelField.setSelectedItem(settings.getAiModel());
             modelField.setToolTipText("选择或输入模型名称，如 Qwen3.5-35B-A3B");
 
-            localModelCheck = new JCheckBox("本地模型（API Key 自动填为 Bearer 占位）");
-            localModelCheck.setSelected(RestAutoLabConstants.isLocalModelToken(settings.getAiToken()));
+            localModelCheck = new JCheckBox("自部署模型（API Key 自动填为 Bearer 占位）");
+            localModelCheck.setSelected(RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken()));
             localModelCheck.setToolTipText("<html>勾选后 API Key 字段自动填入字面量 <b>Bearer</b> 并禁用编辑。<br>"
                     + "调用时发送 <code>Authorization: Bearer Bearer</code>，满足 vLLM/Qwen 等网关要求。<br>"
-                    + "云端模型请取消勾选，并填入真实的 API Key 值。</html>");
+                    + "自部署模型网关不鉴权时可保留占位值；需要鉴权时请填入网关 Token。</html>");
             if (localModelCheck.isSelected()) {
                 keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
             }
@@ -2841,8 +2841,8 @@ public class ApiDebuggerPanel extends JPanel {
             form.add(localModelCheck, gbc);
 
             JBLabel hintLabel = new JBLabel("<html><i>"
-                    + "云端模型：取消勾选'本地模型'，API Key 填真实 token（如 4702f55c...），无需带 'Bearer ' 前缀；<br>"
-                    + "本地部署（vLLM/Qwen/Ollama）：勾选'本地模型'，API Key 自动填为 <b>Bearer</b> 占位。"
+                    + "自部署模型：填写模型网关地址，按网关要求配置 Token 和 API 路径；<br>"
+                    + "网关不鉴权时可勾选'自部署模型'，API Key 自动填为 <b>Bearer</b> 占位。"
                     + "</i></html>");
             hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, 10f));
             hintLabel.setForeground(JBColor.GRAY);
@@ -2961,7 +2961,7 @@ public class ApiDebuggerPanel extends JPanel {
             String model = String.valueOf(modelField.getSelectedItem()).trim();
 
             if (serverUrl.isBlank()) {
-                Messages.showWarningDialog(this, "服务器URL不能为空", "配置错误");
+                Messages.showWarningDialog(this, "自部署模型网关地址不能为空", "配置错误");
                 urlField.requestFocusInWindow();
                 if (onAfterSaved != null) {
                     try { onAfterSaved.run(); } catch (Exception ignore) {}
@@ -3888,10 +3888,10 @@ public class ApiDebuggerPanel extends JPanel {
         //   用户点 OK → dialog.doOKAction() → envDialog.applyChanges() + onCommit 列表 → aiPanel.commit()。
         // 注意：commit() 失败（字段校验不通过）会 return false，但当前 DialogWrapper 不能"拒绝关闭"，
         // 因此 AI 配置字段校验失败时仍会关闭弹窗 —— 这是与"环境&数据"合并弹窗的常见妥协；
-        // 用户可在关闭前看到「服务器URL不能为空」等弹错提示。
+        // 用户可在关闭前看到「自部署模型网关地址不能为空」等弹错提示。
         AiConfigPanel aiPanel = createAiConfigPanel(null);
         dialog.addTab("AI 配置", AllIcons.Actions.Lightning, aiPanel,
-                "AI 服务器、API Key、模型与提示词（由 OK 按钮统一保存）");
+                "自部署模型网关、API Key、模型与提示词（由 OK 按钮统一保存）");
         dialog.addOnCommit(() -> {
             // commit() 内部已做校验（失败弹错），即便失败也已执行 onAfterSaved=null 的逻辑
             aiPanel.commit();

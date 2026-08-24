@@ -231,20 +231,20 @@ public final class RestAutoLabConstants {
     public static final String BEARER_PREFIX = "Bearer ";
 
     /**
-     * 本地部署模型的占位 Token。
-     * <p>对于 Ollama / vLLM / Qwen 自部署网关，HTTP Header 通常要求必须有
+     * 自部署模型的占位 Token。
+     * <p>对于 Ollama / vLLM / Qwen 等自部署网关，HTTP Header 通常要求必须有
      * <code>Authorization: Bearer &lt;xxx&gt;</code>，但 token 值可以是任意字符串。</p>
-     * <p>约定：用户在配置面板勾选"本地模型"后，API Key 字段自动填入字面量 "Bearer"，
+     * <p>约定：用户在配置面板勾选"自部署模型"后，API Key 字段自动填入字面量 "Bearer"，
      * 最终发送的 Header 为 <code>Authorization: Bearer Bearer</code>。</p>
-     * <p>判断"是否本地模型"用 {@link #isLocalModelToken(String)}：token 为空或等于该字面量都视为本地模型。</p>
+     * <p>判断网关是否无需真实 Token 用 {@link #isSelfHostedGatewayWithoutToken(String)}：token 为空或等于该字面量都视为不鉴权网关。</p>
      */
     public static final String AI_LOCAL_BEARER_TOKEN = "Bearer";
 
     /**
-     * 判断给定的 token 是否表示"本地模型"（无需真实 API Key）。
-     * <p>本地模型的特征：token 为空，或 token 等于字面量 "Bearer"（用户在面板勾选本地模型后自动填入）。</p>
+     * 判断给定的 token 是否表示自部署模型网关无需真实 API Key。
+     * <p>特征：token 为空，或 token 等于字面量 "Bearer"（用户在面板勾选自部署模型后自动填入）。</p>
      */
-    public static boolean isLocalModelToken(String token) {
+    public static boolean isSelfHostedGatewayWithoutToken(String token) {
         return token == null || token.isBlank() || AI_LOCAL_BEARER_TOKEN.equals(token.trim());
     }
 
@@ -285,17 +285,17 @@ public final class RestAutoLabConstants {
     public static final int MAX_READ_BYTES = 10 * 1024 * 1024; // 10MB
 
     // ═══════════════════════════════════════════════════════════
-    // 火山引擎方舟 AI 配置
+    // 默认 AI 配置（可替换为自部署模型网关）
     // ═══════════════════════════════════════════════════════════
 
-    /** 火山引擎方舟 API 地址 */
-    public static final String ARK_API_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
+    /** 默认模型网关地址（用户可替换为自部署模型地址） */
+    public static final String AI_DEFAULT_GATEWAY_URL = "http://localhost:8000/v1";
 
-    /** 主模型: doubao-seed-2.0-pro (复杂分析) */
-    public static final String ARK_MODEL_PRO = "doubao-seed-2.0-pro-32k-250115";
+    /** 默认主模型（用户可替换为自部署模型名） */
+    public static final String AI_DEFAULT_PRIMARY_MODEL = "Qwen3.5-35B-A3B";
 
-    /** 轻量模型: doubao-seed-2.0-code (简单分类/评分) */
-    public static final String ARK_MODEL_CODE = "doubao-seed-2.0-code-250115";
+    /** 默认轻量模型（用户可替换为自部署模型名） */
+    public static final String AI_DEFAULT_SECONDARY_MODEL = "Qwen2.5-72B-Instruct";
 
     /** AI连接超时秒数 */
     public static final int AI_CONNECT_TIMEOUT_SECONDS = 10;
@@ -309,7 +309,7 @@ public final class RestAutoLabConstants {
     /** AI Chat Completions 路径（OpenAI 标准） */
     public static final String AI_CHAT_COMPLETIONS_PATH = "/chat/completions";
 
-    /** AI Chat 路径（部分私有部署/简化协议用，如 vLLM、Qwen 自研网关） */
+    /** AI Chat 路径（部分自部署/简化协议用，如 vLLM、Qwen 网关） */
     public static final String AI_CHAT_PATH = "/chat";
 
     /** AI API 路径默认值（可在设置中修改，支持 /chat/completions 和 /chat 两种风格） */
@@ -370,13 +370,11 @@ public final class RestAutoLabConstants {
 
     /** 可选模型列表 */
     public static final String[] AI_MODEL_OPTIONS = {
-            "doubao-seed-2.0-pro-32k-250115",
-            "doubao-seed-2.0-code-250115",
-            "qwen-plus-2025-04-28",
-            "qwen-max-2025-01-25",
             "Qwen3.5-35B-A3B",
             "Qwen2.5-72B-Instruct",
-            "doubao-1.5-pro-32k-250115"
+            "DeepSeek-R1-Distill-Qwen-32B",
+            "Llama-3.3-70B-Instruct",
+            "custom-model"
     };
 
     // ═══════════════════════════════════════════════════════════
