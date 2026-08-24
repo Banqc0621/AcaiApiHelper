@@ -6,17 +6,20 @@ import com.hronline.model.ApiParameter;
 import com.hronline.model.ParameterLocation;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.*;
 import com.intellij.psi.javadoc.PsiDocComment;
 import com.intellij.psi.javadoc.PsiDocTag;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AnnotatedElementsSearch;
+import com.intellij.util.Query;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
@@ -49,7 +52,7 @@ public final class ApiScannerService {
     private final Project project;
 
     /** 缓存已扫描的API列表 */
-    private List<ApiDefinition> cachedApis = Collections.emptyList();
+    private volatile List<ApiDefinition> cachedApis = Collections.emptyList();
 
     /**
      * 最近一次「无包过滤」全量扫描的 API 列表（即 setScanPackageFilter("") 时的扫描结果）。
@@ -57,7 +60,17 @@ public final class ApiScannerService {
      * 覆盖；lastFullScanApis 只在无过滤时更新。这样点击左侧「全量」按钮时可以从 lastFullScanApis
      * 即时恢复全量列表，不必等待后台重扫，避免扫描期间用户看到空白列表的"降级感"。</p>
      */
-    private List<ApiDefinition> lastFullScanApis = Collections.emptyList();
+    private volatile List<ApiDefinition> lastFullScanApis = Collections.emptyList();
+
+    /** 当前 UI 是否处于右键目录/文件的路径范围视图。 */
+    private volatile boolean sourceScopeActive;
+
+    /**
+     * 令牌化扫描请求。用户可以连续点击「仅显示此包接口」和「全量」；旧扫描完成后
+     * 不得覆盖新请求的结果，否则会出现列表闪回、显示上一次范围等“偶发不稳定”。
+     */
+    private final java.util.concurrent.atomic.AtomicLong scanGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
 
     /**
      * 扫描监听器列表
@@ -113,15 +126,66 @@ public final class ApiScannerService {
      * v3: 增加变更检测
      */
     public void scanProjectApisAsync() {
+        scanProjectApisAsync(null);
+    }
+
+    /** 启动全量/设置包过滤扫描，并只回调本次请求自己的有效结果。 */
+    public void scanProjectApisAsync(java.util.function.Consumer<List<ApiDefinition>> completion) {
+        // 无参数扫描明确表示“全量/配置包过滤扫描”，清除上一次右键产生的路径范围。
+        sourceScopeActive = false;
+        scanProjectApisAsync(Collections.emptySet(), completion);
+    }
+
+    /**
+     * 只扫描选中的目录/源文件。
+     * <p>路径范围是右键动作的唯一真相：目录使用路径前缀匹配，Java 文件使用
+     * 精确路径匹配。这样不会把“单文件”扩大成同包其它文件，也不依赖 PSI 包名解析或
+     * 上一次缓存。</p>
+     */
+    public void scanSelectedSourcesAsync(Collection<String> sourcePaths) {
+        scanSelectedSourcesAsync(sourcePaths, null);
+    }
+
+    /** 启动严格路径范围扫描，并只把本次请求自己的有效结果回调给调用方。 */
+    public void scanSelectedSourcesAsync(Collection<String> sourcePaths,
+                                         java.util.function.Consumer<List<ApiDefinition>> completion) {
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        if (sourcePaths != null) {
+            for (String path : sourcePaths) {
+                if (path == null || path.isBlank()) continue;
+                String value = path.replace('\\', '/');
+                while (value.length() > 1 && value.endsWith("/")) {
+                    value = value.substring(0, value.length() - 1);
+                }
+                normalized.add(value);
+            }
+        }
+        sourceScopeActive = true;
+        scanProjectApisAsync(Collections.unmodifiableSet(normalized), completion);
+    }
+
+    /** 返回右键路径范围是否仍是当前视图语义的一部分。 */
+    public boolean isSourceScopeActive() {
+        return sourceScopeActive;
+    }
+
+    /** 在右键扫描启动前切换空态文案，避免即时 0 结果短暂显示成普通初始空态。 */
+    public void activateSourceScope() {
+        sourceScopeActive = true;
+    }
+
+    private void scanProjectApisAsync(Set<String> sourcePathFilter,
+                                      java.util.function.Consumer<List<ApiDefinition>> completion) {
         // 记录扫描前的状态
         List<String> beforeSignatures = cachedApis.stream()
                 .map(ApiDefinition::uniqueKey)
                 .collect(Collectors.toList());
 
-        // 一伦 #56：扫描前先看是否带包过滤 —— 仅当无过滤时，本次的扫描结果
-        // 才需要"备份"到 lastFullScanApis，供后续点「全量」按钮即时恢复列表
-        final boolean isFullScan = RestAutoLabSettingsState.getInstance(project)
-                .getScanPackageFilter().isBlank();
+        // 快照配置，避免后台扫描过程中用户修改设置导致一次扫描前后使用两套范围。
+        final List<String> packageFilter = parsePackageFilter(
+                RestAutoLabSettingsState.getInstance(project).getScanPackageFilter());
+        final boolean isFullScan = sourcePathFilter.isEmpty() && packageFilter.isEmpty();
+        final long requestGeneration = scanGeneration.incrementAndGet();
 
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "扫描项目API...", true) {
             @Override
@@ -134,7 +198,14 @@ public final class ApiScannerService {
                     listener.onScanStarted();
                 }
 
-                List<ApiDefinition> apis = scanProjectApis(indicator);
+                List<ApiDefinition> apis = scanProjectApis(indicator, sourcePathFilter, packageFilter);
+
+                // 如果用户已经发起了更新的范围请求，本次结果只能丢弃，不能通知 UI 或污染缓存。
+                if (requestGeneration != scanGeneration.get()) {
+                    LOG.info("忽略过期的 API 扫描结果 generation=" + requestGeneration
+                            + ", current=" + scanGeneration.get());
+                    return;
+                }
 
                 // v3: 变更检测
                 detectChanges(beforeSignatures, apis);
@@ -142,14 +213,15 @@ public final class ApiScannerService {
                 // v3: 恢复收藏和调用统计
                 restoreApiMetadata(apis);
 
-                cachedApis = apis;
+                List<ApiDefinition> immutableApis = Collections.unmodifiableList(new ArrayList<>(apis));
+                cachedApis = immutableApis;
                 if (isFullScan) {
                     // 无包过滤的扫描才算"全量"，把结果备份；带过滤的扫描不能污染全量缓存
-                    lastFullScanApis = apis;
+                    lastFullScanApis = immutableApis;
                 }
 
                 // v3: 保存签名
-                List<String> newSignatures = apis.stream()
+                List<String> newSignatures = immutableApis.stream()
                         .map(ApiDefinition::uniqueKey)
                         .collect(Collectors.toList());
                 RestAutoLabSettingsState.getInstance(project).saveLastScanSignatures(newSignatures);
@@ -157,8 +229,9 @@ public final class ApiScannerService {
                 indicator.setFraction(1.0);
 
                 for (ScanListener listener : listeners) {
-                    listener.onScanComplete(apis);
+                    listener.onScanComplete(immutableApis);
                 }
+                if (completion != null) completion.accept(immutableApis);
                 LOG.info("API扫描完成，共发现 " + apis.size() + " 个接口");
             }
         });
@@ -170,7 +243,9 @@ public final class ApiScannerService {
      * 使用 ReadAction.nonBlocking().inSmartMode(project) 确保索引就绪（智能模式）后再访问 PSI，
      * 避免项目刚启动时 JavaPsiFacade.findClass 抛出 IndexNotReadyException
      */
-    private List<ApiDefinition> scanProjectApis(ProgressIndicator indicator) {
+    private List<ApiDefinition> scanProjectApis(ProgressIndicator indicator,
+                                                Set<String> sourcePathFilter,
+                                                List<String> packageFilter) {
         return ReadAction.nonBlocking(() -> {
             List<ApiDefinition> apis = new ArrayList<>();
             // allScope 包含项目源码 + 依赖库，确保注解类能被正确解析
@@ -183,8 +258,8 @@ public final class ApiScannerService {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
                 if (annotationClass != null) {
-                    Collection<PsiClass> classes = AnnotatedElementsSearch
-                            .searchPsiClasses(annotationClass, scope).findAll();
+                    Collection<PsiClass> classes = findAllInReadAction(
+                            AnnotatedElementsSearch.searchPsiClasses(annotationClass, scope));
                     allControllers.addAll(classes);
                     LOG.info("Spring @" + annotationFqn.substring(annotationFqn.lastIndexOf('.') + 1)
                             + ": 发现 " + classes.size() + " 个类");
@@ -198,8 +273,8 @@ public final class ApiScannerService {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
                 if (annotationClass != null) {
-                    Collection<PsiClass> classes = AnnotatedElementsSearch
-                            .searchPsiClasses(annotationClass, scope).findAll();
+                    Collection<PsiClass> classes = findAllInReadAction(
+                            AnnotatedElementsSearch.searchPsiClasses(annotationClass, scope));
                     allControllers.addAll(classes);
                     LOG.info("JAX-RS @Path: 发现 " + classes.size() + " 个类");
                 }
@@ -208,8 +283,8 @@ public final class ApiScannerService {
             // ── 3. 扫描 @FeignClient 接口 ──
             PsiClass feignAnnotation = psiFacade.findClass(RestAutoLabConstants.ANNO_FEIGN_CLIENT, scope);
             if (feignAnnotation != null) {
-                Collection<PsiClass> classes = AnnotatedElementsSearch
-                        .searchPsiClasses(feignAnnotation, scope).findAll();
+                Collection<PsiClass> classes = findAllInReadAction(
+                        AnnotatedElementsSearch.searchPsiClasses(feignAnnotation, scope));
                 allControllers.addAll(classes);
                 LOG.info("@FeignClient: 发现 " + classes.size() + " 个接口");
             }
@@ -222,8 +297,8 @@ public final class ApiScannerService {
             //    无 HTTP 映射方法的类不会产出 API，故安全。
             PsiClass requestMappingAnno = psiFacade.findClass(RestAutoLabConstants.ANNO_REQUEST_MAPPING, scope);
             if (requestMappingAnno != null) {
-                Collection<PsiClass> classes = AnnotatedElementsSearch
-                        .searchPsiClasses(requestMappingAnno, scope).findAll();
+                Collection<PsiClass> classes = findAllInReadAction(
+                        AnnotatedElementsSearch.searchPsiClasses(requestMappingAnno, scope));
                 allControllers.addAll(classes);
                 LOG.info("补充扫描 @RequestMapping 类级注解: 候选 " + classes.size() + " 个类");
             }
@@ -240,8 +315,8 @@ public final class ApiScannerService {
                 if (indicator != null) indicator.checkCanceled();
                 PsiClass mappingAnno = psiFacade.findClass(mappingFqn, scope);
                 if (mappingAnno == null) continue;
-                Collection<PsiMethod> methods = AnnotatedElementsSearch
-                        .searchPsiMethods(mappingAnno, scope).findAll();
+                Collection<PsiMethod> methods = findAllInReadAction(
+                        AnnotatedElementsSearch.searchPsiMethods(mappingAnno, scope));
                 for (PsiMethod m : methods) {
                     PsiClass owner = m.getContainingClass();
                     if (owner != null) allControllers.add(owner);
@@ -285,10 +360,17 @@ public final class ApiScannerService {
                 LOG.info("控制器去重: " + skippedNullQfn + " 个匿名/lambda 类被跳过（无类名无法稳定解析）");
             }
 
-            // ── 3.7 包过滤：修复提单「扫描api能不能指定扫特别包下的文件」──
-            //    设置里配置了包前缀时，只保留命中前缀的控制器，其余跳过。
-            List<String> packageFilter = parsePackageFilter(
-                    RestAutoLabSettingsState.getInstance(project).getScanPackageFilter());
+            // ── 3.7 右键范围过滤 ──
+            //    先按真实源码路径收窄，再按设置中的包前缀收窄。路径过滤优先用于右键
+            //    目录/单文件，避免“单文件右键→同包其它接口”以及包名解析漂移。
+            if (!sourcePathFilter.isEmpty()) {
+                int before = uniqueControllers.size();
+                uniqueControllers = uniqueControllers.stream()
+                        .filter(cls -> matchesSourcePath(cls, sourcePathFilter))
+                        .collect(Collectors.toList());
+                LOG.info("源码路径过滤 " + sourcePathFilter + ": 控制器 " + before
+                        + " -> " + uniqueControllers.size());
+            }
             if (!packageFilter.isEmpty()) {
                 int before = uniqueControllers.size();
                 uniqueControllers = uniqueControllers.stream()
@@ -454,6 +536,32 @@ public final class ApiScannerService {
     }
 
     /**
+     * 判断控制器源码是否落在右键选择的路径范围内。
+     * <p>必须在 read action 内调用：{@code getContainingFile()} 和
+     * {@code getVirtualFile()} 都是 PSI/VFS 读取。没有源文件路径的库类明确排除，
+     * 不能因为 qfn 可用而混入右键结果。</p>
+     */
+    private boolean matchesSourcePath(PsiClass cls, Set<String> selectedPaths) {
+        if (cls == null || selectedPaths == null || selectedPaths.isEmpty()) return true;
+        PsiFile containingFile = cls.getContainingFile();
+        VirtualFile virtualFile = containingFile == null ? null : containingFile.getVirtualFile();
+        if (virtualFile == null) return false;
+        return matchesSourcePath(virtualFile.getPath(), selectedPaths);
+    }
+
+    /**
+     * 查询 PSI 索引时显式包裹 read action。
+     * <p>部分 IntelliJ 版本的 QueryExecutor 会在 pooled thread 上继续处理结果；仅依赖
+     * 外层 non-blocking read action 在这些版本上仍可能触发
+     * {@code Read access is allowed from inside read-action only}。在结果物化点再包一层，
+     * 让 Maven/Java 查询实现也始终拥有合法的 PSI 读上下文。</p>
+     */
+    private static <T> Collection<T> findAllInReadAction(Query<T> query) {
+        com.intellij.openapi.util.Computable<Collection<T>> computation = query::findAll;
+        return ApplicationManager.getApplication().runReadAction(computation);
+    }
+
+    /**
      * 包前缀匹配（纯字符串逻辑，便于单元测试）。
      * <p>匹配规则（含包段边界校验）：</p>
      * <ul>
@@ -471,6 +579,22 @@ public final class ApiScannerService {
         for (String prefix : prefixes) {
             if (qfn.equals(prefix)) return true;
             if (qfn.startsWith(prefix + ".")) return true;
+        }
+        return false;
+    }
+
+    /** 源码路径范围匹配（严格分隔符边界，供测试与扫描层共用）。 */
+    static boolean matchesSourcePath(String sourcePath, Collection<String> selectedPaths) {
+        if (sourcePath == null || sourcePath.isBlank()
+                || selectedPaths == null || selectedPaths.isEmpty()) return false;
+        String path = sourcePath.replace('\\', '/');
+        for (String selected : selectedPaths) {
+            if (selected == null || selected.isBlank()) continue;
+            String scope = selected.replace('\\', '/');
+            while (scope.length() > 1 && scope.endsWith("/")) {
+                scope = scope.substring(0, scope.length() - 1);
+            }
+            if (path.equals(scope) || path.startsWith(scope + "/")) return true;
         }
         return false;
     }

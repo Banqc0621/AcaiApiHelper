@@ -22,7 +22,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Set;
 
 /**
- * API Gutter图标提供器 - 在Java/Kotlin Controller方法行号旁显示调试图标
+ * API Gutter图标提供器 - 在 Java Controller 方法行号旁显示调试图标
  *
  * 功能：
  * 1. 自动识别带Spring MVC映射注解的方法

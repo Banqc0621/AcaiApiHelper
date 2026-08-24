@@ -134,6 +134,8 @@ public class ApiTreePanel extends JPanel {
 
     /** 空状态面板 */
     private final JPanel emptyPanel = new JPanel(new GridBagLayout());
+    private final JBLabel emptyTitleLabel = new JBLabel();
+    private final JBLabel emptyHintLabel = new JBLabel();
 
     public ApiTreePanel(@NotNull Project project) {
         super(new BorderLayout());
@@ -485,18 +487,18 @@ public class ApiTreePanel extends JPanel {
         gbc.gridy = 0;
         panel.add(iconLabel, gbc);
 
-        JBLabel titleLabel = new JBLabel("<html><b>暂无 API 数据</b></html>");
-        titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        titleLabel.setForeground(JBColor.GRAY);
+        emptyTitleLabel.setText("<html><b>暂无 API 数据</b></html>");
+        emptyTitleLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        emptyTitleLabel.setForeground(JBColor.GRAY);
         gbc.gridy = 1;
-        panel.add(titleLabel, gbc);
+        panel.add(emptyTitleLabel, gbc);
 
-        JBLabel hintLabel = new JBLabel("<html><center>点击工具栏 \"扫描API\" 按钮<br/>自动检测项目中的所有接口及参数</center></html>");
-        hintLabel.setHorizontalAlignment(SwingConstants.CENTER);
-        hintLabel.setForeground(JBColor.GRAY);
-        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        emptyHintLabel.setText("<html><center>点击左侧「全量」<br/>扫描项目中的所有接口</center></html>");
+        emptyHintLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        emptyHintLabel.setForeground(JBColor.GRAY);
+        emptyHintLabel.setFont(emptyHintLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         gbc.gridy = 2;
-        panel.add(hintLabel, gbc);
+        panel.add(emptyHintLabel, gbc);
 
         return panel;
     }
@@ -535,16 +537,20 @@ public class ApiTreePanel extends JPanel {
             // 即时恢复全量列表（不必等后台重扫），然后后台异步触发一次扫描刷新缓存。
             RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             boolean hadFilter = !settings.getScanPackageFilter().isBlank();
-            if (hadFilter) {
+            ApiScannerService scanner = ApiScannerService.getInstance(project);
+            boolean hadSourceScope = scanner.isSourceScopeActive();
+            if (hadFilter || hadSourceScope) {
                 settings.setScanPackageFilter("");
-                LOG.info("[ApiTree] 「全量」清空扫描包过滤，恢复全量列表");
-                ApiScannerService scanner = ApiScannerService.getInstance(project);
+                LOG.info("[ApiTree] 「全量」清空右键范围/扫描包过滤，恢复全量列表");
                 List<ApiDefinition> cachedFull = scanner.getLastFullScanApis();
                 if (!cachedFull.isEmpty()) {
                     // 优先从备份的全量缓存恢复——即时显示，不必等扫描
                     updateTree(cachedFull);
+                } else {
+                    // 从未完成过全量扫描时也不能继续挂着右键范围的旧树。
+                    updateTree(Collections.emptyList());
                 }
-                // 后台异步重扫刷新（让 lastFullScanApis 与项目当前实际接口一致）
+                // 后台异步重扫刷新（同时清除 sourceScopeActive）
                 scanner.scanProjectApisAsync();
             } else {
                 // 缓存为空或失效时主动触发一次扫描
@@ -726,7 +732,18 @@ public class ApiTreePanel extends JPanel {
      * @param apis 要展示的API列表
      */
     public void updateTree(List<ApiDefinition> apis) {
-        allApis = apis;
+        // Scan listeners run on a pooled thread. Keep all Swing state (including allApis,
+        // filter state and the empty-state card) on EDT; otherwise a fast right-click scan can
+        // race a full scan and expose partially updated data.
+        List<ApiDefinition> snapshot = apis == null
+                ? Collections.emptyList()
+                : Collections.unmodifiableList(new ArrayList<>(apis));
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> updateTree(snapshot));
+            return;
+        }
+        allApis = snapshot;
+        updateEmptyStateCopy();
         LOG.warn("[ApiTree] updateTree 接收接口数=" + (apis == null ? 0 : apis.size())
                 + ", 当前过滤=" + currentFilter);
         // 扫描产生新数据时清空搜索框，避免旧搜索词把新数据过滤掉（"显示不全"的诱因之一）
@@ -746,6 +763,32 @@ public class ApiTreePanel extends JPanel {
         // 若用户正在看「最新」，后台重算（算完会自动刷新树为最新子集）
         if (FILTER_LATEST.equals(currentFilter)) {
             triggerLatestFilter();
+        }
+    }
+
+    /**
+     * 右键目录/文件扫描的结果必须呈现在「全量」分类中，但不能模拟点击「全量」
+     * （模拟点击会立刻清除刚建立的路径范围）。
+     */
+    public void showScopedApis(List<ApiDefinition> apis) {
+        List<ApiDefinition> snapshot = apis == null ? Collections.emptyList() : new ArrayList<>(apis);
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() -> showScopedApis(snapshot));
+            return;
+        }
+        currentFilter = FILTER_ALL;
+        btnAll.setSelected(true);
+        updateTree(snapshot);
+    }
+
+    private void updateEmptyStateCopy() {
+        boolean scoped = ApiScannerService.getInstance(project).isSourceScopeActive();
+        if (scoped) {
+            emptyTitleLabel.setText("<html><b>当前范围没有接口</b></html>");
+            emptyHintLabel.setText("<html><center>未显示旧扫描结果<br/>点击「全量」恢复项目全部接口</center></html>");
+        } else {
+            emptyTitleLabel.setText("<html><b>暂无 API 数据</b></html>");
+            emptyHintLabel.setText("<html><center>点击左侧「全量」<br/>扫描项目中的所有接口</center></html>");
         }
     }
 

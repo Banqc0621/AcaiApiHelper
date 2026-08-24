@@ -72,30 +72,19 @@ public static final class ScanApisAction extends AnAction {
         ApiScannerService scanner = ApiScannerService.getInstance(project);
 
         // 始终触发扫描：扫描会重建树并显示全部接口（这是「扫描项目API」的核心职责）。
-        // 若光标在接口方法上，注册一次性监听器，扫描完成后顺带定位到该接口。
+        // completion 与本次 generation 绑定，过期扫描不会误消费下一次扫描的结果。
         if (cursorRef != null) {
             final String filePath = cursorRef.filePath;
             final int lineNumber = cursorRef.lineNumber;
-            ApiScannerService.ScanListener oneShot = new ApiScannerService.ScanListener() {
-                @Override
-                public void onScanStarted() {}
-                @Override
-                public void onScanComplete(List<ApiDefinition> apis) {
-                    scanner.removeListener(this);
-                    // 扫描完成后树已重建并显示全部接口；再定位到光标接口
-                    ApiDefinition hit = scanner.findApiByFileAndLine(filePath, lineNumber);
-                    ApplicationManager.getApplication().invokeLater(() -> {
-                        if (hit != null) {
-                            locateApi(project, hit);
-                        }
-                    });
-                }
-            };
-            scanner.addListener(oneShot);
+            scanner.scanProjectApisAsync(apis -> {
+                ApiDefinition hit = scanner.findApiByFileAndLine(filePath, lineNumber);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (hit != null) locateApi(project, hit);
+                });
+            });
+        } else {
+            scanner.scanProjectApisAsync();
         }
-
-        // 触发扫描（带进度条）。扫描完成会重建树（显示全部接口）并回调上面的监听器。
-        scanner.scanProjectApisAsync();
 
         // 立即激活面板，避免扫描期间用户看不到工具窗口
         activateToolWindow(project);
@@ -209,27 +198,19 @@ public static final class DebugApiAction extends AnAction {
             return;
         }
 
-        // 缓存为空或未匹配：触发扫描，完成后定位
-        ApiScannerService.ScanListener oneShot = new ApiScannerService.ScanListener() {
-            @Override
-            public void onScanStarted() {}
-            @Override
-            public void onScanComplete(List<ApiDefinition> apis) {
-                scanner.removeListener(this);
-                ApiDefinition found = scanner.findApiByFileAndLine(filePath, lineNumber);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    if (found != null) {
-                        activateAndLocate(project, found);
-                    } else {
-                        Messages.showInfoMessage(project,
-                                "未在当前光标方法上识别到接口（可能不是Controller映射方法）。",
-                                "调试当前接口");
-                    }
-                });
-            }
-        };
-        scanner.addListener(oneShot);
-        scanner.scanProjectApisAsync();
+        // 缓存为空或未匹配：触发扫描，completion 与本次 generation 绑定。
+        scanner.scanProjectApisAsync(apis -> {
+            ApiDefinition found = scanner.findApiByFileAndLine(filePath, lineNumber);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (found != null) {
+                    activateAndLocate(project, found);
+                } else {
+                    Messages.showInfoMessage(project,
+                            "未在当前光标方法上识别到接口（可能不是Controller映射方法）。",
+                            "调试当前接口");
+                }
+            });
+        });
         activateToolWindow(project);
     }
 
@@ -361,8 +342,8 @@ public static final class AddToScanPackageAction extends AnAction {
                 if (vf == null) continue;
                 if (vf.isDirectory()) {
                     dirs.add(vf);
-                } else if (isJavaOrKtFile(vf)) {
-                    // 单文件右键支持（#53 新增）：右键 1 个或多个 .java/.kt 文件，
+                } else if (isJavaSourceFile(vf)) {
+                    // 单文件右键支持（#53 新增）：右键 1 个或多个 .java 文件，
                     // 收窄到「这些文件内定义的接口」——常见诉求：调试单文件时不想被全包淹没
                     javaFiles.add(vf);
                 }
@@ -371,277 +352,85 @@ public static final class AddToScanPackageAction extends AnAction {
         LOG.info("仅显示此包接口：触发，目录数 = " + dirs.size() + "，文件数 = " + javaFiles.size());
         if (dirs.isEmpty() && javaFiles.isEmpty()) {
             Messages.showWarningDialog(project,
-                    "请先在项目视图中右键一个包目录或 .java/.kt 源文件。", "仅显示此包接口");
+                    "请先在项目视图中右键一个包目录或 .java 源文件。", "仅显示此包接口");
             return;
         }
 
         ApiScannerService scanner = ApiScannerService.getInstance(project);
 
-        // 一伦反馈 #59：右键源码根目录（src/main/java 等）识别——
-        // PSI 把源码根本身当作"非包"返回空、路径标记也没内容、缓存兜底空时整链路失败，
-        // 用户只能看到「无文件"清空树"的报错。源码根是有意义的：相当于"展示该根下所有包"，
-        // 等价于点击「全量」按钮。在这里短路：清空过滤 + 触发全量扫描，避免给用户
-        // 一个无意义的错误弹窗（用户原话：「没有就是没有」「不要降级显示」——源码根不是
-        // 「没有」，而是「不是包，是根」）。
-        if (!javaFiles.isEmpty()) {
-            // 单文件右键：不做源码根判断
-        } else if (dirs.size() == 1 && isSourceRoot(dirs.get(0), project)) {
-            LOG.info("仅显示此包接口：右键目录是源码根 " + dirs.get(0).getPath()
-                    + " → 清空过滤 + 触发全量扫描（等价于点击「全量」按钮）");
-            RestAutoLabSettingsState.getInstance(project).setScanPackageFilter("");
-            scanner.scanProjectApisAsync();
-            ToolWindow tw = ToolWindowManager.getInstance(project)
-                    .getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
-            if (tw != null) tw.activate(null);
-            try {
-                NotificationGroupManager.getInstance()
-                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                        .createNotification(
-                                "仅显示此包接口",
-                                "右键目录是源码根（" + dirs.get(0).getName() + "），已切换到全量视图并重新扫描。\n"
-                                        + "如需收窄到具体包，请右键 src/main/java 下具体的包目录。",
-                                NotificationType.INFORMATION)
-                        .notify(project);
-            } catch (Exception ex) {
-                Messages.showInfoMessage(project,
-                        "右键目录是源码根，已切换到全量视图并重新扫描。\n如需收窄到具体包，请右键具体的包目录。",
-                        "仅显示此包接口");
-            }
-            return;
-        }
+        // 路径是右键范围的唯一真相：单文件不得扩大到同包其它文件，目录不得回退到
+        // 上一次缓存或按包名猜测。旧的包名 helper 仅供设置项兼容和纯逻辑测试。
+        List<String> selectedPaths = new java.util.ArrayList<>();
+        for (VirtualFile dir : dirs) if (dir != null) selectedPaths.add(dir.getPath());
+        for (VirtualFile file : javaFiles) if (file != null) selectedPaths.add(file.getPath());
 
-        List<String> packageNames = java.util.Collections.emptyList();
-        try {
-            // 一伦反馈 #56：移除所有「宽松匹配」降级（磁盘遍历/向上寻包/模块描述符猜 basename），
-            // 用户明确要求「没扫到就是没扫到」「不要降级」——这些降级会把同名但不同包的
-            // Controller 误收进右键目录的结果里（典型：右键 my-feature（无 Controller）
-            // 看到 com.myfeature.* 下的接口）。
-            // 现在只剩 3 种严格解析：PSI / 路径标记 / 已扫描接口目录归属；解析失败 → 直接给空反馈，
-            // 不再静默尝试"猜"包名。
-            //
-            // 1) PSI 解析包名（标准路径）
-            packageNames = resolvePackageNames(project, dirs.toArray(new VirtualFile[0]));
-            LOG.info("仅显示此包接口：PSI 解析包名 = " + packageNames);
-            // 2) 回退：按目录路径推导（Maven/Gradle 标准 src/main/java 布局）
-            if (packageNames.isEmpty()) {
-                packageNames = resolvePackageNamesByPath(dirs);
-                LOG.info("仅显示此包接口：路径推导包名 = " + packageNames);
-            }
-            // 3) 回退：模块根目录等非源码目录——收集已扫描接口中位于该目录下的源文件所属包。
-            //    用户常直接右键模块根（如 nft-turbo-gateway），此时按「目录下的已扫描接口」
-            //    推导包集合，同样能实现「仅显示该模块下接口」的诉求。
-            //    注意：这不是降级，而是利用已有数据精确反推，不会把同名异包的接口误收进来。
-            if (packageNames.isEmpty()) {
-                packageNames = resolvePackagesFromCachedApis(scanner.getCachedApis(), dirs);
-                LOG.info("仅显示此包接口：已扫描接口推导包名 = " + packageNames);
-            }
-            // 4) 单文件右键快路径：右键 1 个或多个 .java/.kt 文件但目录链解析失败时，
-            //    读文件首部 package 声明（这是用户明确选中的文件里的真实内容，不是猜）。
-            if (packageNames.isEmpty() && !javaFiles.isEmpty()) {
-                List<String> filePackages = resolvePackagesFromFiles(javaFiles);
-                LOG.info("仅显示此包接口：文件推导包名 = " + filePackages);
-                if (!filePackages.isEmpty()) {
-                    packageNames = filePackages;
-                }
-            }
-        } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
-            // 用户按 Esc 或 IDE 因内存压力取消时不弹错、记录日志后正常退出
-            LOG.warn("仅显示此包接口：包名解析被取消（ProcessCanceledException），右键目录 = " + dirs);
-            return;
-        } catch (Exception ex) {
-            LOG.warn("仅显示此包接口：包名解析异常", ex);
-            try {
-                NotificationGroupManager.getInstance()
-                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                        .createNotification("仅显示此包接口",
-                                "解析右键目录的包名时发生异常：" + ex.getMessage(),
-                                NotificationType.WARNING)
-                        .notify(project);
-            } catch (Exception ignored) {}
-            return;
-        }
-        if (packageNames.isEmpty()) {
-            // 兜底链全部失败（无 PSI / 无路径标记 / 无缓存 / 无磁盘源文件 / 无祖先链源 /
-            // 无模块描述符 / 无文件推导）时不再弹模态阻塞对话框，改用通知气泡轻提示，
-            // 并把右键目录路径写入诊断日志便于排查——之前强弹窗被反馈「始终处理不好」。
-            // 一伦反馈 #55：当前右键目录若无对外 Controller，必须立即清空树并清空
-            // 上一次的过滤，**不再保留 / 显示上一次的扫描结果**——「没有就是没有」
-            // 是契约，不允许任何形式的"降级显示"（既不能按目录名猜包，也不能挂着
-            // 旧 filter 让旧缓存继续显示）。用户用左侧「全量」按钮恢复全量列表。
-            LOG.warn("仅显示此包接口：兜底链全失败（当前右键目录/文件无对外 Controller 接口），右键目录 = "
-                    + dirs + "，右键文件 = " + javaFiles);
-            try {
-                String selectionDesc;
-                if (!javaFiles.isEmpty()) {
-                    selectionDesc = "右键文件：" + javaFiles.get(0).getPath();
-                } else if (!dirs.isEmpty()) {
-                    selectionDesc = "右键目录：" + dirs.get(0).getPath();
-                } else {
-                    selectionDesc = "右键项：(空)";
-                }
-                NotificationGroupManager.getInstance()
-                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                        .createNotification(
-                                "仅显示此包接口",
-                                "所选目录/文件中没有可解析的 Java/Kotlin 源文件，过滤未生效。\n" +
-                                        selectionDesc +
-                                        "\n（这是预期的【无】——左侧树已清空，无降级显示）" +
-                                        "\n如需恢复全量列表，请点击左侧「全量」按钮。",
-                                NotificationType.WARNING)
-                        .notify(project);
-            } catch (Exception ex) {
-                Messages.showWarningDialog(project,
-                        "所选目录/文件中没有可解析的 Java/Kotlin 源文件。如需恢复全量列表，请点击左侧「全量」按钮。",
-                        "仅显示此包接口");
-            }
-            // 清空过滤 + 清空树 + 不触发重扫——按用户契约：右键无 Controller 的目录，
-            // 看不到任何东西；用户主动点「全量」才会再重扫
-            RestAutoLabSettingsState.getInstance(project).setScanPackageFilter("");
-            try {
-                RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
-                ApiTreePanel treePanel = holder.getTreePanel();
-                if (treePanel != null) {
-                    treePanel.updateTree(java.util.Collections.emptyList());
-                    LOG.info("仅显示此包接口：兜底链失败，已清空树（清掉上次扫描结果，不做降级显示）");
-                }
-            } catch (Exception ignored) {
-                // 工具窗口未初始化等异常——吞掉，不阻断通知气泡
-            }
-            // 激活工具窗口，让用户立即看到清空后的树
-            ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
-            if (tw != null) tw.activate(null);
-            return;
-        }
-
-        // 3) 写入过滤配置（替换语义：只保留当前右键的包）
-        String newFilter = String.join(",", packageNames);
-        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-        settings.setScanPackageFilter(newFilter);
-        LOG.info("仅显示此包接口：过滤配置更新为 [" + newFilter + "]");
-
-        // 4) 立即收窄：用「源文件位于右键目录下」或「源文件路径等于选中文件」
-        //    即时过滤已扫描缓存并刷新左侧树，用户不必等重扫就能看到收窄效果
-        //    （#53 新增文件精确匹配：单文件右键时按 .java/.kt 路径精准收窄到该文件内接口）
+        RestAutoLabSettingsState.getInstance(project).setScanPackageFilter("");
         List<ApiDefinition> cached = scanner.getCachedApis();
-        if (!cached.isEmpty()) {
-            // 预先归一化选中文件的路径（大小写不敏感按平台默认值）
-            java.util.Set<String> selectedFilePaths = new java.util.HashSet<>();
-            for (VirtualFile f : javaFiles) {
-                if (f != null) selectedFilePaths.add(f.getPath());
-            }
-            List<ApiDefinition> narrowed = new java.util.ArrayList<>();
-            for (ApiDefinition api : cached) {
-                String path = api.getSourceFilePath();
-                if (path == null || path.isEmpty()) continue;
-                // a) 文件精确匹配（最高优先级：仅匹配选中的 .java/.kt 路径本身）
-                if (!selectedFilePaths.isEmpty()) {
-                    boolean hit = false;
-                    for (String fp : selectedFilePaths) {
-                        if (path.equals(fp)) { hit = true; break; }
-                    }
-                    if (hit) { narrowed.add(api); continue; }
-                    // 选中文件但当前接口不在选中文件里 → 即使在选中目录下也不算（用户明确选文件）
-                    continue;
-                }
-                // b) 目录前缀匹配（原有行为：所有选中目录下源文件接口都收窄）
-                for (VirtualFile dir : dirs) {
-                    String dirPath = dir.getPath();
-                    if (path.equals(dirPath) || path.startsWith(dirPath + "/")) {
-                        narrowed.add(api);
-                        break;
-                    }
-                }
-            }
-            LOG.info("仅显示此包接口：即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
-                    + "（选中目录数 = " + dirs.size() + "，选中文件数 = " + javaFiles.size() + "）");
-            RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
-            ApiTreePanel treePanel = holder.getTreePanel();
-            if (treePanel != null) treePanel.updateTree(narrowed);
-        }
-        // 激活工具窗口，让用户立即看到收窄效果
-        ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
+        List<ApiDefinition> narrowed = cached.stream()
+                .filter(api -> matchesSelectedSource(api.getSourceFilePath(), dirs, javaFiles))
+                .collect(java.util.stream.Collectors.toList());
+        LOG.info("仅显示此包接口：路径即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
+                + "（选中目录数 = " + dirs.size() + "，选中文件数 = " + javaFiles.size() + "）");
+        RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
+        ApiTreePanel treePanel = holder.getTreePanel();
+        // 即时结果也必须真实：命中 0 个就立刻清空，不保留旧树。
+        scanner.activateSourceScope();
+        if (treePanel != null) treePanel.showScopedApis(narrowed);
+        ToolWindow tw = ToolWindowManager.getInstance(project)
+                .getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
         if (tw != null) tw.activate(null);
 
-        // 5) 触发重扫（扫描层按包前缀精确裁剪，完成后覆盖缓存为持久的过滤结果）
-        // 一伦 #56：先弹一条轻量级「正在收窄」提示，立即给反馈；扫描真正完成后，
-        // 再用一次性监听器根据实际命中数发"发现 X 个"或"未发现接口（0 个）"的明确反馈。
-        // 满足用户的「没有就显示没有、有就显示有」诉求——不再静默失败、不再降级到上一份缓存。
-        scanner.scanProjectApisAsync();
-
-        String immediateTitle = "仅显示此包接口";
-        String immediateContent;
-        if (!javaFiles.isEmpty()) {
-            immediateContent = "已收窄为 " + javaFiles.size() + " 个源文件内的接口，正在重新扫描...\n" +
-                    "（单文件/多文件右键——按文件精确匹配，非文件内接口会被过滤）\n" +
-                    "点击左侧「全量」按钮可恢复全量列表";
-        } else {
-            immediateContent = "已收窄为包 " + String.join(", ", packageNames)
-                    + " 及其子包下的接口，正在重新扫描...\n"
-                    + "（支持右键任意层级包，无需精确到 controller 层）\n"
-                    + "点击左侧「全量」按钮可恢复全量列表";
-        }
+        final String selectionDesc = describeSelection(dirs, javaFiles);
+        scanner.scanSelectedSourcesAsync(selectedPaths, apis -> {
+            int hitCount = apis == null ? 0 : apis.size();
+            String message = selectionDesc + "：\n" + (hitCount == 0
+                    ? "未发现接口（0 个）。这是当前范围的真实空结果，不显示上一次扫描结果。\n"
+                    : "发现 " + hitCount + " 个接口。\n")
+                    + "如需恢复全量列表，请点击左侧「全量」按钮。";
+            try {
+                NotificationGroupManager.getInstance()
+                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                        .createNotification("仅显示此包接口", message,
+                                hitCount == 0 ? NotificationType.WARNING : NotificationType.INFORMATION)
+                        .notify(project);
+            } catch (Exception notificationFailure) {
+                LOG.warn("右键范围扫描结果通知失败", notificationFailure);
+            }
+        });
         try {
             NotificationGroupManager.getInstance()
                     .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                    .createNotification(immediateTitle, immediateContent, NotificationType.INFORMATION)
+                    .createNotification("仅显示此包接口",
+                            selectionDesc + "，正在扫描。点击左侧「全量」按钮可恢复全量列表。",
+                            NotificationType.INFORMATION)
                     .notify(project);
-        } catch (Exception ex) {
-            Messages.showInfoMessage(project, immediateContent, immediateTitle);
+        } catch (Exception notificationFailure) {
+            LOG.warn("右键范围扫描开始通知失败", notificationFailure);
         }
 
-        // 一次性监听器：扫描完成后按实际命中数发明确反馈
-        final java.util.List<String> finalPackageNames = java.util.Collections.unmodifiableList(packageNames);
-        final int fileCount = javaFiles.size();
-        ApiScannerService.ScanListener oneShot = new ApiScannerService.ScanListener() {
-            @Override
-            public void onScanStarted() {}
-            @Override
-            public void onScanComplete(List<ApiDefinition> apis) {
-                scanner.removeListener(this);
-                int hitCount = apis == null ? 0 : apis.size();
-                StringBuilder sb = new StringBuilder();
-                if (fileCount > 0) {
-                    sb.append("已收窄为 ").append(fileCount).append(" 个源文件内的接口");
-                } else if (finalPackageNames.size() == 1) {
-                    sb.append("已收窄为包 ").append(finalPackageNames.get(0));
-                } else {
-                    sb.append("已收窄为包 ").append(String.join(", ", finalPackageNames));
-                }
-                sb.append("：\n");
-                if (hitCount == 0) {
-                    // 明确反馈"没有"——用户原话：「如果没有就显示没有」。
-                    // 这里没有兜底到上次扫描缓存，是用户明确要求的「没扫到就是没扫到」。
-                    sb.append("未发现对外 Controller 接口（0 个）\n");
-                    if (fileCount > 0) {
-                        sb.append("（所选源文件内未含 Controller 接口——按文件精确匹配，非文件内接口会被过滤）\n");
-                    } else {
-                        sb.append("（所选包及其子包下未含对外 Controller 接口——扫描结果为真实的【无】）\n");
-                    }
-                    sb.append("如需恢复全量列表，请点击左侧「全量」按钮");
-                    try {
-                        NotificationGroupManager.getInstance()
-                                .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                                .createNotification(immediateTitle, sb.toString(), NotificationType.WARNING)
-                                .notify(project);
-                    } catch (Exception ex) {
-                        Messages.showWarningDialog(project, sb.toString(), immediateTitle);
-                    }
-                } else {
-                    // 明确反馈"有 + 个数"——用户原话：「如果有就显示有」。
-                    sb.append("发现 ").append(hitCount).append(" 个接口\n");
-                    sb.append("（实时扫描结果——非上次扫描缓存；点击左侧「全量」按钮可恢复全量列表）");
-                    try {
-                        NotificationGroupManager.getInstance()
-                                .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                                .createNotification(immediateTitle, sb.toString(), NotificationType.INFORMATION)
-                                .notify(project);
-                    } catch (Exception ex) {
-                        Messages.showInfoMessage(project, sb.toString(), immediateTitle);
-                    }
-                }
-            }
-        };
-        scanner.addListener(oneShot);
+    }
+
+    private static String describeSelection(List<VirtualFile> dirs, List<VirtualFile> files) {
+        if (!files.isEmpty()) return "已收窄到 " + files.size() + " 个 Java 源文件";
+        if (!dirs.isEmpty()) return "已收窄到 " + dirs.size() + " 个目录及其子目录";
+        return "已收窄到当前选择";
+    }
+
+    private static boolean matchesSelectedSource(String sourcePath,
+                                                 List<VirtualFile> dirs,
+                                                 List<VirtualFile> files) {
+        if (sourcePath == null || sourcePath.isBlank()) return false;
+        String path = sourcePath.replace('\\', '/');
+        for (VirtualFile file : files) {
+            if (file != null && path.equals(file.getPath().replace('\\', '/'))) return true;
+        }
+        for (VirtualFile dir : dirs) {
+            if (dir == null) continue;
+            String root = dir.getPath().replace('\\', '/');
+            while (root.length() > 1 && root.endsWith("/")) root = root.substring(0, root.length() - 1);
+            if (path.equals(root) || path.startsWith(root + "/")) return true;
+        }
+        return false;
     }
 
     @Override
@@ -649,7 +438,7 @@ public static final class AddToScanPackageAction extends AnAction {
         Project project = e.getProject();
         boolean visible = false;
         if (project != null && !project.isDisposed()) {
-            // 只做轻量判定：选中包含目录或 .java/.kt 文件即显示（#53 新增文件支持）。
+            // 只做轻量判定：选中包含目录或 .java 文件即显示（#53 新增文件支持）。
             // 不在此处做 PSI 包名解析——以解析结果决定可见性，会让任一解析波动
             // 导致菜单项静默消失（#51 根因）。包名解析放到 actionPerformed 中执行，
             // 失败也有明确弹窗反馈。
@@ -657,7 +446,7 @@ public static final class AddToScanPackageAction extends AnAction {
             if (files != null) {
                 for (VirtualFile vf : files) {
                     if (vf == null) continue;
-                    if (vf.isDirectory() || isJavaOrKtFile(vf)) { visible = true; break; }
+                    if (vf.isDirectory() || isJavaSourceFile(vf)) { visible = true; break; }
                 }
             }
         }
@@ -669,16 +458,16 @@ public static final class AddToScanPackageAction extends AnAction {
      * <p>仅当 PSI 反查失败时兜底使用；无法识别返回空列表。</p>
      */
     /**
-     * 文件后缀判定（仅 .java / .kt）。右键单文件时用于识别源文件，
+     * 文件后缀判定（仅 .java）。右键单文件时用于识别源文件，
      * 避免把 .class / .jar 等附属文件当成源文件去推包名。
      */
-    private static boolean isJavaOrKtFile(@NotNull VirtualFile vf) {
+    private static boolean isJavaSourceFile(@NotNull VirtualFile vf) {
         String ext = vf.getExtension();
-        return "java".equalsIgnoreCase(ext) || "kt".equalsIgnoreCase(ext);
+        return "java".equalsIgnoreCase(ext);
     }
 
     /**
-     * 单文件右键包名推导（#53 新增，#58 修正）：从 1 个或多个 .java/.kt 文件推包名。
+     * 单文件右键包名推导（#53 新增，#58 修正）：从 1 个或多个 .java 文件推包名。
      * <p><b>#58 修正</b>：旧版用 {@link #aggregateToCommonPrefix} 把多文件的包名聚合成最长公共前缀，
      * 导致多文件跨子包时（如 auth.controller + auth.service）公共前缀退到 auth.* —— 用户看到比预期更广的结果。
      * 现在改为：每个文件独立取包名，按出现顺序去重，返回所有不同包名（逗号拼接传给过滤器）。</p>
@@ -690,7 +479,7 @@ public static final class AddToScanPackageAction extends AnAction {
         java.util.LinkedHashSet<String> packages = new java.util.LinkedHashSet<>();
         int readCount = 0;
         for (VirtualFile vf : files) {
-            if (vf == null || !isJavaOrKtFile(vf)) continue;
+            if (vf == null || !isJavaSourceFile(vf)) continue;
             String pkg = packageFromSourcePath(vf.getPath());
             if (pkg == null && readCount < DISK_READ_PACKAGE_LIMIT) {
                 readCount++;

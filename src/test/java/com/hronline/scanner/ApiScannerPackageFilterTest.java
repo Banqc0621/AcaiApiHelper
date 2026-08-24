@@ -3,6 +3,7 @@ package com.hronline.scanner;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -124,5 +125,25 @@ class ApiScannerPackageFilterTest {
         List<String> prefixes = ApiScannerService.parsePackageFilter("com.foo.");
         assertTrue(ApiScannerService.matchesPackagePrefix("com.foo.BarController", prefixes));
         assertFalse(ApiScannerService.matchesPackagePrefix("com.foobar.BarController", prefixes));
+    }
+
+    @Test
+    void sourcePath_scopeUsesDirectoryBoundary() {
+        assertTrue(ApiScannerService.matchesSourcePath(
+                "/project/nft-turbo-auth/src/main/java/com/acme/AuthController.java",
+                Set.of("/project/nft-turbo-auth")));
+        assertFalse(ApiScannerService.matchesSourcePath(
+                "/project/nft-turbo-authentication/src/main/java/com/acme/AuthController.java",
+                Set.of("/project/nft-turbo-auth")));
+    }
+
+    @Test
+    void sourcePath_fileSelectionIsExact() {
+        assertTrue(ApiScannerService.matchesSourcePath(
+                "/project/src/main/java/com/acme/AuthController.java",
+                Set.of("/project/src/main/java/com/acme/AuthController.java")));
+        assertFalse(ApiScannerService.matchesSourcePath(
+                "/project/src/main/java/com/acme/OrderController.java",
+                Set.of("/project/src/main/java/com/acme/AuthController.java")));
     }
 }
