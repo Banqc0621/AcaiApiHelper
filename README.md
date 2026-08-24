@@ -4,7 +4,7 @@
 
 RestAutoLab 面向 Java 服务开发与测试场景，在 IntelliJ IDEA 内完成 API 扫描、请求调试、自动化测试、AI 参数生成和文档导出。
 
-这是项目的开源首发版本。仓库历史中曾使用 `v1.0.2`–`v2.0.0` 作为内部开发迭代号；这些能力已整合进本版，历史修改、设计决策和验收证据统一归档在 [v1.0.0 发布归档](docs/RELEASE_ARCHIVE_v1.0.0.md)。
+这是项目的开源首发版本。
 
 文档入口：[更新日志](CHANGELOG.md) · [发布归档](docs/RELEASE_ARCHIVE_v1.0.0.md) · [构建命令](BUILD_COMMANDS.md) · [离线部署](OFFLINE_DEPLOYMENT.md)
 
@@ -64,7 +64,9 @@ Authorization: Bearer {{token}}
 ./gradlew buildPlugin
 ```
 
-产物位于 `build/distributions/RestAutoLab-1.0.0.zip`。更多命令见 [BUILD_COMMANDS.md](BUILD_COMMANDS.md)，无互联网环境见 [OFFLINE_DEPLOYMENT.md](OFFLINE_DEPLOYMENT.md)。
+产物位于 `build/distributions/RestAutoLab-1.0.0.zip`。更多命令见 [BUILD_COMMANDS.md](BUILD_COMMANDS.md)。
+
+无互联网环境见 [OFFLINE_DEPLOYMENT.md](OFFLINE_DEPLOYMENT.md)。
 
 ## 数据位置
 
