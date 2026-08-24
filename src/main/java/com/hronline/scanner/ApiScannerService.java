@@ -20,6 +20,7 @@ import com.intellij.psi.search.searches.AnnotatedElementsSearch;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -58,8 +59,14 @@ public final class ApiScannerService {
      */
     private List<ApiDefinition> lastFullScanApis = Collections.emptyList();
 
-    /** 扫描监听器列表 */
-    private final List<ScanListener> listeners = new ArrayList<>();
+    /**
+     * 扫描监听器列表
+     * <p>一伦反馈 #60：用 {@link CopyOnWriteArrayList} 而非普通 ArrayList——避免一次性监听器
+     * (oneShot) 在 {@code onScanComplete} 回调里 {@code removeListener(this)} 触发的
+     * {@link java.util.ConcurrentModificationException}，同时覆盖 addListener(EDT) 与
+     * 遍历(scan 后台线程)跨线程修改的场景。</p>
+     */
+    private final List<ScanListener> listeners = new CopyOnWriteArrayList<>();
 
     public ApiScannerService(Project project) {
         this.project = project;
