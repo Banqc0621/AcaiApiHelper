@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# RestAutoLab v2.0.0 → github 推送脚本
+# RestAutoLab → github 推送脚本
 # 沙箱里 github.com:443 不可达，本地一行跑这个即可
-# 当前：origin 已推到 codeup aliyun, 这里只补 github
+# 当前：origin (codeup aliyun) 已推到 d8b8d7b, 这里只补 github
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ echo "==> 当前 HEAD: $(git rev-parse --short HEAD) ($(git branch --show-curren
 echo "==> 当前 $TAG tag: $(git rev-parse --short $TAG)"
 echo ""
 
-echo "==> 1/4 推送 $BRANCH 到 $REMOTE (force 替换旧的 e90e29d)"
+echo "==> 1/4 推送 $BRANCH 到 $REMOTE (force-with-lease: 若 github 有人推送会拒绝覆盖)"
 git push "$REMOTE" "$BRANCH" --force-with-lease
 echo ""
 
@@ -32,3 +32,5 @@ echo ""
 echo "==> 全部完成 ✓"
 echo "    分支: $REMOTE/$BRANCH → $(git rev-parse --short HEAD)"
 echo "    tag:   $REMOTE/$TAG   → $(git rev-parse --short $TAG)"
+echo ""
+echo "==> 提示: 插件 ID 改为 com.banqc.restautolab, 已安装 com.ban.acai 的用户需卸载后重装"
