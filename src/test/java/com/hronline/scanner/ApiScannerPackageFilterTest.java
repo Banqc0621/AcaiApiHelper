@@ -1,5 +1,6 @@
 package com.hronline.scanner;
 
+import com.hronline.model.ApiDefinition;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -145,5 +146,45 @@ class ApiScannerPackageFilterTest {
         assertFalse(ApiScannerService.matchesSourcePath(
                 "/project/src/main/java/com/acme/OrderController.java",
                 Set.of("/project/src/main/java/com/acme/AuthController.java")));
+    }
+
+    @Test
+    void endpointDedup_sameControllerMethodAndPath_keepsOnlyOne() {
+        ApiDefinition first = api("HealthController", "GET", "/wehealth");
+        ApiDefinition inherited = api("HealthController", "get", "wehealth/");
+        ApiDefinition duplicateIndexEntry = api(" HealthController ", " GET ", "//wehealth");
+
+        List<ApiDefinition> result = ApiScannerService.deduplicateApis(
+                List.of(first, inherited, duplicateIndexEntry));
+
+        assertEquals(1, result.size());
+        assertEquals(first, result.get(0));
+    }
+
+    @Test
+    void endpointDedup_sameEndpointInDifferentControllers_keepsBoth() {
+        List<ApiDefinition> result = ApiScannerService.deduplicateApis(List.of(
+                api("HealthController", "GET", "/wehealth"),
+                api("AdminHealthController", "GET", "/wehealth")));
+
+        assertEquals(2, result.size());
+    }
+
+    @Test
+    void endpointDedup_sameControllerAcrossInheritedSourceFiles_keepsOnlyOne() {
+        ApiDefinition first = api("HealthController", "GET", "/wehealth");
+        first.setSourceFilePath("/project/a/HealthController.java");
+        ApiDefinition second = api("HealthController", "GET", "/wehealth");
+        second.setSourceFilePath("/project/b/HealthController.java");
+
+        assertEquals(1, ApiScannerService.deduplicateApis(List.of(first, second)).size());
+    }
+
+    private static ApiDefinition api(String controller, String method, String url) {
+        ApiDefinition api = new ApiDefinition();
+        api.setControllerName(controller);
+        api.setHttpMethod(method);
+        api.setUrl(url);
+        return api;
     }
 }

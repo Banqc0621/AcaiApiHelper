@@ -369,6 +369,7 @@ public static final class AddToScanPackageAction extends AnAction {
         List<ApiDefinition> narrowed = cached.stream()
                 .filter(api -> matchesSelectedSource(api.getSourceFilePath(), dirs, javaFiles))
                 .collect(java.util.stream.Collectors.toList());
+        narrowed = ApiScannerService.deduplicateApis(narrowed);
         LOG.info("仅显示此包接口：路径即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
                 + "（选中目录数 = " + dirs.size() + "，选中文件数 = " + javaFiles.size() + "）");
         RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);

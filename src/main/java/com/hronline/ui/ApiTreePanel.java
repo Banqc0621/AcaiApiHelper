@@ -737,7 +737,7 @@ public class ApiTreePanel extends JPanel {
         // race a full scan and expose partially updated data.
         List<ApiDefinition> snapshot = apis == null
                 ? Collections.emptyList()
-                : Collections.unmodifiableList(new ArrayList<>(apis));
+                : Collections.unmodifiableList(ApiScannerService.deduplicateApis(apis));
         if (!SwingUtilities.isEventDispatchThread()) {
             SwingUtilities.invokeLater(() -> updateTree(snapshot));
             return;

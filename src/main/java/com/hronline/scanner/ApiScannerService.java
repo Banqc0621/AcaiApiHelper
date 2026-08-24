@@ -401,10 +401,12 @@ public final class ApiScannerService {
                 }
             }
 
+            List<ApiDefinition> uniqueApis = deduplicateApis(apis);
             LOG.info("扫描总结: 候选控制器 " + allControllers.size()
                     + " 个(含重复/多注解), 去重后 " + uniqueControllers.size()
-                    + " 个, 产出接口 " + apis.size() + " 个");
-            return apis;
+                    + " 个, 原始接口 " + apis.size()
+                    + " 个, 端点去重后 " + uniqueApis.size() + " 个");
+            return uniqueApis;
         }).inSmartMode(project).executeSynchronously();
     }
 
@@ -433,10 +435,11 @@ public final class ApiScannerService {
         // 判断是否为 JAX-RS 风格
         boolean isJaxrs = isJaxrsClass(psiClass);
 
-        // 同一方法在 getAllMethods() 中可能多次返回（继承链/接口默认方法），
-        // 用 (控制器名 + 方法名 + 参数签名 + uniqueKey) 去重，避免重复；
-        // 但保留方法重载（同 URL 不同参数）和不同控制器下的同名继承方法。
-        Set<String> seenKeys = new HashSet<>();
+        // 对用户而言，同一 Controller 下相同 HTTP 方法 + URL 就是同一个接口。
+        // getAllMethods() 可能同时返回接口方法、父类方法和当前类实现；旧逻辑把 Java
+        // 方法名/参数签名也放进键里，会把同一端点重复显示多次。
+        Map<String, ApiDefinition> endpointByKey = new LinkedHashMap<>();
+        Set<String> declaredHereKeys = new HashSet<>();
 
         // 诊断计数：带HTTP映射注解的方法数、被占位符过滤的方法名
         int mappedMethodCount = 0;
@@ -468,18 +471,16 @@ public final class ApiScannerService {
                                 + "（来自 " + controllerName + "." + method.getName() + "）");
                         api.setUrl(cleaned);
                     }
-                    // 去重键：控制器 qfn + 方法名 + 参数签名 + uniqueKey(METHOD|URL)。
-                    // 加入 qfn 是为了防止 com.foo.UserController 与 com.bar.UserController
-                    // 同名方法 + 同 URL 时第二个被误丢弃（之前只按 simpleName 去重）
-                    StringBuilder paramSig = new StringBuilder();
-                    for (PsiParameter p : method.getParameterList().getParameters()) {
-                        paramSig.append(p.getType().getCanonicalText()).append(',');
-                    }
-                    String dedupKey = (psiClass.getQualifiedName() != null ? psiClass.getQualifiedName() : controllerName)
-                            + "#" + method.getName()
-                            + "(" + paramSig + ")|" + api.uniqueKey();
-                    if (seenKeys.add(dedupKey)) {
-                        apis.add(api);
+                    String endpointKey = canonicalEndpointKey(api);
+                    boolean declaredHere = psiClass.equals(method.getContainingClass());
+                    if (!endpointByKey.containsKey(endpointKey)) {
+                        endpointByKey.put(endpointKey, api);
+                        if (declaredHere) declaredHereKeys.add(endpointKey);
+                    } else if (declaredHere && !declaredHereKeys.contains(endpointKey)) {
+                        // 同一路由同时来自父接口和当前实现时，保留当前 Controller 的声明，
+                        // 这样跳转源码、参数和注释信息都指向用户实际实现。
+                        endpointByKey.put(endpointKey, api);
+                        declaredHereKeys.add(endpointKey);
                     }
                 }
             } catch (com.intellij.openapi.progress.ProcessCanceledException pce) {
@@ -491,6 +492,8 @@ public final class ApiScannerService {
                         + " - " + e.getMessage());
             }
         }
+
+        apis.addAll(endpointByKey.values());
 
         // 增强诊断：输出 qfn + 带映射注解的方法数 + 产出接口数 + 被过滤的方法
         String qfn = psiClass.getQualifiedName();
@@ -597,6 +600,41 @@ public final class ApiScannerService {
             if (path.equals(scope) || path.startsWith(scope + "/")) return true;
         }
         return false;
+    }
+
+    /**
+     * 按左侧树可见语义去重：同一 Controller 下相同 HTTP 方法 + 规范化 URL 只保留一条。
+     * <p>这是扫描出口的第二道防线，覆盖 PSI 偶发返回多个等价 light element、同名
+     * Controller 被不同发现入口解析等情况。不同 Controller 的相同路由仍分别保留。</p>
+     */
+    public static List<ApiDefinition> deduplicateApis(Collection<ApiDefinition> apis) {
+        if (apis == null || apis.isEmpty()) return Collections.emptyList();
+        Map<String, ApiDefinition> unique = new LinkedHashMap<>();
+        for (ApiDefinition api : apis) {
+            if (api == null) continue;
+            String controller = api.getControllerName() == null
+                    ? ""
+                    : api.getControllerName().trim();
+            // 左侧树按 Controller simple name 分组，因此这里也按同一展示身份去重。
+            // 不能加入 sourceFile：同一 Controller 的继承方法可能分别来自接口/父类文件，
+            // 加入来源文件会把本应合并的 GET /wehealth 再次拆成多条。
+            unique.putIfAbsent(controller + "\u0000" + canonicalEndpointKey(api), api);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    /** 为扫描去重生成稳定端点键；防御性处理历史数据中的空格、重复斜杠和尾斜杠。 */
+    private static String canonicalEndpointKey(ApiDefinition api) {
+        String method = api.getHttpMethod() == null
+                ? ""
+                : api.getHttpMethod().trim().toUpperCase(java.util.Locale.ROOT);
+        String path = api.getUrl() == null ? "" : api.getUrl().trim().replace('\\', '/');
+        if (!path.isEmpty() && !path.startsWith("/")) path = "/" + path;
+        while (path.contains("//")) path = path.replace("//", "/");
+        while (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return method + "|" + path;
     }
 
     /** 判断类是否为 JAX-RS 风格（有 @Path 注解但无 Spring 控制器注解） */
