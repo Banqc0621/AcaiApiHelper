@@ -1,6 +1,9 @@
-# RestAutoLab - IDEA插件 v2.0.0
+# RestAutoLab - IDEA 插件 v2.0.0
 
-企业级API调试与自动化测试插件，在IDEA内完成接口调试、AI参数生成、自动化测试。
+> 开发者：Banqc
+> 插件 ID：`com.banqc.restautolab` · 展示名：RestAutoLab · 当前版本：v2.0.0
+
+企业级 API 调试与自动化测试插件，在 IDEA 内完成接口调试、AI 参数生成、自动化测试。
 
 ## ✨ v2.0.0 UI 体验大升级版（2026-07-13）
 
@@ -185,8 +188,8 @@
 ## 📁 数据存储位置
 
 - 插件配置：`.idea/restautolab.xml`（项目级）
-- 测试报告：`.acai/reports/`
-- 导出文档：`.acai/api-doc.md`
+- 测试报告：`.restautolab/reports/`
+- 导出文档：`.restautolab/api-doc.md`
 
 ## 🎯 核心特性
 

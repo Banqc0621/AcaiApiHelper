@@ -2,7 +2,7 @@
 
 - 归档时间：2026-08-21
 - 来源：群聊中历次设计优化要求（一伦优化 #1–#52 + 早期 v1.0.x–v2.0.0 任务）
-- 任务基线：`RAL-UI-OPT-20260814`，分支 `feat/optim-round3-global-style`
+- 任务基线：`RAL-UI-OPT-20260814`，分支 `2022.3.x-2026.1.x`（原 `feat/optim-round3-global-style`，2026-08-24 按 IDEA 兼容范围重命名）
 - 配套文档：异常处理见 `exception-handling.md`
 
 ## 一、入口与信息架构（Round 1 / #1–#15）

@@ -28,7 +28,7 @@ public final class RestAutoLabConstants {
     // ═══════════════════════════════════════════════════════════
 
     /** 插件ID */
-    public static final String PLUGIN_ID = "com.ban.acai";
+    public static final String PLUGIN_ID = "com.banqc.restautolab";
 
     /** 插件名称 */
     public static final String PLUGIN_NAME = "RestAutoLab";

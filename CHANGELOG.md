@@ -1,5 +1,8 @@
 # RestAutoLab - 更新日志
 
+> 开发者：Banqc
+> 插件 ID：`com.banqc.restautolab` · 当前版本：v2.0.0
+
 ## [1.0.4] - 2026-07-09
 
 ### 📂 数据管理统一入口

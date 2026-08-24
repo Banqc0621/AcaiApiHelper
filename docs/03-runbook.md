@@ -2,7 +2,8 @@
 
 - Task ID: `RAL-UI-OPT-20260814`
 - 工作目录: `/Users/banqiancheng/work/ai_bussiness/RestAutoLab`
-- 唯一分支: `feat/optim-round3-global-style`
+- 唯一分支: `2022.3.x-2026.1.x`
+- 开发者：Banqc
 
 ## 状态检查
 
@@ -25,8 +26,8 @@ git diff --check
 ./gradlew buildPlugin
 
 # 产物验签
-shasum -a 256 build/distributions/restautolab-2.0.0.zip
-unzip -l build/distributions/restautolab-2.0.0.zip
+shasum -a 256 build/distributions/RestAutoLab-2.0.0.zip
+unzip -l build/distributions/RestAutoLab-2.0.0.zip
 ```
 
 ## 人工验收清单

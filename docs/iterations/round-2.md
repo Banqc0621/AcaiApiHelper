@@ -1,5 +1,7 @@
 # Round 2 — 右侧请求编辑与执行
 
+- Task ID: `RAL-UI-OPT-20260814`
+- 开发者：Banqc
 - Lens: UX、操作聚焦与错误状态
 - Baseline: 请求和响应共享 Tab，工具栏入口过多。
 - Changes: 请求/响应分割；AI 配置移至 Settings；Cookie 移至右键；节点 B 增加环境/前置配置上层、核心请求下层、安全脚本、变量覆盖和真实可中断的单请求停止。

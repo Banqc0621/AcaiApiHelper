@@ -1,7 +1,10 @@
 # 构建与运行命令汇总
 
-> 本文档汇总了 RestAutoLab 插件的所有常用构建、运行、发布命令。
-> 项目基于 Gradle (Kotlin DSL) + IntelliJ Platform Plugin Gradle 插件构建。
+> 开发者：Banqc
+> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前版本：v2.0.0
+
+本文档汇总了 RestAutoLab 插件的所有常用构建、运行、发布命令。
+项目基于 Gradle (Kotlin DSL) + IntelliJ Platform Plugin Gradle 插件构建。
 
 ## 📋 环境要求
 
@@ -33,7 +36,7 @@
 产物位于：
 
 ```
-build/distributions/restautolab-2.0.0.zip
+build/distributions/RestAutoLab-2.0.0.zip
 ```
 
 这个 zip 可以直接通过 IDEA 的 `Settings → Plugins → ⚙️ → Install Plugin from Disk...` 安装。
@@ -113,7 +116,7 @@ build/distributions/restautolab-2.0.0.zip
 ### 2. 运行指定测试类
 
 ```bash
-./gradlew test --tests "com.ban.acai.SomeTest"
+./gradlew test --tests "com.hronline.SomeTest"
 ```
 
 ### 3. 运行并输出详细日志
@@ -160,7 +163,7 @@ build/distributions/restautolab-2.0.0.zip
 ./gradlew buildPlugin
 
 # 2. 查看产物
-ls -lah build/distributions/restautolab-2.0.0.zip
+ls -lah build/distributions/RestAutoLab-2.0.0.zip
 
 # 3. 查看待提交内容
 git status

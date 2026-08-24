@@ -2,8 +2,9 @@
 
 - Task ID: `RAL-UI-OPT-20260814`
 - Revision: 1
+- 开发者：Banqc
 - 当前状态: `artifact_verified`（节点快照，不代表最终方案全部完成）
-- 分支: `feat/optim-round3-global-style`
+- 分支: `2022.3.x-2026.1.x`
 
 ## 已交付并验证
 
@@ -18,7 +19,7 @@
 
 ## 产物
 
-- 路径: `build/distributions/restautolab-2.0.0.zip`
+- 路径: `build/distributions/RestAutoLab-2.0.0.zip`
 - 大小: 765104 bytes
 - SHA-256: `b8e5eaf293ee66754a0f95a22ae1a74719eb676b4a3de5dd599dac07cb689838`
 - 内容: 主插件 JAR、searchable options、Gson、Error Prone annotations；未包含依赖缓存或密钥。
@@ -34,7 +35,3 @@
 ## 尚未完成
 
 - 目标 IDE 人工主流程、截图和多尺寸视觉验收（本次沙箱运行时 macOS 桌面处于锁屏，属于外部可视化前提）。
-
-## 飞书归档
-
-`飞书归档待授权/待最终方案完成`。当前群聊 bot 无历史读取权限，本节点不声称 Wiki 或 Base 已归档成功。

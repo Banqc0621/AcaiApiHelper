@@ -68,7 +68,7 @@ dependencies {
 // ============================================================
 intellijPlatform {
     pluginConfiguration {
-        id = "com.ban.acai"
+        id = "com.banqc.restautolab"
         name = "RestAutoLab"
         version = "2.0.0"
 

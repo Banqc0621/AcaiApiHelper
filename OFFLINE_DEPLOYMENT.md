@@ -1,8 +1,11 @@
 # RestAutoLab 离线环境部署操作说明
 
-> 本文档指导将 RestAutoLab（com.ban.acai，IntelliJ IDEA 插件）迁移到**无互联网**的离线环境正常运行。
-> 适用对象：构建/运维人员。
-> 项目构建方式：Gradle 9.5.0 Wrapper + IntelliJ Platform Gradle Plugin 2.17.0，默认构建基线为 IntelliJ IDEA 2023.3.6；最低兼容检查使用 2022.3.3。
+> 开发者：Banqc
+> 插件：RestAutoLab (`com.banqc.restautolab`) · 当前版本：v2.0.0
+
+本文档指导将 RestAutoLab（`com.banqc.restautolab`，IntelliJ IDEA 插件）迁移到**无互联网**的离线环境正常运行。
+适用对象：构建/运维人员。
+项目构建方式：Gradle 9.5.0 Wrapper + IntelliJ Platform Gradle Plugin 2.17.0，默认构建基线为 IntelliJ IDEA 2023.3.6；最低兼容检查使用 2022.3.3。
 
 ---
 
@@ -48,7 +51,7 @@ cd /path/to/RestAutoLab
 构建成功后，产物位于：
 
 ```
-build/distributions/acai-<版本号>.zip      # 例如 acai-1.0.0.zip
+build/distributions/RestAutoLab-<版本号>.zip      # 例如 RestAutoLab-1.0.0.zip
 ```
 
 > 校验：zip 内应包含 `lib/*.jar` 与 `META-INF/plugin.xml`，`plugin.xml` 中 `idea-version since-build="223" until-build="261.*"`。
@@ -75,7 +78,7 @@ IDEA 2022.3+ 需要 JDK 17+ 运行时。下载离线安装包：
 
 ```
 物料清单：
-├── acai-<版本号>.zip              # A.1 产出的插件包
+├── RestAutoLab-<版本号>.zip              # A.1 产出的插件包
 ├── ideaIU-2023.3.6.dmg           # A.2 IDE 安装包（按平台替换后缀）
 └── Temurin17.jdk.pkg             # A.3 JDK 安装包（离线机已装有则省略）
 ```
@@ -94,7 +97,7 @@ IDEA 2022.3+ 需要 JDK 17+ 运行时。下载离线安装包：
 1. 启动 IDEA → 菜单 `File → Settings`（macOS 为 `IntelliJ IDEA → Settings`）。
 2. 左侧选 `Plugins`。
 3. 点击右侧齿轮图标 ⚙️ → `Install Plugin from Disk...`。
-4. 选择传输进来的 `acai-<版本号>.zip`。
+4. 选择传输进来的 `RestAutoLab-<版本号>.zip`。
 5. 点击 OK → `Restart IDE` 重启。
 
 ### A.7 离线机：验证运行
@@ -125,7 +128,7 @@ IDEA 2022.3+ 需要 JDK 17+ 运行时。下载离线安装包：
 > | `gradle-caches-offline.zip` | 3.6G | Gradle 缓存（caches/9.5.0 + modules-2 + wrapper/dists，已排除 `*.lock`） |
 > | `gradle-caches-offline.zip.part-aa~ae` | 732M×5 | 上者的 5 等分分片（针对 FAT32 U 盘） |
 > | `RestAutoLab-src.zip` | 2.2M | 项目源码（已排除 build/.gradle/.intellijPlatform/.idea/.DS_Store） |
-> | `api_automation-1.0.0.zip` | 717K | 顺带产出的插件包（可直接用于方案A安装） |
+> | `RestAutoLab-1.0.0.zip` | 717K | 顺带产出的插件包（可直接用于方案A安装） |
 >
 > 已用 `./gradlew clean buildPlugin --offline` 验证缓存完整可离线构建。
 > **离线机为 Windows**，所有命令已按 Windows 视角给出。
@@ -163,7 +166,7 @@ cp /path/to/RestAutoLab/build/distributions/*.zip ~/offline-bundle/
 ~/offline-bundle/
 ├── gradle-caches-offline.zip   # 3.6G（3837914036 字节）
 ├── RestAutoLab-src.zip        # 2.2M
-└── api_automation-1.0.0.zip    # 717K（插件产物，文件名来自 rootProject.name = "api_automation"）
+└── RestAutoLab-1.0.0.zip    # 717K（插件产物，文件名来自 build.gradle.kts 的 archiveBaseName.set("RestAutoLab")）
 ```
 
 > 另需单独下载 JDK 17 离线安装包（如 `Temurin17.msi`）一并传输。
@@ -198,7 +201,7 @@ ls -lh gradle-caches-offline.zip.part-*
 ├── gradle-caches-offline.zip.part-ad   # 732M
 ├── gradle-caches-offline.zip.part-ae   # 732M
 ├── RestAutoLab-src.zip                # 2.2M
-└── api_automation-1.0.0.zip            # 717K
+└── RestAutoLab-1.0.0.zip            # 717K
 ```
 
 离线机（Windows）合并 —— 使用 `copy /b` 二进制拼接（**顺序必须一致**：aa → ab → ac → ad → ae）：
@@ -260,7 +263,7 @@ gradlew.bat clean buildPlugin --offline
 
 ### B.4 离线机：安装与验证
 
-产物同样在 `build\distributions\api_automation-1.0.0.zip`，按 **A.6 / A.7** 安装验证即可。
+产物同样在 `build\distributions\RestAutoLab-1.0.0.zip`，按 **A.6 / A.7** 安装验证即可。
 
 ---
 
