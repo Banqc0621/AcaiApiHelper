@@ -377,6 +377,39 @@ public static final class AddToScanPackageAction extends AnAction {
 
         ApiScannerService scanner = ApiScannerService.getInstance(project);
 
+        // 一伦反馈 #59：右键源码根目录（src/main/java 等）识别——
+        // PSI 把源码根本身当作"非包"返回空、路径标记也没内容、缓存兜底空时整链路失败，
+        // 用户只能看到「无文件"清空树"的报错。源码根是有意义的：相当于"展示该根下所有包"，
+        // 等价于点击「全量」按钮。在这里短路：清空过滤 + 触发全量扫描，避免给用户
+        // 一个无意义的错误弹窗（用户原话：「没有就是没有」「不要降级显示」——源码根不是
+        // 「没有」，而是「不是包，是根」）。
+        if (!javaFiles.isEmpty()) {
+            // 单文件右键：不做源码根判断
+        } else if (dirs.size() == 1 && isSourceRoot(dirs.get(0), project)) {
+            LOG.info("仅显示此包接口：右键目录是源码根 " + dirs.get(0).getPath()
+                    + " → 清空过滤 + 触发全量扫描（等价于点击「全量」按钮）");
+            RestAutoLabSettingsState.getInstance(project).setScanPackageFilter("");
+            scanner.scanProjectApisAsync();
+            ToolWindow tw = ToolWindowManager.getInstance(project)
+                    .getToolWindow(RestAutoLabConstants.TOOLWINDOW_ID);
+            if (tw != null) tw.activate(null);
+            try {
+                NotificationGroupManager.getInstance()
+                        .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                        .createNotification(
+                                "仅显示此包接口",
+                                "右键目录是源码根（" + dirs.get(0).getName() + "），已切换到全量视图并重新扫描。\n"
+                                        + "如需收窄到具体包，请右键 src/main/java 下具体的包目录。",
+                                NotificationType.INFORMATION)
+                        .notify(project);
+            } catch (Exception ex) {
+                Messages.showInfoMessage(project,
+                        "右键目录是源码根，已切换到全量视图并重新扫描。\n如需收窄到具体包，请右键具体的包目录。",
+                        "仅显示此包接口");
+            }
+            return;
+        }
+
         List<String> packageNames = java.util.Collections.emptyList();
         try {
             // 一伦反馈 #56：移除所有「宽松匹配」降级（磁盘遍历/向上寻包/模块描述符猜 basename），
@@ -826,6 +859,33 @@ public static final class AddToScanPackageAction extends AnAction {
         int i = 0;
         while (i < n && a[i].equals(b[i])) i++;
         return String.join(".", java.util.Arrays.copyOf(a, i));
+    }
+
+    /**
+     * 判断目录是否为源码根（src/main/java、src/test/kotlin 等标准布局或自定义源根）。
+     * <p>一伦反馈 #59：用户右键 src/main/java 等源码根目录时，PSI / 路径标记 / 缓存兜底
+     * 都会返回空，最终落到「无文件清空树」的报错分支。源码根本身不是 Java 包，但语义上
+     * 等价于"展示该根下所有包"——和点击「全量」按钮等价。提前识别可避免给用户无意义的报错。</p>
+     * <p>判定：用 IntelliJ 的 ProjectFileIndex 取目录所属源根，比较是否为目录自身；多模块
+     * 项目遍历所有模块的源根列表兜底（覆盖自定义源根名）。</p>
+     */
+    static boolean isSourceRoot(@NotNull VirtualFile vf, @NotNull Project project) {
+        if (!vf.isDirectory()) return false;
+        // 遍历项目所有模块的源根列表，比对目录路径——最直接稳定，覆盖自定义源根名
+        try {
+            com.intellij.openapi.module.Module[] modules =
+                    com.intellij.openapi.module.ModuleManager.getInstance(project).getModules();
+            for (com.intellij.openapi.module.Module module : modules) {
+                com.intellij.openapi.roots.ModuleRootManager mrm =
+                        com.intellij.openapi.roots.ModuleRootManager.getInstance(module);
+                for (VirtualFile root : mrm.getSourceRoots()) {
+                    if (root != null && root.equals(vf)) return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // 模块遍历失败不阻断——保守返回 false，让后续兜底链（PSI/路径标记）继续尝试
+        }
+        return false;
     }
 
     /** 一伦反馈 #56：「向上寻包 / 模块描述符 / 目录名宽松匹配」等降级兜底全部删除——
