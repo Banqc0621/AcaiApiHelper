@@ -118,21 +118,39 @@ public class EnvAndDataManageDialog extends DialogWrapper {
     @Override
     @NotNull
     protected Action[] createActions() {
-        return new Action[]{getOKAction()};
+        // #63：OK 左侧增加「应用」按钮——点击只保存不退出，OK 保存并退出。
+        return new Action[]{new ApplyAction(), getOKAction()};
+    }
+
+    /** 把环境编辑 + 外部注册的 onCommit 回调（AI 配置等）统一提交，不关闭对话框。 */
+    private void commitAll() {
+        try {
+            envDialog.applyChanges();
+        } catch (Exception ex) {
+            // 失败不阻断
+        }
+        for (Runnable r : onCommit) {
+            try { r.run(); } catch (Exception ex) { /* 忽略单个失败 */ }
+        }
+    }
+
+    /** #63：「应用」按钮动作——保存所有改动但不退出对话框。 */
+    private final class ApplyAction extends DialogWrapperAction {
+        private ApplyAction() {
+            super("应用");
+        }
+
+        @Override
+        protected void doAction(java.awt.event.ActionEvent e) {
+            commitAll();
+            // 「应用」只保存不退出：对话框保持打开，用户可继续编辑。
+            // 不调 super.doAction / close —— 与 OK 的区别即在于此。
+        }
     }
 
     @Override
     protected void doOKAction() {
-        try {
-            envDialog.applyChanges();
-        } catch (Exception ex) {
-            // 失败不阻断关闭
-        }
-        // 一伦优化 R4：执行外部注册的 onCommit 回调
-        // （前置脚本&变量覆盖 Tab 的 model 已是实时持久化，但保留回调以兼容未来的"显式保存"型 Tab）
-        for (Runnable r : onCommit) {
-            try { r.run(); } catch (Exception ex) { /* 忽略单个失败 */ }
-        }
+        commitAll();
         super.doOKAction();
     }
 

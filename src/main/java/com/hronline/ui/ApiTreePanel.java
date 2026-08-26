@@ -163,13 +163,18 @@ public class ApiTreePanel extends JPanel {
         tree.setDragEnabled(true);
         tree.setTransferHandler(new StarredDragTransferHandler());
 
-        // 双击事件：跳转到API源码（收藏模式下改为调试此接口）
+        // 双击事件：跳转到API源码（收藏模式下双击接口 → 在全量列表中定位该接口）
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
                     if (FILTER_STARRED.equals(currentFilter)) {
-                        starredDebugApi();
+                        StarredApiNode n = getSelectedStarredApiNode();
+                        if (n != null) {
+                            locateStarredApi(n.api);
+                        } else {
+                            starredDebugApi();
+                        }
                     } else {
                         navigateToSource();
                     }
@@ -559,6 +564,18 @@ public class ApiTreePanel extends JPanel {
             applyFilters();
         });
         btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
+        // 一伦 #62：双击「收藏」按钮刷新收藏接口列表（重新拉取收藏文件夹与接口状态）。
+        // 单击已由 ActionListener 负责切换视图；这里只处理双击，且仅在已处于收藏视图时生效。
+        btnStarred.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2 && FILTER_STARRED.equals(currentFilter)) {
+                    refreshStarredApiIndex();
+                    buildStarredTree();
+                    statsLabel.setText("已刷新收藏列表");
+                }
+            }
+        });
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
             // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
@@ -1442,6 +1459,25 @@ public class ApiTreePanel extends JPanel {
     private void starredDebugApi() {
         StarredApiNode n = getSelectedStarredApiNode();
         if (n != null && onApiSelected != null) onApiSelected.accept(n.api);
+    }
+
+    /**
+     * 一伦 #62：收藏列表双击定位接口 —— 切回「全量」视图，选中并滚动到该接口节点，
+     * 同时在右侧调试面板加载该接口。
+     * <p>时序说明：{@link #applyFilters()} → {@link #buildTree(List)} 内部用
+     * {@code invokeLater} 重建树；本方法紧随其后入队的 {@code invokeLater} 必然在树重建
+     * 完成之后执行，因此 {@link #selectApi(ApiDefinition)} 一定能在新树上命中节点。</p>
+     */
+    private void locateStarredApi(ApiDefinition api) {
+        if (api == null) return;
+        // 调试面板同步加载该接口（与收藏视图原双击语义保持一致）
+        if (onApiSelected != null) onApiSelected.accept(api);
+        // 切回全量视图并刷新树
+        currentFilter = FILTER_ALL;
+        btnAll.setSelected(true);
+        applyFilters();
+        // 树重建完成后选中并滚动到目标节点
+        SwingUtilities.invokeLater(() -> selectApi(api));
     }
 
     private void starredBatchAiGen() {

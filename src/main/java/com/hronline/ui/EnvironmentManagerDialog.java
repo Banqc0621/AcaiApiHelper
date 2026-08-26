@@ -49,8 +49,6 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     private boolean refreshingEnvList = false;
     /** 一伦优化 v23：监听器装填（loadEnvironment / 初始化）期间为 true，避免回写风暴 */
     private boolean loadingFields = false;
-    /** 一伦优化 v23：监听器只装一次（createCenterPanel 会被 init 多次调用） */
-    private boolean listenersInstalled = false;
 
     /** 一伦优化 v23：双向联动通道 —— 任一字段被改、envList 选中项变化、激活项变化时触发。
      *  主面板安装本回调即可实时刷新右侧 envCombo / baseUrlField。 */
@@ -326,11 +324,12 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
         // 一伦优化 v23：装实时联动监听器（3 个文本字段 + 2 个表 model），
         // 任一字段改动 → 立刻写回 settings + 通知主面板刷新右侧。
-        // 监听器只装一次（createCenterPanel 可能被 init 多次调用）。
-        if (!listenersInstalled) {
-            installLiveSyncListeners();
-            listenersInstalled = true;
-        }
+        // #63 修复：createCenterPanel 会被调用两次（本对话框 init() 一次，
+        // EnvAndDataManageDialog 嵌入时再一次），每次都会重建全新组件实例。
+        // 旧版用 listenersInstalled 守卫只装一次 —— 监听器装在了被丢弃的第一套组件上，
+        // 实际显示的第二套组件没有任何监听器，编辑不实时回写、主面板不回显（"保存和回显有问题"的根因之一）。
+        // 现在每次调用都给当次新建的组件安装监听器（组件是全新的，不存在重复注册）。
+        installLiveSyncListeners();
 
         return panel;
     }
@@ -501,21 +500,23 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         fireChange();  // 一伦优化 v23：通知主面板
     }
 
-    @Override
-    protected void doOKAction() {
+    /**
+     * 持久化当前环境编辑，但【不关闭】对话框。
+     * <p>#63 重构：把 doOKAction 里除「关闭」以外的全部保存逻辑收敛到这里，
+     * 供「应用」按钮与 OK 按钮复用——「应用」只调本方法（不退出），OK 调本方法后再关闭。
+     * 旧版 applyChanges() 直接转发 doOKAction()，而 doOKAction 末尾会调
+     * {@code super.doOKAction()} 关闭对话框——被「环境 & 数据」合并弹窗当内嵌面板调用时
+     * 会触发一次多余的 close，也无法支持「应用不退出」。</p>
+     */
+    public void applyChanges() {
         saveCurrentEdits();
-        // 一伦优化 v22：OK 关闭前，把「当前 envList 选中项」强制标记为激活（不再依赖
-        // 之前的 isActive()，因为普通编辑后用户根本不会再点"激活"按钮）。
-        // 这样 active 标记会随 envList 选中项实时对齐右侧 envCombo。
+        // 把「当前 envList 选中项」强制标记为激活（普通编辑后用户不会再点"激活"按钮）
         Environment sel = envList != null ? envList.getSelectedValue() : null;
         if (sel != null) {
             for (Environment e : environments) e.setActive(e == sel);
         }
-        // 一伦优化 v22：再 refreshEnvList 一次，确保 JList 重画「✓ 激活」勾选（DefaultListModel
-        // 不会因为 Environment.setActive 字段变化自动触发 cell repaint，必须 clear+addElement 强制重画）。
         refreshEnvList();
         settings.saveEnvironments(environments);
-        // Persist active environment
         for (Environment e : environments) {
             if (e.isActive()) {
                 settings.setActiveEnvironment(e.getName());
@@ -523,15 +524,12 @@ public class EnvironmentManagerDialog extends DialogWrapper {
                 break;
             }
         }
-        super.doOKAction();
+        fireChange();
     }
 
-    /**
-     * 一伦优化 #3：把环境变更持久化逻辑独立为可复用方法，
-     * 让 EnvAndDataManageDialog（合并对话框）能在自身 OK 时调用，
-     * 不依赖本对话框的 OK 按钮。保持与 doOKAction 一致：保存当前编辑 + 写回 settings。
-     */
-    public void applyChanges() {
-        doOKAction();
+    @Override
+    protected void doOKAction() {
+        applyChanges();
+        super.doOKAction();
     }
 }

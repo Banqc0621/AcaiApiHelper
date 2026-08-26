@@ -131,40 +131,40 @@
             <add-to-group group-id="ProjectViewPopupMenu" anchor="first"/>
         </group>
 
-        <!-- 动作: 扫描项目API -->
+        <!-- 动作: 扫描此包接口（项目视图右键包目录/文件 → 收窄左侧接口列表；排菜单第 1 位） -->
+        <action id="RestAutoLab.AddToScanPackage"
+                class="com.hronline.actions.RestAutoLabActions$AddToScanPackageAction"
+                text="扫描此包接口"
+                description="仅扫描并显示此包/文件下的接口（点击左侧「全量」按钮恢复）"
+                icon="AllIcons.Actions.GroupByPackage">
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="first"/>
+        </action>
+
+        <!-- 动作: 扫描项目API（排菜单第 2 位） -->
         <action id="RestAutoLab.ScanApis"
                 class="com.hronline.actions.RestAutoLabActions$ScanApisAction"
                 text="扫描项目API"
                 description="扫描当前项目中的所有REST/Spring MVC接口"
                 icon="AllIcons.Actions.Refresh">
-            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="first"/>
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.AddToScanPackage"/>
         </action>
 
-        <!-- 动作: 调试当前接口 -->
+        <!-- 动作: 运行接口测试（只对已扫描到的接口批量测试；排菜单第 3 位） -->
+        <action id="RestAutoLab.RunAllTests"
+                class="com.hronline.actions.RestAutoLabActions$RunAllTestsAction"
+                text="运行接口测试"
+                description="对已扫描到的接口执行批量自动化测试"
+                icon="AllIcons.RunConfigurations.Junit">
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.ScanApis"/>
+        </action>
+
+        <!-- 动作: 调试当前接口（排菜单第 4 位） -->
         <action id="RestAutoLab.DebugApi"
                 class="com.hronline.actions.RestAutoLabActions$DebugApiAction"
                 text="调试当前接口"
                 description="在RestAutoLab面板中打开当前接口的调试界面"
                 icon="AllIcons.Actions.Execute">
-            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.ScanApis"/>
-        </action>
-
-        <!-- 动作: 运行全部API测试 -->
-        <action id="RestAutoLab.RunAllTests"
-                class="com.hronline.actions.RestAutoLabActions$RunAllTestsAction"
-                text="运行全部接口测试"
-                description="执行所有已配置的接口自动化测试"
-                icon="AllIcons.RunConfigurations.Junit">
-            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.DebugApi"/>
-        </action>
-
-        <!-- 动作: 仅显示此包接口（项目视图右键包目录 → 收窄左侧全量接口列表） -->
-        <action id="RestAutoLab.AddToScanPackage"
-                class="com.hronline.actions.RestAutoLabActions$AddToScanPackageAction"
-                text="仅显示此包接口"
-                description="左侧全量接口列表仅显示此包下的接口（点击左侧「全量」按钮恢复）"
-                icon="AllIcons.Actions.GroupByPackage">
-            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="last"/>
+            <add-to-group group-id="RestAutoLab.ActionGroup" anchor="after" relative-to-action="RestAutoLab.RunAllTests"/>
         </action>
     </actions>
 </idea-plugin>

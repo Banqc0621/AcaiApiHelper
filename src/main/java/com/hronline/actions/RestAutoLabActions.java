@@ -242,7 +242,9 @@ public static final class DebugApiAction extends AnAction {
 }
 
 /**
- * 运行全部接口测试
+ * 运行接口测试（一伦优化 #62 改名）：只对本次「已扫描到」的接口做批量测试。
+ * <p>测试范围 = 左侧树当前缓存的扫描结果（{@link ApiScannerService#getCachedApis()}）：
+ * 全量扫描后测全部；右键「扫描此包接口」收窄后只测该范围内的接口。</p>
  */
 public static final class RunAllTestsAction extends AnAction {
     @Override
@@ -252,21 +254,22 @@ public static final class RunAllTestsAction extends AnAction {
         ApiScannerService scanner = ApiScannerService.getInstance(project);
         List<ApiDefinition> apis = scanner.getCachedApis();
         if (apis.isEmpty()) {
-            Messages.showWarningDialog(project, "暂无已扫描的API，请先执行「扫描项目API」", "提示");
+            Messages.showWarningDialog(project, "暂无已扫描的API，请先执行「扫描项目API」或右键「扫描此包接口」", "提示");
             return;
         }
+        final int count = apis.size();
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             HttpExecutorService httpService = HttpExecutorService.getInstance(project);
             TestProfile profile = new TestProfile();
-            profile.setName("手动全量测试");
+            profile.setName("运行接口测试");
             profile.setBaseUrl(settings.getBaseUrl());
             TestReport report = httpService.executeBatchTest(apis, profile);
-            ApplicationManager.getApplication().invokeLater(() -> showReport(project, report));
+            ApplicationManager.getApplication().invokeLater(() -> showReport(project, report, count));
         });
     }
 
-    private void showReport(Project project, TestReport report) {
+    private void showReport(Project project, TestReport report, int totalCount) {
         String summary = report.generateSummary();
         if (report.isAllPassed()) {
             Messages.showInfoMessage(project, summary, "RestAutoLab 测试报告 - 全部通过");
@@ -277,7 +280,7 @@ public static final class RunAllTestsAction extends AnAction {
             NotificationType type = report.isAllPassed() ? NotificationType.INFORMATION : NotificationType.WARNING;
             NotificationGroupManager.getInstance().getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
                     .createNotification(
-                            "测试完成: " + report.getPassedCount() + "/" + report.getResults().size() + " 通过",
+                            "测试完成: " + report.getPassedCount() + "/" + totalCount + " 通过",
                             String.format("通过率: %.1f%% | 总耗时: %dms", report.getPassRate(), report.getTotalDuration()),
                             type
                     ).notify(project);
@@ -297,7 +300,7 @@ public static final class RunAllTestsAction extends AnAction {
 }
 
 /**
- * 仅显示此包接口（项目视图右键包 → 收窄左侧全量接口列表）
+ * 扫描此包接口（项目视图右键包 → 收窄左侧全量接口列表）
  *
  * <p>将右键包的完整包名写入「扫描包过滤」配置（<b>替换语义</b>：只保留当前右键的包，
  * 与「仅显示当前包的接口」的预期一致），随后：</p>
@@ -349,10 +352,10 @@ public static final class AddToScanPackageAction extends AnAction {
                 }
             }
         }
-        LOG.info("仅显示此包接口：触发，目录数 = " + dirs.size() + "，文件数 = " + javaFiles.size());
+        LOG.info("扫描此包接口：触发，目录数 = " + dirs.size() + "，文件数 = " + javaFiles.size());
         if (dirs.isEmpty() && javaFiles.isEmpty()) {
             Messages.showWarningDialog(project,
-                    "请先在项目视图中右键一个包目录或 .java 源文件。", "仅显示此包接口");
+                    "请先在项目视图中右键一个包目录或 .java 源文件。", "扫描此包接口");
             return;
         }
 
@@ -370,7 +373,7 @@ public static final class AddToScanPackageAction extends AnAction {
                 .filter(api -> matchesSelectedSource(api.getSourceFilePath(), dirs, javaFiles))
                 .collect(java.util.stream.Collectors.toList());
         narrowed = ApiScannerService.deduplicateApis(narrowed);
-        LOG.info("仅显示此包接口：路径即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
+        LOG.info("扫描此包接口：路径即时过滤 缓存 " + cached.size() + " -> " + narrowed.size()
                 + "（选中目录数 = " + dirs.size() + "，选中文件数 = " + javaFiles.size() + "）");
         RestAutoLabToolWindowHolder holder = RestAutoLabToolWindowHolder.getInstance(project);
         ApiTreePanel treePanel = holder.getTreePanel();
@@ -391,7 +394,7 @@ public static final class AddToScanPackageAction extends AnAction {
             try {
                 NotificationGroupManager.getInstance()
                         .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                        .createNotification("仅显示此包接口", message,
+                        .createNotification("扫描此包接口", message,
                                 hitCount == 0 ? NotificationType.WARNING : NotificationType.INFORMATION)
                         .notify(project);
             } catch (Exception notificationFailure) {
@@ -401,7 +404,7 @@ public static final class AddToScanPackageAction extends AnAction {
         try {
             NotificationGroupManager.getInstance()
                     .getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
-                    .createNotification("仅显示此包接口",
+                    .createNotification("扫描此包接口",
                             selectionDesc + "，正在扫描。点击左侧「全量」按钮可恢复全量列表。",
                             NotificationType.INFORMATION)
                     .notify(project);

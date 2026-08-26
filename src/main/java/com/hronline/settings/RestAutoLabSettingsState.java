@@ -59,8 +59,8 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public String aiUserPromptTemplate = RestAutoLabConstants.AI_DEFAULT_USER_PROMPT_TEMPLATE;
         /** 环境配置JSON */
         public String environmentsJson = "";
-        /** 当前激活环境名 */
-        public String activeEnvironment = "开发环境";
+        /** 当前激活环境名（#63：与环境实际名称 dev 对齐，旧默认值「开发环境」永不匹配） */
+        public String activeEnvironment = "dev";
 
         // ========== v3 新增持久化字段 ==========
         /** 收藏的API唯一标识集合 (uniqueKey) —— 兼容旧数据，新逻辑以 starredFoldersJson 为准 */
@@ -418,7 +418,10 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
      *   <li>从持久化 json 解析，缺哪个默认环境就补哪个（保留用户已建的，方便回退）</li>
      *   <li>最终只保留 dev / test / prod 三个，多余的丢弃</li>
      *   <li>顺序固定：dev → test → prod</li>
-     *   <li>没有任何 active → 把 dev 标激活</li>
+     *   <li><b>归一化激活状态（#63 回显修复）</b>：active 勾选标记与 {@code activeEnvironment}
+     *       名称必须收敛为同一个环境。优先以 {@code activeEnvironment} 名称匹配；匹配不到
+     *       再信任 JSON 里的 active 勾选；都没有才回退激活 dev。最终把胜出的名称写回
+     *       {@code activeEnvironment}，保证「✓ 勾选」「下拉框选中」「实际生效」三者一致。</li>
      *   <li>回写 json 持久化</li>
      * </ol>
      */
@@ -443,11 +446,6 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             envs.add(Environment.dev());
             envs.add(Environment.test());
             envs.add(Environment.production());
-            myState.environmentsJson = gson.toJson(envs);
-            // 4) 默认激活 dev
-            envs.get(0).setActive(true);
-            myState.environmentsJson = gson.toJson(envs);
-            return envs;
         }
 
         // 3) 过滤：只保留 dev / test / prod（按固定顺序），从 envs 中取出（保留持久化里的 baseUrl / 变量 / 头）
@@ -467,13 +465,26 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             result.add(e);
         }
 
-        // 4) 默认激活 dev
-        boolean hasActive = result.stream().anyMatch(Environment::isActive);
-        if (!hasActive) {
+        // 4) 归一化激活状态（#63）：activeEnvironment 名称 > JSON active 勾选 > dev。
+        //    旧实现的缺陷：active 勾选与 activeEnvironment 名称各自为政，且默认值「开发环境」
+        //    永远匹配不上任何环境名，导致「✓ 勾的是 test、下拉/实际生效却是 dev」的回显错乱。
+        String activeName = myState.activeEnvironment;
+        Environment chosen = null;
+        if (activeName != null && !activeName.isBlank()) {
             for (Environment e : result) {
-                if ("dev".equals(e.getName())) { e.setActive(true); break; }
+                if (activeName.equals(e.getName())) { chosen = e; break; }
             }
         }
+        if (chosen == null) {
+            for (Environment e : result) {
+                if (e.isActive()) { chosen = e; break; }
+            }
+        }
+        if (chosen == null) chosen = result.get(0); // 固定顺序，result.get(0) == dev
+        for (Environment e : result) e.setActive(e == chosen);
+        // 把胜出者名称写回，消除「开发环境」这类永不匹配的残留值
+        myState.activeEnvironment = chosen.getName();
+
         myState.environmentsJson = gson.toJson(result);
         return result;
     }
@@ -483,11 +494,12 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         myState.environmentsJson = gson.toJson(envs);
     }
 
-    /** 获取当前激活环境 */
+    /** 获取当前激活环境（#63：按名称匹配，防 null 名） */
     public Environment getActiveEnvironmentObj() {
         List<Environment> envs = loadEnvironments();
+        String activeName = myState.activeEnvironment;
         for (Environment e : envs) {
-            if (e.getName().equals(myState.activeEnvironment)) {
+            if (e.getName() != null && e.getName().equals(activeName)) {
                 return e;
             }
         }
