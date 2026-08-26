@@ -568,13 +568,16 @@ public class ApiTreePanel extends JPanel {
         btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
         // 一伦 #62：双击「收藏」按钮刷新收藏接口列表（重新拉取收藏文件夹与接口状态）。
         // 单击已由 ActionListener 负责切换视图；这里只处理双击，且仅在已处于收藏视图时生效。
+        // #65：双击时必须触发一次完整扫描，否则 allApis 仍是旧数据；扫描内部会自动按
+        // sourceFilePath+sourceLineNumber 把 starredApis/folder.apiKeys 等持久化字段从旧 key 改写到新 key，
+        // 完成后回调会走 updateTree → applyFilters → refreshStarredApiIndex + buildStarredTree，
+        // 收藏视图里的路径会立刻反映新 URL。
         btnStarred.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2 && FILTER_STARRED.equals(currentFilter)) {
-                    refreshStarredApiIndex();
-                    buildStarredTree();
-                    statsLabel.setText("已刷新收藏列表");
+                    statsLabel.setText("● 正在扫描API（收藏刷新）...");
+                    ApiScannerService.getInstance(project).scanProjectApisAsync();
                 }
             }
         });
