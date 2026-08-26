@@ -1,9 +1,12 @@
 package com.hronline.settings;
 
 import com.hronline.model.Environment;
+import com.hronline.model.FolderApiStatus;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -170,5 +173,74 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         // 保留的是先出现的那条（test 的默认 baseUrl）
         Environment kept = reloaded.stream().filter(e -> "test".equals(e.getName())).findFirst().get();
         assertEquals("http://localhost:8080", kept.getBaseUrl(), "保留首次出现的实例");
+    }
+
+    /**
+     * #65 修复：remapApiKeys 把 starredApis Set、folderApiParams/Status 等按旧 key 索引的字段
+     * 统一改写到新 key，避免接口路径变更后收藏数据丢失。
+     */
+    @Test
+    void remapApiKeysUpdatesAllKeyedFields() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        // 准备 starred set
+        state.getState().starredApis.add("GET|/api/v1/old");
+        state.getState().starredApis.add("POST|/api/v1/unchanged");
+        // 准备 folderApiParams（key = folderId\napiKey）
+        Map<String, Map<String, String>> params = new LinkedHashMap<>();
+        params.put("folder1\nGET|/api/v1/old", Map.of("p1", "v1"));
+        params.put("folder1\nPOST|/api/v1/unchanged", Map.of("p2", "v2"));
+        state.saveFolderApiParams(params);
+        // 准备 folderApiStatus
+        Map<String, FolderApiStatus> status = new LinkedHashMap<>();
+        FolderApiStatus s1 = new FolderApiStatus();
+        s1.setTestedAt(123L);
+        status.put("folder1\nGET|/api/v1/old", s1);
+        state.saveFolderApiStatus(status);
+        // 准备 apiCallCounts / apiLastCallTimes
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        counts.put("GET|/api/v1/old", 7);
+        state.getState().apiCallCounts.putAll(counts);
+        Map<String, Long> times = new LinkedHashMap<>();
+        times.put("GET|/api/v1/old", 999L);
+        state.getState().apiLastCallTimes.putAll(times);
+        // 准备 lastScanApiSignatures
+        state.saveLastScanSignatures(List.of("GET|/api/v1/old", "POST|/api/v1/unchanged"));
+
+        // 执行重映射
+        Map<String, String> remap = Map.of("GET|/api/v1/old", "GET|/api/v2/new");
+        state.remapApiKeys(remap);
+
+        // 1. starredApis Set 应改写
+        assertTrue(state.getStarredApis().contains("GET|/api/v2/new"), "starredApis 应改写为新 key");
+        assertFalse(state.getStarredApis().contains("GET|/api/v1/old"), "旧 key 必须从 starredApis 移除");
+        assertTrue(state.getStarredApis().contains("POST|/api/v1/unchanged"), "未涉及改写的 key 必须保留");
+
+        // 2. folderApiParams 应改写（key 是 folderId\napiKey，只改写 suffix）
+        Map<String, Map<String, String>> reloadedParams = state.loadFolderApiParams();
+        assertTrue(reloadedParams.containsKey("folder1\nGET|/api/v2/new"), "params 顶层 key 应改写为 folderId\nnewKey");
+        assertFalse(reloadedParams.containsKey("folder1\nGET|/api/v1/old"), "旧 params key 必须清理");
+        assertEquals("v1", reloadedParams.get("folder1\nGET|/api/v2/new").get("p1"), "params 值必须保留");
+
+        // 3. folderApiStatus
+        Map<String, FolderApiStatus> reloadedStatus = state.loadFolderApiStatus();
+        assertTrue(reloadedStatus.containsKey("folder1\nGET|/api/v2/new"), "status key 应改写");
+        assertEquals(123L, reloadedStatus.get("folder1\nGET|/api/v2/new").getTestedAt(), "status 内容必须保留");
+
+        // 4. apiCallCounts / apiLastCallTimes
+        assertEquals(7, state.getApiCallCount("GET|/api/v2/new"), "call count 应迁移到新 key");
+        assertEquals(999L, state.getApiLastCallTime("GET|/api/v2/new"), "last called 应迁移到新 key");
+
+        // 5. lastScanApiSignatures
+        List<String> sigs = state.getLastScanSignatures();
+        assertTrue(sigs.contains("GET|/api/v2/new"), "signatures 应改写");
+        assertFalse(sigs.contains("GET|/api/v1/old"), "旧 signature 必须清理");
+    }
+
+    @Test
+    void remapApiKeysNoOpWhenEmptyOrNull() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        // 空 remap / null remap 必须为 no-op，不抛异常
+        assertEquals(0, state.remapApiKeys(null));
+        assertEquals(0, state.remapApiKeys(Map.of()));
     }
 }

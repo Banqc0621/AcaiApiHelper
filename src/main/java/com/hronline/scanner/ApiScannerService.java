@@ -176,8 +176,12 @@ public final class ApiScannerService {
 
     private void scanProjectApisAsync(Set<String> sourcePathFilter,
                                       java.util.function.Consumer<List<ApiDefinition>> completion) {
+        // #65：保留旧 API 列表的快照，用于检测「同一方法 / 文件位置下路径变化」
+        // 并把所有按 uniqueKey 索引的持久化字段（starredApis / folder.apiKeys /
+        // folderApiParams / folderApiStatus / 各项 call stats 等）从旧 key 改写到新 key。
+        final List<ApiDefinition> beforeApisSnapshot = new ArrayList<>(cachedApis);
         // 记录扫描前的状态
-        List<String> beforeSignatures = cachedApis.stream()
+        List<String> beforeSignatures = beforeApisSnapshot.stream()
                 .map(ApiDefinition::uniqueKey)
                 .collect(Collectors.toList());
 
@@ -205,6 +209,21 @@ public final class ApiScannerService {
                     LOG.info("忽略过期的 API 扫描结果 generation=" + requestGeneration
                             + ", current=" + scanGeneration.get());
                     return;
+                }
+
+                // #65：检测「同一 Controller 方法、同一源码位置，但路径（uniqueKey）变了」，
+                // 在 detectChanges 与 restoreApiMetadata 之前把所有按旧 key 索引的持久化字段
+                // 改写到新 key。否则 starredApis / folder.apiKeys / folderApiParams 等都会
+                // 把 path 变更当成「新增 + 删除」的双重夹击，starred API 静默丢失。
+                Map<String, String> pathRemap = buildPathRemap(beforeApisSnapshot, apis);
+                if (!pathRemap.isEmpty()) {
+                    RestAutoLabSettingsState s = RestAutoLabSettingsState.getInstance(project);
+                    int settingsChanged = s.remapApiKeys(pathRemap);
+                    boolean folderChanged = StarredFolderService.getInstance(project).remapApiKeys(pathRemap);
+                    LOG.info("#65 路径变更重映射: " + pathRemap.size() + " 个，"
+                            + "settings 命中 " + settingsChanged + "，folder 改写=" + folderChanged
+                            + "，示例 " + pathRemap.entrySet().stream().findFirst()
+                            .map(e -> e.getKey() + " -> " + e.getValue()).orElse(""));
                 }
 
                 // v3: 变更检测
@@ -635,6 +654,46 @@ public final class ApiScannerService {
             path = path.substring(0, path.length() - 1);
         }
         return method + "|" + path;
+    }
+
+    /**
+     * #65：检测同一源码位置（文件 + 行号）下 uniqueKey 发生变化的 API，
+     * 生成 oldKey → newKey 重映射。
+     * <p>用于扫描完成后把所有按旧 key 存的持久化字段（starredApis、 folderApiParams 等）
+     * 改写到新 key，否则这些字段会因路径变更被当成「新增 + 删除」双重夹击而失效。</p>
+     */
+    private static Map<String, String> buildPathRemap(List<ApiDefinition> beforeApis,
+                                                      List<ApiDefinition> afterApis) {
+        Map<String, String> remap = new HashMap<>();
+        if (beforeApis == null || beforeApis.isEmpty() || afterApis == null || afterApis.isEmpty()) {
+            return remap;
+        }
+        Map<String, ApiDefinition> oldByLocation = new HashMap<>();
+        for (ApiDefinition api : beforeApis) {
+            String loc = locationKey(api);
+            if (loc != null) oldByLocation.put(loc, api);
+        }
+        for (ApiDefinition newApi : afterApis) {
+            String loc = locationKey(newApi);
+            if (loc == null) continue;
+            ApiDefinition oldApi = oldByLocation.get(loc);
+            if (oldApi == null) continue;
+            String oldKey = oldApi.uniqueKey();
+            String newKey = newApi.uniqueKey();
+            if (oldKey != null && newKey != null && !oldKey.equals(newKey)) {
+                remap.put(oldKey, newKey);
+            }
+        }
+        return remap;
+    }
+
+    /** 同一 Controller 方法的位置指纹（文件路径 + 声明行号），用于跨跨次扫描识别同一接口。 */
+    private static String locationKey(ApiDefinition api) {
+        if (api == null) return null;
+        String file = api.getSourceFilePath();
+        int line = api.getSourceLineNumber();
+        if (file == null || file.isEmpty() || line <= 0) return null;
+        return file + "|" + line;
     }
 
     /** 判断类是否为 JAX-RS 风格（有 @Path 注解但无 Spring 控制器注解） */

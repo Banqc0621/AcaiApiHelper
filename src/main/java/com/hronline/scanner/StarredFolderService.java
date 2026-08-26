@@ -266,6 +266,34 @@ public final class StarredFolderService {
         s.getState().starredApis.addAll(set);
     }
 
+    /**
+     * #65 修复：把所有收藏文件夹里的 apiKey 按 {@code oldKey → newKey} 改写，
+     * 路径变更后旧 key 不会变成孤儿。同时刷新 settings.starredApis 与 syncStarredSet 行为一致。
+     * <p>由 {@code ApiScannerService.scanProjectApisAsync} 在扫描完成后调用。</p>
+     */
+    public boolean remapApiKeys(Map<String, String> remap) {
+        if (remap == null || remap.isEmpty()) return false;
+        List<StarredFolder> folders = loadFolders();
+        boolean changed = false;
+        for (StarredFolder f : folders) {
+            List<String> keys = f.getApiKeys();
+            for (int i = 0; i < keys.size(); i++) {
+                String newKey = remap.get(keys.get(i));
+                if (newKey != null) {
+                    keys.set(i, newKey);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            settings().saveStarredFolders(folders);
+            syncStarredSet(folders);
+            // folderApiParams / folderApiStatus 是按 folderId\napiKey 索引的，
+            // 由 RestAutoLabSettingsState.remapApiKeys 统一改写顶层 apiKey 段。
+        }
+        return changed;
+    }
+
     private void removeParamsAndStatus(String folderId, String apiKey) {
         String k = pk(folderId, apiKey);
         Map<String, Map<String, String>> params = settings().loadFolderApiParams();

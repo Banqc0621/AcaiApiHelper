@@ -512,6 +512,138 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         return myState.lastScanApiSignatures != null ? myState.lastScanApiSignatures : new ArrayList<>();
     }
 
+    /**
+     * #65 修复：把按 uniqueKey 索引的所有持久化字段统一改键。
+     * <p>用户修改 @RequestMapping 路径后，旧 uniqueKey（HTTP_METHOD + URL）失效：
+     * starredApis Set / folderApiParamsJson / folderApiStatusJson / preRequestScriptsJson
+     * / apiVariableOverridesJson / apiCallCounts / apiLastCallTimes / lastScanApiSignatures
+     * 全部按旧 key 索引，会被「看似新增 + 旧 key 丢失」双重夹击变成孤儿。</p>
+     * <p>本方法在每次扫描完成后由 {@code ApiScannerService} 调用，按
+     * {@code oldKey → newKey} 重映射所有这些字段。starredApis / folder.apiKeys
+     * 的 key 重映射由 {@code StarredFolderService.remapApiKeys} 负责。</p>
+     *
+     * @return 实际重映射的 key 数量（用于日志）
+     */
+    public int remapApiKeys(Map<String, String> remap) {
+        if (remap == null || remap.isEmpty()) return 0;
+        int count = 0;
+
+        // 1) starredApis Set
+        Set<String> newStarred = new HashSet<>();
+        for (String key : myState.starredApis) {
+            String newKey = remap.get(key);
+            if (newKey != null) { newStarred.add(newKey); count++; }
+            else newStarred.add(key);
+        }
+        myState.starredApis = newStarred;
+
+        // 2) JSON Map<String, ?> 字段
+        // folderApiParams/Status 的 key 是 folderId + "\n" + apiKey，需要按 suffix 改写
+        Map<String, Map<String, String>> params = loadFolderApiParams();
+        if (remapCompoundKeysInPlace(params, remap, "\n")) {
+            saveFolderApiParams(params);
+            count++;
+        }
+        Map<String, FolderApiStatus> status = loadFolderApiStatus();
+        if (remapCompoundKeysInPlace(status, remap, "\n")) {
+            saveFolderApiStatus(status);
+            count++;
+        }
+        // preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes
+        // 都是按 apiKey 直接索引
+        Map<String, String> preScripts = loadPreRequestScripts();
+        if (remapMapKeysInPlace(preScripts, remap)) {
+            myState.preRequestScriptsJson = gson.toJson(preScripts);
+            count++;
+        }
+        Map<String, Map<String, String>> overrides = loadApiVariableOverrides();
+        if (remapMapKeysInPlace(overrides, remap)) {
+            myState.apiVariableOverridesJson = gson.toJson(overrides);
+            count++;
+        }
+
+        // 3) apiCallCounts
+        Map<String, Integer> newCounts = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : myState.apiCallCounts.entrySet()) {
+            String newKey = remap.get(e.getKey());
+            newCounts.put(newKey != null ? newKey : e.getKey(), e.getValue());
+        }
+        myState.apiCallCounts = newCounts;
+
+        // 4) apiLastCallTimes
+        Map<String, Long> newTimes = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : myState.apiLastCallTimes.entrySet()) {
+            String newKey = remap.get(e.getKey());
+            newTimes.put(newKey != null ? newKey : e.getKey(), e.getValue());
+        }
+        myState.apiLastCallTimes = newTimes;
+
+        // 5) lastScanApiSignatures（用于变更检测，避免 path 变更被误标为新增+删除）
+        List<String> newSigs = new ArrayList<>(myState.lastScanApiSignatures.size());
+        for (String sig : myState.lastScanApiSignatures) {
+            String newKey = remap.get(sig);
+            newSigs.add(newKey != null ? newKey : sig);
+        }
+        myState.lastScanApiSignatures = newSigs;
+
+        return count;
+    }
+
+    /**
+     * 把 map 顶层 key 按 remap 改写（key 直接等于 remap 中的 key）。
+     */
+    private <V> boolean remapMapKeysInPlace(Map<String, V> map, Map<String, String> remap) {
+        if (map == null || map.isEmpty() || remap == null || remap.isEmpty()) return false;
+        Map<String, V> remapped = new LinkedHashMap<>(map.size());
+        boolean changed = false;
+        for (Map.Entry<String, V> e : map.entrySet()) {
+            String newKey = remap.get(e.getKey());
+            if (newKey != null) {
+                remapped.put(newKey, e.getValue());
+                changed = true;
+            } else {
+                remapped.put(e.getKey(), e.getValue());
+            }
+        }
+        if (changed) {
+            map.clear();
+            map.putAll(remapped);
+        }
+        return changed;
+    }
+
+    /**
+     * 把 map 顶层 key 按 suffix 拆分（prefix\suffix），只改写 suffix 部分。
+     * 用于 folderId\napiKey 这种复合 key。
+     */
+    private <V> boolean remapCompoundKeysInPlace(Map<String, V> map, Map<String, String> remap, String sep) {
+        if (map == null || map.isEmpty() || remap == null || remap.isEmpty()) return false;
+        Map<String, V> remapped = new LinkedHashMap<>(map.size());
+        boolean changed = false;
+        for (Map.Entry<String, V> e : map.entrySet()) {
+            String k = e.getKey();
+            int idx = k.lastIndexOf(sep);
+            if (idx < 0) {
+                remapped.put(k, e.getValue());
+                continue;
+            }
+            String prefix = k.substring(0, idx + sep.length());
+            String suffix = k.substring(idx + sep.length());
+            String newSuffix = remap.get(suffix);
+            if (newSuffix != null) {
+                remapped.put(prefix + newSuffix, e.getValue());
+                changed = true;
+            } else {
+                remapped.put(k, e.getValue());
+            }
+        }
+        if (changed) {
+            map.clear();
+            map.putAll(remapped);
+        }
+        return changed;
+    }
+
     public static RestAutoLabSettingsState getInstance(@NotNull Project project) {
         return project.getService(RestAutoLabSettingsState.class);
     }
