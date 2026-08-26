@@ -991,12 +991,18 @@ public class ApiTreePanel extends JPanel {
             String keyword = searchField.getText().trim().toLowerCase();
 
             List<StarredFolder> folders = folderService.loadFolders();
-            int folderCount = 0, apiCount = 0, failedCount = 0;
+            int folderCount = 0, apiCount = 0, failedCount = 0, staleCount = 0;
             for (StarredFolder folder : folders) {
                 DefaultMutableTreeNode folderNode = new DefaultMutableTreeNode(new FolderNode(folder));
                 for (String apiKey : folder.getApiKeys()) {
                     ApiDefinition api = starredApiByKey.get(apiKey);
-                    if (api == null) continue;
+                    if (api == null) {
+                        // #66 修复：folder.apiKeys 里的 apiKey 在当前扫描缓存里查不到对应接口
+                        // —— 可能是接口被删除、文件被移除、扫描范围变更等。该条目不显示为接口节点，
+                        // 但 statsLabel 仍要反映出来，让用户知道"为什么文件夹数 ≠ 接口数"。
+                        staleCount++;
+                        continue;
+                    }
                     // 搜索过滤
                     if (!keyword.isBlank()) {
                         String key = (api.getHttpMethod() + " " + api.getUrl() + " " + api.getName()).toLowerCase();
@@ -1021,8 +1027,10 @@ public class ApiTreePanel extends JPanel {
                 TreeNode n = root.getChildAt(i);
                 tree.expandPath(new TreePath(((DefaultMutableTreeNode) n).getPath()));
             }
-            statsLabel.setText(String.format("● 文件夹 %d · 接口 %d · 失败标红 %d",
-                    folderCount, apiCount, failedCount));
+            statsLabel.setText(String.format("● 文件夹 %d · 接口 %d%s · 失败标红 %d",
+                    folderCount, apiCount,
+                    staleCount > 0 ? " · ⚠失效 " + staleCount : "",
+                    failedCount));
         };
         if (ApplicationManager.getApplication().isDispatchThread()) {
             build.run();

@@ -245,6 +245,18 @@ public final class ApiScannerService {
                         .collect(Collectors.toList());
                 RestAutoLabSettingsState.getInstance(project).saveLastScanSignatures(newSignatures);
 
+                // #66 修复：把收藏文件夹里"扫描缓存里查不到"的失效 apiKey 一键清掉。
+                // 否则会出现「folderCount = N 但接口数 = 0」的迷惑显示（旧 key 还在文件夹里，
+                // 但扫描缓存里已经没有对应接口了）。dropStaleApiKeys 会在清掉 key 的同时
+                // 把 folderApiParams / folderApiStatus 也清理掉，避免磁盘上残留孤儿数据。
+                int aliveCount = immutableApis.size();
+                java.util.Set<String> aliveKeys = new java.util.HashSet<>(aliveCount);
+                for (ApiDefinition a : immutableApis) aliveKeys.add(a.uniqueKey());
+                int dropped = StarredFolderService.getInstance(project).dropStaleApiKeys(aliveKeys);
+                if (dropped > 0) {
+                    LOG.info("#66 扫描清理失效收藏: " + dropped + " 个（当前 aliveKeys=" + aliveCount + "）");
+                }
+
                 indicator.setFraction(1.0);
 
                 for (ScanListener listener : listeners) {

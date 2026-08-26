@@ -243,4 +243,89 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         assertEquals(0, state.remapApiKeys(null));
         assertEquals(0, state.remapApiKeys(Map.of()));
     }
+
+    /**
+     * #66 修复：dropStaleApiKeys 把所有"当前项目里查不到"的孤儿 key 清掉，
+     * 解决「收藏文件夹数 ≠ 接口数」的迷惑显示。
+     */
+    @Test
+    void dropStaleApiKeysRemovesAllStaleFields() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        // 准备 starredApis Set：2 alive + 2 stale
+        state.getState().starredApis.add("GET|/alive1");
+        state.getState().starredApis.add("GET|/alive2");
+        state.getState().starredApis.add("GET|/stale1");
+        state.getState().starredApis.add("GET|/stale2");
+        // folderApiParams/Status（复合 key）
+        Map<String, Map<String, String>> params = new LinkedHashMap<>();
+        params.put("folder1\nGET|/alive1", Map.of("p1", "v1"));
+        params.put("folder1\nGET|/stale1", Map.of("p2", "v2"));
+        state.saveFolderApiParams(params);
+        Map<String, FolderApiStatus> status = new LinkedHashMap<>();
+        FolderApiStatus aliveStatus = new FolderApiStatus();
+        aliveStatus.setTestedAt(1L);
+        FolderApiStatus staleStatus = new FolderApiStatus();
+        staleStatus.setTestedAt(2L);
+        status.put("folder1\nGET|/alive2", aliveStatus);
+        status.put("folder1\nGET|/stale2", staleStatus);
+        state.saveFolderApiStatus(status);
+        // apiCallCounts / apiLastCallTimes
+        state.getState().apiCallCounts.put("GET|/alive1", 3);
+        state.getState().apiCallCounts.put("GET|/stale1", 9);
+        state.getState().apiLastCallTimes.put("GET|/alive2", 100L);
+        state.getState().apiLastCallTimes.put("GET|/stale2", 200L);
+        // lastScanApiSignatures
+        state.saveLastScanSignatures(List.of("GET|/alive1", "GET|/stale1"));
+
+        // alive 集合
+        java.util.Set<String> alive = java.util.Set.of("GET|/alive1", "GET|/alive2");
+
+        int removed = state.dropStaleApiKeys(alive);
+        assertTrue(removed >= 7, "至少清掉 7 处（starredApis×2 + folderApiParams×1 + folderApiStatus×1 + counts×1 + times×1 + signatures×1），实际=" + removed);
+
+        // 1. starredApis
+        assertTrue(state.getStarredApis().contains("GET|/alive1"));
+        assertTrue(state.getStarredApis().contains("GET|/alive2"));
+        assertFalse(state.getStarredApis().contains("GET|/stale1"), "stale 必须清掉");
+        assertFalse(state.getStarredApis().contains("GET|/stale2"), "stale 必须清掉");
+
+        // 2. folderApiParams
+        Map<String, Map<String, String>> reloadedParams = state.loadFolderApiParams();
+        assertTrue(reloadedParams.containsKey("folder1\nGET|/alive1"));
+        assertFalse(reloadedParams.containsKey("folder1\nGET|/stale1"), "stale params 必须清掉");
+        assertEquals("v1", reloadedParams.get("folder1\nGET|/alive1").get("p1"));
+
+        // 3. folderApiStatus
+        Map<String, FolderApiStatus> reloadedStatus = state.loadFolderApiStatus();
+        assertTrue(reloadedStatus.containsKey("folder1\nGET|/alive2"));
+        assertFalse(reloadedStatus.containsKey("folder1\nGET|/stale2"), "stale status 必须清掉");
+
+        // 4. apiCallCounts / apiLastCallTimes
+        assertEquals(3, state.getApiCallCount("GET|/alive1"));
+        assertEquals(100L, state.getApiLastCallTime("GET|/alive2"));
+        assertEquals(0, state.getApiCallCount("GET|/stale1"), "stale count 必须清掉（默认值 0）");
+
+        // 5. lastScanApiSignatures
+        List<String> sigs = state.getLastScanSignatures();
+        assertTrue(sigs.contains("GET|/alive1"));
+        assertFalse(sigs.contains("GET|/stale1"), "stale signature 必须清掉");
+    }
+
+    @Test
+    void dropStaleApiKeysNoOpWhenAllAlive() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        state.getState().starredApis.add("GET|/alive");
+        java.util.Set<String> alive = java.util.Set.of("GET|/alive");
+        int removed = state.dropStaleApiKeys(alive);
+        assertEquals(0, removed, "全是 alive 时不应有任何清理");
+        assertTrue(state.getStarredApis().contains("GET|/alive"));
+    }
+
+    @Test
+    void dropStaleApiKeysNoOpWhenEmptyOrNull() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        // null / 空 aliveKeys 必须为 no-op，不抛异常
+        assertEquals(0, state.dropStaleApiKeys(null));
+        assertEquals(0, state.dropStaleApiKeys(java.util.Collections.emptySet()));
+    }
 }

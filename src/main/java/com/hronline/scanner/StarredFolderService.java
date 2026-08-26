@@ -267,6 +267,46 @@ public final class StarredFolderService {
     }
 
     /**
+     * #66 修复：把收藏文件夹里"扫描缓存里查不到对应 ApiDefinition"的 apiKey 视为失效，
+     * 一键清掉这些幽灵收藏（对应接口被删除、或文件被移除、或扫描配置变更不再产出）。
+     * <p>与 {@link #remapApiKeys} 互补：remap 处理"接口还在但路径改了"，
+     * dropStaleApiKeys 处理"接口真的没了"。每次扫描完成后由
+     * {@code ApiScannerService.scanProjectApisAsync} 调用一次。</p>
+     *
+     * @param aliveKeys 当前项目里真实存在的 apiKey 集合
+     * @return 被清理的失效条目总数（用于日志与统计）
+     */
+    public int dropStaleApiKeys(java.util.Collection<String> aliveKeys) {
+        if (aliveKeys == null) aliveKeys = java.util.Collections.emptyList();
+        java.util.Set<String> alive = new java.util.HashSet<>(aliveKeys);
+        List<StarredFolder> folders = loadFolders();
+
+        // folder.apiKeys 这一层（StarredFolder apiKeys List）
+        int removedFromFolders = 0;
+        for (StarredFolder f : folders) {
+            List<String> keys = f.getApiKeys();
+            for (int i = keys.size() - 1; i >= 0; i--) {
+                if (!alive.contains(keys.get(i))) {
+                    keys.remove(i);
+                    removedFromFolders++;
+                }
+            }
+        }
+        if (removedFromFolders > 0) {
+            settings().saveStarredFolders(folders);
+            syncStarredSet(folders);
+        }
+
+        // 其他持久化字段（starredApis / folderApiParams / folderApiStatus /
+        // preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes /
+        // lastScanApiSignatures）的 stale 清理下沉到 settings.dropStaleApiKeys，
+        // 单测可独立覆盖，无需 mock Project。
+        int removedFromSettings = settings().dropStaleApiKeys(alive);
+
+        return removedFromFolders + removedFromSettings;
+    }
+
+    /**
      * #65 修复：把所有收藏文件夹里的 apiKey 按 {@code oldKey → newKey} 改写，
      * 路径变更后旧 key 不会变成孤儿。同时刷新 settings.starredApis 与 syncStarredSet 行为一致。
      * <p>由 {@code ApiScannerService.scanProjectApisAsync} 在扫描完成后调用。</p>

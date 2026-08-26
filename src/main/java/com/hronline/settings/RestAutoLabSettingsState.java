@@ -590,6 +590,108 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     }
 
     /**
+     * #66 修复：清理所有「当前项目里已不存在」对应接口的失效 apiKey，
+     * 解决「收藏文件夹数 ≠ 接口数」的迷惑显示。
+     * <p>调用时机：每次全量扫描完成后（由 {@code ApiScannerService.scanProjectApisAsync}）。
+     * 范围：</p>
+     * <ul>
+     *   <li>{@code starredApis} Set — 同步收藏状态</li>
+     *   <li>{@code folderApiParams} / {@code folderApiStatus} — 复合 key (folderId\napiKey) 只清 suffix 失效项</li>
+     *   <li>{@code preRequestScripts} / {@code apiVariableOverrides} — 直接 key</li>
+     *   <li>{@code apiCallCounts} / {@code apiLastCallTimes} — 直接 key</li>
+     *   <li>{@code lastScanApiSignatures} — 用于变更检测，孤儿签名会导致后续"伪新增"</li>
+     * </ul>
+     * <p>StarredFolder 层（{@code folder.apiKeys}）的清理由
+     * {@code StarredFolderService.dropStaleApiKeys} 负责，本方法不涉及。</p>
+     *
+     * @param aliveKeys 当前项目里真实存在的 apiKey 集合
+     * @return 清理的 key 数量
+     */
+    public int dropStaleApiKeys(java.util.Collection<String> aliveKeys) {
+        if (aliveKeys == null) aliveKeys = java.util.Collections.emptySet();
+        java.util.Set<String> alive = new java.util.HashSet<>(aliveKeys);
+        int removed = 0;
+
+        // 1) starredApis Set
+        Set<String> newStarred = new HashSet<>();
+        for (String key : myState.starredApis) {
+            if (alive.contains(key)) newStarred.add(key);
+            else removed++;
+        }
+        myState.starredApis = newStarred;
+
+        // 2) folderApiParams / folderApiStatus：复合 key，suffix 失效才删
+        Map<String, Map<String, String>> params = loadFolderApiParams();
+        Map<String, Map<String, String>> keptParams = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, String>> e : params.entrySet()) {
+            String k = e.getKey();
+            int idx = k.lastIndexOf('\n');
+            if (idx < 0) { keptParams.put(k, e.getValue()); continue; }
+            String suffix = k.substring(idx + 1);
+            if (alive.contains(suffix)) keptParams.put(k, e.getValue());
+            else removed++;
+        }
+        if (keptParams.size() != params.size()) saveFolderApiParams(keptParams);
+
+        Map<String, FolderApiStatus> status = loadFolderApiStatus();
+        Map<String, FolderApiStatus> keptStatus = new LinkedHashMap<>();
+        for (Map.Entry<String, FolderApiStatus> e : status.entrySet()) {
+            String k = e.getKey();
+            int idx = k.lastIndexOf('\n');
+            if (idx < 0) { keptStatus.put(k, e.getValue()); continue; }
+            String suffix = k.substring(idx + 1);
+            if (alive.contains(suffix)) keptStatus.put(k, e.getValue());
+            else removed++;
+        }
+        if (keptStatus.size() != status.size()) saveFolderApiStatus(keptStatus);
+
+        // 3) preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes
+        Map<String, String> preScripts = loadPreRequestScripts();
+        int beforeScripts = preScripts.size();
+        preScripts.keySet().retainAll(alive);
+        if (preScripts.size() != beforeScripts) {
+            myState.preRequestScriptsJson = gson.toJson(preScripts);
+            removed += (beforeScripts - preScripts.size());
+        }
+
+        Map<String, Map<String, String>> overrides = loadApiVariableOverrides();
+        int beforeOverrides = overrides.size();
+        Map<String, Map<String, String>> keptOverrides = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, String>> e : overrides.entrySet()) {
+            if (alive.contains(e.getKey())) keptOverrides.put(e.getKey(), e.getValue());
+            else removed++;
+        }
+        if (keptOverrides.size() != beforeOverrides) {
+            myState.apiVariableOverridesJson = gson.toJson(keptOverrides);
+        }
+
+        // 4) apiCallCounts / apiLastCallTimes
+        Map<String, Integer> newCounts = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : myState.apiCallCounts.entrySet()) {
+            if (alive.contains(e.getKey())) newCounts.put(e.getKey(), e.getValue());
+            else removed++;
+        }
+        myState.apiCallCounts = newCounts;
+
+        Map<String, Long> newTimes = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : myState.apiLastCallTimes.entrySet()) {
+            if (alive.contains(e.getKey())) newTimes.put(e.getKey(), e.getValue());
+            else removed++;
+        }
+        myState.apiLastCallTimes = newTimes;
+
+        // 5) lastScanApiSignatures
+        List<String> keptSigs = new ArrayList<>(myState.lastScanApiSignatures.size());
+        for (String sig : myState.lastScanApiSignatures) {
+            if (alive.contains(sig)) keptSigs.add(sig);
+            else removed++;
+        }
+        myState.lastScanApiSignatures = keptSigs;
+
+        return removed;
+    }
+
+    /**
      * 把 map 顶层 key 按 remap 改写（key 直接等于 remap 中的 key）。
      */
     private <V> boolean remapMapKeysInPlace(Map<String, V> map, Map<String, String> remap) {
