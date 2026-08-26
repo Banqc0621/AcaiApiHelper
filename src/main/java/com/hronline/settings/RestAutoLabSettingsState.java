@@ -412,18 +412,21 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     }
 
     /**
-     * 加载环境列表 —— 始终只返回 dev / test / prod 三个默认环境。
+     * 加载环境列表 —— 接受任意用户自定义的环境，只有在列表为空/全空白时才补 3 个默认。
      * <p>规则：</p>
      * <ol>
-     *   <li>从持久化 json 解析，缺哪个默认环境就补哪个（保留用户已建的，方便回退）</li>
-     *   <li>最终只保留 dev / test / prod 三个，多余的丢弃</li>
-     *   <li>顺序固定：dev → test → prod</li>
+     *   <li>从持久化 json 解析</li>
+     *   <li>列表为空 / 全部 name 为空 → 兜底为 dev / test / prod 三个默认</li>
+     *   <li>去重：同名（trim 后）只保留第一个；name 为空的丢弃</li>
      *   <li><b>归一化激活状态（#63 回显修复）</b>：active 勾选标记与 {@code activeEnvironment}
      *       名称必须收敛为同一个环境。优先以 {@code activeEnvironment} 名称匹配；匹配不到
-     *       再信任 JSON 里的 active 勾选；都没有才回退激活 dev。最终把胜出的名称写回
+     *       再信任 JSON 里的 active 勾选；都没有才回退激活第一个。最终把胜出的名称写回
      *       {@code activeEnvironment}，保证「✓ 勾选」「下拉框选中」「实际生效」三者一致。</li>
      *   <li>回写 json 持久化</li>
      * </ol>
+     * <p><b>移除"固定 dev/test/prod 三个"过滤器（#64）：</b>旧版强制只保留三个，多余的丢
+     * 弃，导致「应用」「新建」都无效 —— 即便 saveEnvironments 写入 N 个，loadEnvironments
+     * 也会被截回 3 个。现在保留用户创建的全部环境，只在首次为空时给默认三件套。</p>
      */
     public List<Environment> loadEnvironments() {
         // 1) 从持久化 json 解析
@@ -448,26 +451,17 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             envs.add(Environment.production());
         }
 
-        // 3) 过滤：只保留 dev / test / prod（按固定顺序），从 envs 中取出（保留持久化里的 baseUrl / 变量 / 头）
+        // 3) 按 name 去重 + 过滤空白名（#64：不再强制只保留 dev/test/prod）
         java.util.Map<String, Environment> byName = new java.util.LinkedHashMap<>();
         for (Environment e : envs) {
-            if (e.getName() != null) byName.put(e.getName().trim(), e);
+            if (e.getName() == null) continue;
+            String key = e.getName().trim();
+            if (key.isEmpty()) continue;
+            if (!byName.containsKey(key)) byName.put(key, e);
         }
-        List<Environment> result = new ArrayList<>();
-        for (String name : java.util.Arrays.asList("dev", "test", "prod")) {
-            Environment e = byName.get(name);
-            if (e == null) {
-                // 缺哪个补哪个
-                if ("dev".equals(name)) e = Environment.dev();
-                else if ("test".equals(name)) e = Environment.test();
-                else e = Environment.production();
-            }
-            result.add(e);
-        }
+        List<Environment> result = new ArrayList<>(byName.values());
 
-        // 4) 归一化激活状态（#63）：activeEnvironment 名称 > JSON active 勾选 > dev。
-        //    旧实现的缺陷：active 勾选与 activeEnvironment 名称各自为政，且默认值「开发环境」
-        //    永远匹配不上任何环境名，导致「✓ 勾的是 test、下拉/实际生效却是 dev」的回显错乱。
+        // 4) 归一化激活状态（#63）：activeEnvironment 名称 > JSON active 勾选 > 第一个。
         String activeName = myState.activeEnvironment;
         Environment chosen = null;
         if (activeName != null && !activeName.isBlank()) {
@@ -480,10 +474,12 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
                 if (e.isActive()) { chosen = e; break; }
             }
         }
-        if (chosen == null) chosen = result.get(0); // 固定顺序，result.get(0) == dev
-        for (Environment e : result) e.setActive(e == chosen);
-        // 把胜出者名称写回，消除「开发环境」这类永不匹配的残留值
-        myState.activeEnvironment = chosen.getName();
+        if (chosen == null && !result.isEmpty()) chosen = result.get(0);
+        if (chosen != null) {
+            for (Environment e : result) e.setActive(e == chosen);
+            // 把胜出者名称写回，消除「开发环境」这类永不匹配的残留值
+            myState.activeEnvironment = chosen.getName();
+        }
 
         myState.environmentsJson = gson.toJson(result);
         return result;

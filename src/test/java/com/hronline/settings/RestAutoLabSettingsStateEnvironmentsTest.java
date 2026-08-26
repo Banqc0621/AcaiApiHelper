@@ -105,4 +105,70 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         assertEquals("test", restored.getActiveEnvironment());
         assertTrue(reloaded.get(1).isActive());
     }
+
+    /**
+     * #64 修复：loadEnvironments 不再强制只保留 dev/test/prod。
+     * 用户新增的"staging"必须原样保留（之前会被截掉 → 「应用」「新建」看似不生效的根因）。
+     */
+    @Test
+    void userAddedExtraEnvironmentSurvivesReload() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        List<Environment> envs = state.loadEnvironments();
+        Environment staging = new Environment("staging", "http://staging.example.com");
+        staging.setDescription("预发布");
+        envs.add(staging);
+        state.saveEnvironments(envs);
+
+        RestAutoLabSettingsState restored = new RestAutoLabSettingsState();
+        restored.loadState(state.getState());
+        List<Environment> reloaded = restored.loadEnvironments();
+
+        assertEquals(4, reloaded.size(), "用户新增的 staging 必须保留");
+        assertTrue(reloaded.stream().anyMatch(e -> "staging".equals(e.getName())),
+                "新增 env 名字必须回显");
+        assertEquals("http://staging.example.com",
+                reloaded.stream().filter(e -> "staging".equals(e.getName())).findFirst().get().getBaseUrl(),
+                "新增 env 的 baseUrl 必须原样回显");
+    }
+
+    /**
+     * #64 修复：用户删除 dev → dev 不再被强行补回（之前固定 3 个会"补"出 dev）。
+     */
+    @Test
+    void deletingDefaultEnvironmentIsRespected() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        List<Environment> envs = state.loadEnvironments();
+        // 用户主动删除 dev
+        envs.removeIf(e -> "dev".equals(e.getName()));
+        envs.get(0).setActive(true); // 激活 test
+        state.saveEnvironments(envs);
+        state.setActiveEnvironment("test");
+
+        RestAutoLabSettingsState restored = new RestAutoLabSettingsState();
+        restored.loadState(state.getState());
+        List<Environment> reloaded = restored.loadEnvironments();
+
+        assertEquals(2, reloaded.size(), "用户主动删除的 env 不能再被补回来");
+        assertFalse(reloaded.stream().anyMatch(e -> "dev".equals(e.getName())),
+                "dev 不应被自动补回");
+    }
+
+    /**
+     * #64 修复：duplicate 同名 env 只保留第一个（用户编辑过程中可能产生重复）。
+     */
+    @Test
+    void duplicateEnvironmentNamesAreDeduped() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        List<Environment> envs = state.loadEnvironments();
+        Environment dup = new Environment("test", "http://dup.example.com");
+        envs.add(dup);
+        state.saveEnvironments(envs);
+
+        List<Environment> reloaded = state.loadEnvironments();
+        long testCount = reloaded.stream().filter(e -> "test".equals(e.getName())).count();
+        assertEquals(1, testCount, "同名 env 必须去重");
+        // 保留的是先出现的那条（test 的默认 baseUrl）
+        Environment kept = reloaded.stream().filter(e -> "test".equals(e.getName())).findFirst().get();
+        assertEquals("http://localhost:8080", kept.getBaseUrl(), "保留首次出现的实例");
+    }
 }

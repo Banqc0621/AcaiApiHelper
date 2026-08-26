@@ -163,7 +163,7 @@ public class ApiTreePanel extends JPanel {
         tree.setDragEnabled(true);
         tree.setTransferHandler(new StarredDragTransferHandler());
 
-        // 双击事件：跳转到API源码（收藏模式下双击接口 → 在全量列表中定位该接口）
+        // 双击事件：跳转到API源码（收藏模式下双击接口 → 停留在收藏视图并跳转到项目中该接口的源码位置）
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -171,7 +171,9 @@ public class ApiTreePanel extends JPanel {
                     if (FILTER_STARRED.equals(currentFilter)) {
                         StarredApiNode n = getSelectedStarredApiNode();
                         if (n != null) {
-                            locateStarredApi(n.api);
+                            // 一伦 #64：收藏列表双击不再切换到全量视图，
+                            // 停留在收藏列表并跳转到项目中该接口的源码位置
+                            navigateToSource(n.api);
                         } else {
                             starredDebugApi();
                         }
@@ -1461,25 +1463,6 @@ public class ApiTreePanel extends JPanel {
         if (n != null && onApiSelected != null) onApiSelected.accept(n.api);
     }
 
-    /**
-     * 一伦 #62：收藏列表双击定位接口 —— 切回「全量」视图，选中并滚动到该接口节点，
-     * 同时在右侧调试面板加载该接口。
-     * <p>时序说明：{@link #applyFilters()} → {@link #buildTree(List)} 内部用
-     * {@code invokeLater} 重建树；本方法紧随其后入队的 {@code invokeLater} 必然在树重建
-     * 完成之后执行，因此 {@link #selectApi(ApiDefinition)} 一定能在新树上命中节点。</p>
-     */
-    private void locateStarredApi(ApiDefinition api) {
-        if (api == null) return;
-        // 调试面板同步加载该接口（与收藏视图原双击语义保持一致）
-        if (onApiSelected != null) onApiSelected.accept(api);
-        // 切回全量视图并刷新树
-        currentFilter = FILTER_ALL;
-        btnAll.setSelected(true);
-        applyFilters();
-        // 树重建完成后选中并滚动到目标节点
-        SwingUtilities.invokeLater(() -> selectApi(api));
-    }
-
     private void starredBatchAiGen() {
         refreshStarredApiIndex();
         StarredFolder f = getSelectedStarredFolder();
@@ -2253,7 +2236,11 @@ public class ApiTreePanel extends JPanel {
      * 解析完成后回 EDT 打开编辑器（openTextEditor 必须在 EDT 执行）。
      */
     private void navigateToSource() {
-        ApiDefinition api = getSelectedApi();
+        navigateToSource(getSelectedApi());
+    }
+
+    /** 跳转到指定接口的源码位置（收藏视图双击时直接传入接口，不依赖全量树选中态） */
+    private void navigateToSource(ApiDefinition api) {
         if (api == null) return;
         String recordedPath = api.getSourceFilePath();
         if (recordedPath.isBlank()) return;

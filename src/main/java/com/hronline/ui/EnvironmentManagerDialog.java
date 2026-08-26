@@ -21,7 +21,9 @@ import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -143,6 +145,14 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
     @Override
     public @Nullable JComponent createCenterPanel() {
+        // 一伦优化 #64：createCenterPanel 会被调用两次（本对话框 init() 一次，
+        // EnvAndDataManageDialog 嵌入时再一次）。initializing 在第一次结束时已置 false，
+        // 若不重置，第二次调用时下方「初始定位选中项」的 envList.setSelectedValue() 会
+        // 触发 ListSelectionListener → saveCurrentEdits() 用【刚创建的空字段】回写当前选中
+        // （即第一个/激活的）环境并 settings.saveEnvironments() 持久化，导致第一条记录
+        // 的 name/baseUrl/desc/变量被清空（"只有第一条记录数据异常、不同步、应用不生效"的根因）。
+        // 每次构建面板都视为初始化阶段，先重置守卫，结尾统一放开。
+        initializing = true;
         // 一伦优化 R5+：createCenterPanel 每次被调用（即每次 init/init 重新触发）都从 settings
         // 拉取最新环境数据并重新定位 selectedEnvironment，
         // 保证左侧「环境列表」始终与右侧主面板 envCombo 的 activeEnvironment 一致。
@@ -367,13 +377,20 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     private void onFieldChanged() {
         if (initializing || loadingFields) return;
         if (selectedEnvironment == null) return;
+        // #64：rename 也要同步 activeEnvironment —— 旧版只比对 name 与旧 activeName，
+        // 用户改了激活 env 的 name 后 settings.activeEnvironment 仍指向旧名，下次 load 时
+        // 激活态会落到其他 env 上、并且「应用」看似没生效。
+        boolean wasActive = selectedEnvironment.isActive();
+        String oldName = selectedEnvironment.getName();
         // 1. 把 UI 内容写回 selectedEnvironment
         saveCurrentEdits();
+        String newName = selectedEnvironment.getName();
         // 2. 持久化（这才是真"联动"：右侧主面板下次 refresh 就能看到）
         settings.saveEnvironments(environments);
-        // 3. 如果是当前激活 env，baseUrl 还要同步给 settings 全局字段
+        // 3. 如果是当前激活 env，baseUrl + activeEnvironment 都要同步
         String activeName = settings.getActiveEnvironment();
-        if (selectedEnvironment.getName().equals(activeName)) {
+        if (wasActive || oldName.equals(activeName) || newName.equals(activeName)) {
+            settings.setActiveEnvironment(newName);
             settings.setBaseUrl(selectedEnvironment.getBaseUrl());
         }
         // 4. 通知主面板
@@ -472,17 +489,106 @@ public class EnvironmentManagerDialog extends DialogWrapper {
     }
 
     private void addNewEnvironment() {
-        // 一伦优化 R5：环境列表固定为 dev / test / prod 三个，不允许新建。
-        Messages.showWarningDialog(getContentPanel(),
-                "环境列表已固定为 dev / test / prod 三个,不允许新建。\n如需新增,请直接编辑已有环境。",
-                "提示");
+        // #64：恢复新增。生成唯一默认名（env-1, env-2 ...）避免与已有重名，
+        // 让用户直接在「环境名称」输入框改名。
+        Set<String> existing = new HashSet<>();
+        for (Environment e : environments) {
+            if (e.getName() != null) existing.add(e.getName().trim());
+        }
+        String baseName = "env";
+        int i = 1;
+        while (existing.contains(baseName + "-" + i)) i++;
+        String name = baseName + "-" + i;
+
+        Environment env = new Environment(name, "");
+        env.setDescription("");
+        // 新建环境默认不激活；如果当前没有激活项则让新建的成为激活
+        boolean hasActive = false;
+        for (Environment e : environments) {
+            if (e.isActive()) { hasActive = true; break; }
+        }
+        env.setActive(!hasActive);
+        environments.add(env);
+
+        // 重建列表并选中新建项
+        refreshingEnvList = true;
+        try {
+            listModel.clear();
+            for (Environment e : environments) listModel.addElement(e);
+        } finally {
+            refreshingEnvList = false;
+        }
+        suppressEnvListSelectionAction = true;
+        try {
+            envList.setSelectedValue(env, true);
+        } finally {
+            suppressEnvListSelectionAction = false;
+        }
+        selectedEnvironment = env;
+        loadEnvironment(env);
+        // 立刻持久化 + 通知主面板，让右侧 envCombo 也能看到新增项
+        settings.saveEnvironments(environments);
+        if (env.isActive()) {
+            settings.setActiveEnvironment(env.getName());
+            settings.setBaseUrl(env.getBaseUrl());
+        }
+        fireChange();
+        // 焦点落在名称字段，方便立刻改名
+        SwingUtilities.invokeLater(() -> {
+            nameField.requestFocusInWindow();
+            nameField.selectAll();
+        });
     }
 
     private void deleteEnvironment() {
-        // 一伦优化 R5：环境列表固定为 dev / test / prod 三个，不允许删除。
-        Messages.showWarningDialog(getContentPanel(),
-                "环境列表已固定为 dev / test / prod 三个,不允许删除。",
-                "提示");
+        // #64：恢复删除。至少保留 1 个环境；删除激活项时把激活态迁到下一个剩余项。
+        Environment sel = envList != null ? envList.getSelectedValue() : null;
+        if (sel == null) return;
+        if (environments.size() <= 1) {
+            Messages.showWarningDialog(getContentPanel(),
+                    "至少需要保留一个环境，无法删除。",
+                    "提示");
+            return;
+        }
+        int idx = envList.getSelectedIndex();
+        boolean wasActive = sel.isActive();
+        environments.remove(sel);
+        // 清理：被删项如果是 activeEnvironment，先把 activeEnvironment 改个临时名，
+        // 让后续归一化逻辑不会去匹配已经被删除的 env。
+        if (wasActive) {
+            settings.setActiveEnvironment("");
+        }
+
+        // 重建列表
+        refreshingEnvList = true;
+        try {
+            listModel.clear();
+            for (Environment e : environments) listModel.addElement(e);
+        } finally {
+            refreshingEnvList = false;
+        }
+        // 选中新位置
+        int newIdx = idx;
+        if (newIdx >= environments.size()) newIdx = environments.size() - 1;
+        if (newIdx < 0) newIdx = 0;
+        Environment newSel = environments.get(newIdx);
+        suppressEnvListSelectionAction = true;
+        try {
+            envList.setSelectedIndex(newIdx);
+        } finally {
+            suppressEnvListSelectionAction = false;
+        }
+        selectedEnvironment = newSel;
+        loadEnvironment(newSel);
+
+        // 持久化 + 通知主面板
+        settings.saveEnvironments(environments);
+        // 重新从 settings 读一次（归一化激活态），保证 activeEnvironment 名称有效
+        Environment activeNow = settings.getActiveEnvironmentObj();
+        settings.setActiveEnvironment(activeNow.getName());
+        settings.setBaseUrl(activeNow.getBaseUrl());
+        refreshEnvList();
+        fireChange();
     }
 
     private void activateEnvironment() {
