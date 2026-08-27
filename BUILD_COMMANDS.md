@@ -145,9 +145,16 @@ build/distributions/RestAutoLab-1.0.0.zip
 
 ```bash
 ./gradlew publishPlugin -PideaPublishToken=YOUR_TOKEN
+# 或通过环境变量注入
+IDEA_PUBLISH_TOKEN=YOUR_TOKEN ./gradlew publishPlugin
 ```
 
-> 开源发布可使用 GitHub Release 或 JetBrains Marketplace。Token 只通过本地参数或 CI Secret 注入，禁止写入仓库。
+完整发布流程（版本号三处同步、发布前后验证、审核状态说明）见知识库文档：
+[.kb/memory/marketplace-publish.md](.kb/memory/marketplace-publish.md)。
+
+> Token 只通过命令行参数、环境变量或 CI Secret 注入，禁止写入仓库。发布前用
+> `curl -s "https://plugins.jetbrains.com/plugins/list?pluginId=com.banqc.restautolab"`
+> 确认插件已注册且版本号大于线上版本。
 
 ---
 

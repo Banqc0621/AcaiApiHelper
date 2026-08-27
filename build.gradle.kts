@@ -77,6 +77,13 @@ intellijPlatform {
             untilBuild = "261.*"
         }
     }
+
+    // 发布到 JetBrains Marketplace：token 仅从命令行参数 -PideaPublishToken=xxx
+    // 或环境变量 IDEA_PUBLISH_TOKEN 注入，禁止写入仓库。
+    publishing {
+        token = providers.gradleProperty("ideaPublishToken")
+            .orElse(providers.environmentVariable("IDEA_PUBLISH_TOKEN"))
+    }
 }
 
 // ============================================================
