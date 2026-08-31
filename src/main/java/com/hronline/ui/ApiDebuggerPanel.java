@@ -3695,8 +3695,25 @@ public class ApiDebuggerPanel extends JPanel {
                     "提示");
             return;
         }
-        final List<ApiDefinition> selectedApis = selected;
+        exportApiDocFromTemplate(selected);
+    }
 
+    /**
+     * 用自定义模板导出指定接口列表（供收藏文件夹等场景直接注入导出范围）。
+     * <p>接口列表为空时提示，不做其它回退。</p>
+     */
+    public void exportApiDocFromTemplate(List<ApiDefinition> selectedApis) {
+        if (selectedApis == null || selectedApis.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "该范围下没有可导出的接口。",
+                    "提示");
+            return;
+        }
+        doExportApiDocFromTemplate(selectedApis);
+    }
+
+    /** 模板导出的对话框流程（选模板 → 校验占位符 → 选输出 → 渲染） */
+    private void doExportApiDocFromTemplate(final List<ApiDefinition> selectedApis) {
         // 让用户选模板文件
         ApplicationManager.getApplication().invokeLater(() -> {
             String templatePath = TestDataExporter.chooseOpenFile(project,

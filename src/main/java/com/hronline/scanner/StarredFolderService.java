@@ -51,14 +51,29 @@ public final class StarredFolderService {
         return settings().loadStarredFolders();
     }
 
-    /** 新建文件夹，返回新文件夹 id */
+    /** 新建顶层文件夹，返回新文件夹 id */
     public String createFolder(String name) {
+        return createFolder(name, null);
+    }
+
+    /** 新建文件夹（parentId 为 null/空 = 顶层），返回新文件夹 id */
+    public String createFolder(String name, String parentId) {
         List<StarredFolder> folders = loadFolders();
+        String finalParent = normalizeParentId(folders, parentId);
         String finalName = uniqueFolderName(folders, name);
-        StarredFolder folder = new StarredFolder(UUID.randomUUID().toString(), finalName);
+        StarredFolder folder = new StarredFolder(UUID.randomUUID().toString(), finalName, finalParent);
         folders.add(folder);
         settings().saveStarredFolders(folders);
         return folder.getId();
+    }
+
+    /** parentId 指向的文件夹不存在时视为顶层（防止脏数据产生孤儿节点） */
+    private String normalizeParentId(List<StarredFolder> folders, String parentId) {
+        if (parentId == null || parentId.isBlank()) return null;
+        for (StarredFolder f : folders) {
+            if (parentId.equals(f.getId())) return parentId;
+        }
+        return null;
     }
 
     /** 重命名文件夹（v2.0.0 起「未分类」也可重命名） */
@@ -77,7 +92,8 @@ public final class StarredFolderService {
 
     /**
      * 删除文件夹（「未分类」与其他文件夹等价，均可删除；不自动重建任何文件夹）。
-     * <p>删除文件夹 = 文件夹内接口取消收藏 + 文件夹消失。接口不迁回任何容器。</p>
+     * <p>多级目录：删除会递归移除其全部后代文件夹。</p>
+     * <p>删除文件夹 = 文件夹（含后代）内接口取消收藏 + 文件夹消失。接口不迁回任何容器。</p>
      */
     public boolean deleteFolder(String folderId) {
         List<StarredFolder> folders = loadFolders();
@@ -86,11 +102,57 @@ public final class StarredFolderService {
             if (f.getId().equals(folderId)) { target = f; break; }
         }
         if (target == null) return false;
-        folders.remove(target);
-        removeParamsAndStatusForFolder(folderId);
+        // 收集目标 + 全部后代，一并删除并清理各自的参数/状态
+        List<String> subtreeIds = new ArrayList<>(collectSubtreeIds(folders, folderId));
+        folders.removeIf(f -> subtreeIds.contains(f.getId()));
+        for (String id : subtreeIds) removeParamsAndStatusForFolder(id);
         settings().saveStarredFolders(folders);
         syncStarredSet(folders);
         return true;
+    }
+
+    /** 收集 folderId 自身 + 全部后代的 id（含 folderId 本身，按发现顺序）。
+     *  纯函数，便于单元测试与复用。 */
+    public static List<String> collectSubtreeIds(List<StarredFolder> folders, String folderId) {
+        List<String> result = new ArrayList<>();
+        result.add(folderId);
+        for (int i = 0; i < result.size(); i++) {
+            String cur = result.get(i);
+            for (StarredFolder f : folders) {
+                if (cur.equals(f.getParentId()) && !result.contains(f.getId())) {
+                    result.add(f.getId());
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 收集文件夹（含全部后代）内的全部接口 uniqueKey。
+     * <p>用于文件夹级批量操作（批量测试 / AI 生成参数 / 依赖链测试 / 导出）递归覆盖子目录。</p>
+     */
+    public List<String> collectSubtreeApiKeys(String folderId) {
+        List<StarredFolder> folders = loadFolders();
+        List<String> keys = new ArrayList<>();
+        Set<String> subtree = new HashSet<>(collectSubtreeIds(folders, folderId));
+        for (StarredFolder f : folders) {
+            if (subtree.contains(f.getId())) keys.addAll(f.getApiKeys());
+        }
+        return keys;
+    }
+
+    /**
+     * 收集文件夹（含全部后代）的 {@link StarredFolder} 列表（含自身）。
+     * <p>批量操作需要逐个文件夹处理，因为测试参数按 (文件夹, 接口) 维度持久化。</p>
+     */
+    public List<StarredFolder> collectSubtreeFolders(String folderId) {
+        List<StarredFolder> folders = loadFolders();
+        Set<String> subtree = new LinkedHashSet<>(collectSubtreeIds(folders, folderId));
+        List<StarredFolder> result = new ArrayList<>();
+        for (StarredFolder f : folders) {
+            if (subtree.contains(f.getId())) result.add(f);
+        }
+        return result;
     }
 
     /** 查找已存在的「未分类」文件夹，不创建（删除场景不自动重建） */

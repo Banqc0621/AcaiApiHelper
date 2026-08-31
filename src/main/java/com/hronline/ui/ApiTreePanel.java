@@ -42,7 +42,6 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.DefaultTreeModel;
-import javax.swing.tree.TreeNode;
 import javax.swing.tree.TreePath;
 import javax.swing.tree.TreeSelectionModel;
 import java.awt.*;
@@ -981,7 +980,7 @@ public class ApiTreePanel extends JPanel {
         }
     }
 
-    /** 构建收藏文件夹视图树 */
+    /** 构建收藏文件夹视图树（多级目录：按 parentId 递归嵌套） */
     private void buildStarredTree() {
         // 调用方可能在后台线程（如扫描完成回调 onScanComplete），需切到 EDT 操作树；
         // 但展开逻辑必须与 setRoot 同步执行，避免 invokeLater 嵌套导致 setRoot 与 expandPath 时序错位
@@ -991,51 +990,83 @@ public class ApiTreePanel extends JPanel {
             String keyword = searchField.getText().trim().toLowerCase();
 
             List<StarredFolder> folders = folderService.loadFolders();
-            int folderCount = 0, apiCount = 0, failedCount = 0, staleCount = 0;
-            for (StarredFolder folder : folders) {
-                DefaultMutableTreeNode folderNode = new DefaultMutableTreeNode(new FolderNode(folder));
-                for (String apiKey : folder.getApiKeys()) {
-                    ApiDefinition api = starredApiByKey.get(apiKey);
-                    if (api == null) {
-                        // #66 修复：folder.apiKeys 里的 apiKey 在当前扫描缓存里查不到对应接口
-                        // —— 可能是接口被删除、文件被移除、扫描范围变更等。该条目不显示为接口节点，
-                        // 但 statsLabel 仍要反映出来，让用户知道"为什么文件夹数 ≠ 接口数"。
-                        staleCount++;
-                        continue;
-                    }
-                    // 搜索过滤
-                    if (!keyword.isBlank()) {
-                        String key = (api.getHttpMethod() + " " + api.getUrl() + " " + api.getName()).toLowerCase();
-                        if (!key.contains(keyword)) continue;
-                    }
-                    FolderApiStatus st = folderService.getStatus(folder.getId(), apiKey);
-                    StarredApiNode sNode = new StarredApiNode(api, folder.getId());
-                    sNode.status = st;
-                    Map<String, String> savedParams = folderService.getParams(folder.getId(), apiKey);
-                    sNode.hasParams = savedParams != null && !savedParams.isEmpty();
-                    folderNode.add(new DefaultMutableTreeNode(sNode));
-                    apiCount++;
-                    if (st.shouldHighlightRed()) failedCount++;
+            // 按父 id 分组；父不存在的（脏数据）按顶层处理，避免孤儿节点丢失
+            Set<String> allIds = new HashSet<>();
+            for (StarredFolder f : folders) allIds.add(f.getId());
+            List<StarredFolder> topFolders = new ArrayList<>();
+            Map<String, List<StarredFolder>> childrenByParent = new LinkedHashMap<>();
+            for (StarredFolder f : folders) {
+                if (f.isTopLevel() || !allIds.contains(f.getParentId())) {
+                    topFolders.add(f);
+                } else {
+                    childrenByParent.computeIfAbsent(f.getParentId(), k -> new ArrayList<>()).add(f);
                 }
-                root.add(folderNode);
-                folderCount++;
+            }
+
+            int[] counters = new int[4]; // 0=folderCount 1=apiCount 2=failedCount 3=staleCount
+            for (StarredFolder folder : topFolders) {
+                root.add(buildFolderNode(folder, childrenByParent, keyword, counters));
             }
             treeModel.setRoot(root);
             // setRoot 已触发结构重载，无需再 reload()（reload 会再次清空 expandedState，让紧随的 expandPath 失效）
-            // 同步展开所有文件夹节点：紧随 setRoot 之后，路径基于新 root 构造，有效
-            for (int i = 0; i < root.getChildCount(); i++) {
-                TreeNode n = root.getChildAt(i);
-                tree.expandPath(new TreePath(((DefaultMutableTreeNode) n).getPath()));
-            }
+            // 同步展开所有层级的文件夹节点：紧随 setRoot 之后，路径基于新 root 构造，有效
+            expandAllFolderNodes(root);
             statsLabel.setText(String.format("● 文件夹 %d · 接口 %d%s · 失败标红 %d",
-                    folderCount, apiCount,
-                    staleCount > 0 ? " · ⚠失效 " + staleCount : "",
-                    failedCount));
+                    counters[0], counters[1],
+                    counters[3] > 0 ? " · ⚠失效 " + counters[3] : "",
+                    counters[2]));
         };
         if (ApplicationManager.getApplication().isDispatchThread()) {
             build.run();
         } else {
             ApplicationManager.getApplication().invokeLater(build);
+        }
+    }
+
+    /** 递归构建单个文件夹节点：先挂本层接口，再挂子文件夹 */
+    private DefaultMutableTreeNode buildFolderNode(StarredFolder folder,
+                                                   Map<String, List<StarredFolder>> childrenByParent,
+                                                   String keyword, int[] counters) {
+        DefaultMutableTreeNode folderNode = new DefaultMutableTreeNode(new FolderNode(folder));
+        counters[0]++;
+        for (String apiKey : folder.getApiKeys()) {
+            ApiDefinition api = starredApiByKey.get(apiKey);
+            if (api == null) {
+                // #66 修复：folder.apiKeys 里的 apiKey 在当前扫描缓存里查不到对应接口
+                // —— 可能是接口被删除、文件被移除、扫描范围变更等。该条目不显示为接口节点，
+                // 但 statsLabel 仍要反映出来，让用户知道"为什么文件夹数 ≠ 接口数"。
+                counters[3]++;
+                continue;
+            }
+            // 搜索过滤
+            if (!keyword.isBlank()) {
+                String key = (api.getHttpMethod() + " " + api.getUrl() + " " + api.getName()).toLowerCase();
+                if (!key.contains(keyword)) continue;
+            }
+            FolderApiStatus st = folderService.getStatus(folder.getId(), apiKey);
+            StarredApiNode sNode = new StarredApiNode(api, folder.getId());
+            sNode.status = st;
+            Map<String, String> savedParams = folderService.getParams(folder.getId(), apiKey);
+            sNode.hasParams = savedParams != null && !savedParams.isEmpty();
+            folderNode.add(new DefaultMutableTreeNode(sNode));
+            counters[1]++;
+            if (st.shouldHighlightRed()) counters[2]++;
+        }
+        List<StarredFolder> children = childrenByParent.getOrDefault(folder.getId(), Collections.emptyList());
+        for (StarredFolder child : children) {
+            folderNode.add(buildFolderNode(child, childrenByParent, keyword, counters));
+        }
+        return folderNode;
+    }
+
+    /** 递归展开所有文件夹节点（多级目录需逐层展开） */
+    private void expandAllFolderNodes(DefaultMutableTreeNode node) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (child.getUserObject() instanceof FolderNode) {
+                tree.expandPath(new TreePath(child.getPath()));
+                expandAllFolderNodes(child);
+            }
         }
     }
 
@@ -1142,11 +1173,14 @@ public class ApiTreePanel extends JPanel {
 
             if (uo instanceof FolderNode) {
                 StarredFolder f = ((FolderNode) uo).folder;
+                group.add(starredAction("新建子文件夹", AllIcons.Actions.NewFolder, this::starredNewSubFolder));
                 group.add(starredAction("重命名", AllIcons.Actions.Edit, this::starredRenameFolder));
                 group.addSeparator();
                 group.add(starredAction("AI 生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
                 group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::starredChainBatchTest));
+                group.addSeparator();
+                addStarredFolderExportActions(group, f);
                 group.addSeparator();
                 // 一伦优化 v37：破坏性操作固定放菜单最底部
                 group.add(starredAction("删除文件夹", AllIcons.Actions.Cancel, this::starredDeleteFolder));
@@ -1157,6 +1191,7 @@ public class ApiTreePanel extends JPanel {
                 boolean multi = selectedApis.size() > 1;
                 if (multi) {
                     group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTestSelected));
+                    group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::runChainBatchTest));
                 } else {
                     group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
                     group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
@@ -1166,7 +1201,14 @@ public class ApiTreePanel extends JPanel {
                 if (!multi) {
                     group.add(starredAction("复制到…", AllIcons.Actions.Copy, this::starredCopyTo));
                     group.add(starredAction("复制URL", AllIcons.Actions.Copy, this::starredCopyUrl));
+                    group.add(starredAction("复制为cURL", AllIcons.Debugger.Console, this::starredCopyCurl));
                 }
+                group.addSeparator();
+                // 与全量列表对齐的导出能力（多选/单选均支持，取选中接口）
+                group.add(starredAction("导出 Markdown", AllIcons.ToolbarDecorator.Export, () -> exportApisAsMarkdown(getSelectedApisForExport())));
+                group.add(starredAction("导出 Word", AllIcons.ToolbarDecorator.Export, () -> exportApisAsWord(getSelectedApisForExport())));
+                group.add(starredAction("导出 Postman JSON", AllIcons.ToolbarDecorator.Export, () -> exportApisAsPostmanJson(getSelectedApisForExport())));
+                group.add(starredAction("用模板导出", AllIcons.ToolbarDecorator.Export, () -> starredExportFromTemplate(getSelectedApisForExport())));
                 group.addSeparator();
                 if (!multi) {
                     group.add(starredAction("取消警示", AllIcons.Actions.QuickfixBulb, this::starredClearWarning));
@@ -1177,6 +1219,54 @@ public class ApiTreePanel extends JPanel {
 
         ActionPopupMenu popup = ActionManager.getInstance().createActionPopupMenu(ActionPlaces.POPUP, group);
         popup.getComponent().show(tree, e.getX(), e.getY());
+    }
+
+    /** 文件夹级导出动作：导出该文件夹（含全部子文件夹）内的所有接口 */
+    private void addStarredFolderExportActions(DefaultActionGroup group, StarredFolder f) {
+        group.add(starredAction("导出 Markdown", AllIcons.ToolbarDecorator.Export,
+                () -> exportApisAsMarkdown(starredFolderApisForExport(f))));
+        group.add(starredAction("导出 Word", AllIcons.ToolbarDecorator.Export,
+                () -> exportApisAsWord(starredFolderApisForExport(f))));
+        group.add(starredAction("导出 Postman JSON", AllIcons.ToolbarDecorator.Export,
+                () -> exportApisAsPostmanJson(starredFolderApisForExport(f))));
+        group.add(starredAction("用模板导出", AllIcons.ToolbarDecorator.Export,
+                () -> starredExportFromTemplate(starredFolderApisForExport(f))));
+    }
+
+    /** 解析文件夹（含子目录）内的全部可导出接口 */
+    private List<ApiDefinition> starredFolderApisForExport(StarredFolder f) {
+        refreshStarredApiIndex();
+        List<ApiDefinition> apis = new ArrayList<>();
+        for (String key : folderService.collectSubtreeApiKeys(f.getId())) {
+            ApiDefinition api = starredApiByKey.get(key);
+            if (api != null) apis.add(api);
+        }
+        return apis;
+    }
+
+    /** 收藏视图「用模板导出」：导出范围由调用方注入（接口节点 = 选中接口，文件夹节点 = 子树接口） */
+    private void starredExportFromTemplate(List<ApiDefinition> apis) {
+        if (debuggerPanel == null) {
+            Messages.showWarningDialog(project, "调试面板尚未初始化，请打开工具窗口后重试", "用模板导出");
+            return;
+        }
+        debuggerPanel.exportApiDocFromTemplate(apis);
+    }
+
+    /** 复制为 cURL（收藏视图） */
+    private void starredCopyCurl() {
+        StarredApiNode n = getSelectedStarredApiNode();
+        if (n == null) return;
+        RestAutoLabSettingsState s = RestAutoLabSettingsState.getInstance(project);
+        String url = s.getBaseUrl() + n.api.getUrl();
+        StringBuilder curl = new StringBuilder("curl -X ").append(n.api.getHttpMethod())
+                .append(" '").append(url).append("'");
+        if (n.api.getConsumes() != null) {
+            curl.append(" -H 'Content-Type: ").append(n.api.getConsumes()).append("'");
+        }
+        java.awt.datatransfer.StringSelection sel = new java.awt.datatransfer.StringSelection(curl.toString());
+        java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
+        Messages.showInfoMessage(project, "cURL命令已复制到剪贴板", "复制成功");
     }
 
     /**
@@ -1211,6 +1301,17 @@ public class ApiTreePanel extends JPanel {
                 Messages.getQuestionIcon(), "新文件夹", null);
         if (name == null || name.isBlank()) return;
         folderService.createFolder(name.trim());
+        buildStarredTree();
+    }
+
+    /** 在当前选中的文件夹下新建子文件夹（多级目录） */
+    private void starredNewSubFolder() {
+        StarredFolder parent = getSelectedStarredFolder();
+        if (parent == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "新建子文件夹"); return; }
+        String name = Messages.showInputDialog(project, "子文件夹名称：", "新建子文件夹",
+                Messages.getQuestionIcon(), "新文件夹", null);
+        if (name == null || name.isBlank()) return;
+        folderService.createFolder(name.trim(), parent.getId());
         buildStarredTree();
     }
 
@@ -1291,7 +1392,7 @@ public class ApiTreePanel extends JPanel {
                 String prefix = in ? "✓ " : "";
                 int total = f.getApiKeys() == null ? 0 : f.getApiKeys().size();
                 String suffix = "  (" + total + " 个)";
-                JBLabel label = new JBLabel(prefix + f.getName() + suffix);
+                JBLabel label = new JBLabel(prefix + folderDisplayPath(folders, f) + suffix);
                 if (in) {
                     label.setIcon(AllIcons.Actions.Checked);
                 } else {
@@ -1367,14 +1468,38 @@ public class ApiTreePanel extends JPanel {
         buildStarredTree();
     }
 
+    /**
+     * 计算文件夹的层级显示名（如 "需求A / 订单 / 支付"）。
+     * <p>用于移动/复制/收藏对话框的平面列表，让用户能区分同名子目录；
+     * 父链缺失（脏数据）时截断到当前层，不死循环。</p>
+     */
+    static String folderDisplayPath(List<StarredFolder> all, StarredFolder f) {
+        StringBuilder sb = new StringBuilder(f.getName());
+        String parentId = f.getParentId();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        seen.add(f.getId());
+        while (parentId != null && !parentId.isBlank() && !seen.contains(parentId)) {
+            StarredFolder parent = null;
+            for (StarredFolder c : all) {
+                if (parentId.equals(c.getId())) { parent = c; break; }
+            }
+            if (parent == null) break;
+            seen.add(parent.getId());
+            sb.insert(0, parent.getName() + " / ");
+            parentId = parent.getParentId();
+        }
+        return sb.toString();
+    }
+
     private void starredCopyTo() {
         StarredApiNode n = getSelectedStarredApiNode();
         if (n == null) return;
-        List<StarredFolder> folders = folderService.loadFolders().stream()
+        List<StarredFolder> allFolders = folderService.loadFolders();
+        List<StarredFolder> folders = allFolders.stream()
                 .filter(f -> !f.getId().equals(n.folderId))
                 .collect(Collectors.toList());
         if (folders.isEmpty()) return;
-        String[] names = folders.stream().map(StarredFolder::getName).toArray(String[]::new);
+        String[] names = folders.stream().map(f -> folderDisplayPath(allFolders, f)).toArray(String[]::new);
         Object choice = JOptionPane.showInputDialog(tree, "复制到哪个文件夹？", "复制接口",
                 JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
         if (choice == null) return;
@@ -1387,11 +1512,12 @@ public class ApiTreePanel extends JPanel {
     private void starredMoveTo() {
         StarredApiNode n = getSelectedStarredApiNode();
         if (n == null) return;
-        List<StarredFolder> folders = folderService.loadFolders().stream()
+        List<StarredFolder> allFolders = folderService.loadFolders();
+        List<StarredFolder> folders = allFolders.stream()
                 .filter(f -> !f.getId().equals(n.folderId))
                 .collect(Collectors.toList());
         if (folders.isEmpty()) return;
-        String[] names = folders.stream().map(StarredFolder::getName).toArray(String[]::new);
+        String[] names = folders.stream().map(f -> folderDisplayPath(allFolders, f)).toArray(String[]::new);
         Object choice = JOptionPane.showInputDialog(tree, "移动到哪个文件夹？", "移动接口",
                 JOptionPane.QUESTION_MESSAGE, null, names, names[0]);
         if (choice == null) return;
@@ -1474,27 +1600,47 @@ public class ApiTreePanel extends JPanel {
         if (n != null && onApiSelected != null) onApiSelected.accept(n.api);
     }
 
-    private void starredBatchAiGen() {
+    /** 文件夹级批量操作的目标：(文件夹, 接口) 绑定（参数按文件夹维度持久化） */
+    private static final class FolderApiTarget {
+        final StarredFolder folder;
+        final ApiDefinition api;
+        FolderApiTarget(StarredFolder folder, ApiDefinition api) { this.folder = folder; this.api = api; }
+    }
+
+    /**
+     * 收集文件夹（含全部子文件夹）内的 (文件夹, 接口) 目标列表。
+     * <p>多级目录下批量测试 / AI 生成参数必须递归到子目录；
+     * 同一接口出现在多个文件夹时各自带各自的参数与状态，不去重。</p>
+     */
+    private List<FolderApiTarget> collectSubtreeTargets(StarredFolder f) {
         refreshStarredApiIndex();
+        List<FolderApiTarget> targets = new ArrayList<>();
+        for (StarredFolder folder : folderService.collectSubtreeFolders(f.getId())) {
+            for (String key : folder.getApiKeys()) {
+                ApiDefinition api = starredApiByKey.get(key);
+                if (api != null) targets.add(new FolderApiTarget(folder, api));
+            }
+        }
+        return targets;
+    }
+
+    private void starredBatchAiGen() {
         StarredFolder f = getSelectedStarredFolder();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "AI生成参数"); return; }
-        List<ApiDefinition> targets = new ArrayList<>();
-        for (String key : f.getApiKeys()) {
-            ApiDefinition api = starredApiByKey.get(key);
-            if (api != null) targets.add(api);
-        }
-        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹无接口", "AI生成参数"); return; }
+        List<FolderApiTarget> targets = collectSubtreeTargets(f);
+        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹（含子目录）无接口", "AI生成参数"); return; }
         int ret = Messages.showYesNoDialog(project,
-                "将对「" + f.getName() + "」内 " + targets.size() + " 个接口调用 AI 生成参数，是否继续？",
+                "将对「" + f.getName() + "」（含子文件夹）内 " + targets.size() + " 个接口调用 AI 生成参数，是否继续？",
                 "AI生成参数", Messages.getQuestionIcon());
         if (ret != Messages.YES) return;
 
-        final String folderId = f.getId();
         statsLabel.setText("AI 生成参数中（0/" + targets.size() + "）…");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             int ok = 0, fail = 0;
             for (int i = 0; i < targets.size(); i++) {
-                final ApiDefinition api = targets.get(i);
+                final FolderApiTarget t = targets.get(i);
+                final ApiDefinition api = t.api;
+                final String folderId = t.folder.getId();
                 final int idx = i + 1;
                 try {
                     AiParameterService.GenerateResult gr = aiService.generateParametersWithRaw(
@@ -1523,23 +1669,19 @@ public class ApiTreePanel extends JPanel {
     }
 
     private void starredBatchTest() {
-        refreshStarredApiIndex();
         StarredFolder f = getSelectedStarredFolder();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "批量测试"); return; }
-        List<ApiDefinition> targets = new ArrayList<>();
-        for (String key : f.getApiKeys()) {
-            ApiDefinition api = starredApiByKey.get(key);
-            if (api != null) targets.add(api);
-        }
-        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹无接口", "批量测试"); return; }
+        List<FolderApiTarget> targets = collectSubtreeTargets(f);
+        if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹（含子目录）无接口", "批量测试"); return; }
 
-        final String folderId = f.getId();
         final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
         statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             int passed = 0, failed = 0;
             for (int i = 0; i < targets.size(); i++) {
-                final ApiDefinition api = targets.get(i);
+                final FolderApiTarget t = targets.get(i);
+                final ApiDefinition api = t.api;
+                final String folderId = t.folder.getId();
                 Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
                 if (params == null) params = aiService.generateDefaultParameters(api);
                 final int idx = i + 1;
@@ -1648,7 +1790,8 @@ public class ApiTreePanel extends JPanel {
             return;
         }
         // 弹一个简单选择对话框（不重复造轮子，用 JOptionPane）
-        String[] names = candidates.stream().map(StarredFolder::getName).toArray(String[]::new);
+        final List<StarredFolder> allForDisplay = folders;
+        String[] names = candidates.stream().map(f -> folderDisplayPath(allForDisplay, f)).toArray(String[]::new);
         Object choice = JOptionPane.showInputDialog(tree,
                 "将 " + selected.size() + " 个接口移动到哪个文件夹？",
                 "批量移动",
@@ -1841,20 +1984,18 @@ public class ApiTreePanel extends JPanel {
      * 从收藏文件夹加载 API 和已保存的参数，检测依赖后执行
      */
     private void starredChainBatchTest() {
-        refreshStarredApiIndex();
         StarredFolder f = getSelectedStarredFolder();
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "依赖链批量测试"); return; }
-        java.util.List<ApiDefinition> targets = new ArrayList<>();
-        for (String key : f.getApiKeys()) {
-            ApiDefinition api = starredApiByKey.get(key);
-            if (api != null) targets.add(api);
-        }
-        if (targets.size() < 2) {
+        List<FolderApiTarget> targetPairs = collectSubtreeTargets(f);
+        if (targetPairs.size() < 2) {
             Messages.showInfoMessage(project, "依赖链测试需要至少 2 个接口", "提示");
             return;
         }
 
-        // 检测依赖
+        // 检测依赖（同一接口在多个文件夹中出现时只保留一份，避免依赖图重复节点）
+        java.util.LinkedHashSet<ApiDefinition> uniqApis = new java.util.LinkedHashSet<>();
+        for (FolderApiTarget t : targetPairs) uniqApis.add(t.api);
+        java.util.List<ApiDefinition> targets = new ArrayList<>(uniqApis);
         java.util.List<ApiDependency> deps =
                 DependencyDetector.detect(targets);
 
@@ -1863,19 +2004,18 @@ public class ApiTreePanel extends JPanel {
         if (!dialog.showAndGet()) return;
         deps = dialog.getDependencies();
 
-        final String folderId = f.getId();
         final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
         final Environment env =
                 RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
         final TestProfile profile = new TestProfile("依赖链测试", baseUrl);
 
-        // 从文件夹加载已保存的参数，没有则生成默认值
-        for (ApiDefinition api : targets) {
-            Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
+        // 从各文件夹加载已保存的参数（按 (文件夹, 接口) 优先），没有则生成默认值
+        for (FolderApiTarget t : targetPairs) {
+            Map<String, String> params = folderService.getParams(t.folder.getId(), t.api.uniqueKey());
             if (params == null || params.isEmpty()) {
-                params = aiService.generateDefaultParameters(api);
+                params = aiService.generateDefaultParameters(t.api);
             }
-            profile.setParams(api.uniqueKey(), params);
+            profile.setParams(t.api.uniqueKey(), params);
         }
 
         final java.util.List<ApiDefinition> apis = targets;
@@ -1993,6 +2133,10 @@ public class ApiTreePanel extends JPanel {
         if (userObject instanceof ApiDefinition) {
             return (ApiDefinition) userObject;
         }
+        // 收藏视图：节点包装为 StarredApiNode
+        if (userObject instanceof StarredApiNode) {
+            return ((StarredApiNode) userObject).api;
+        }
         return null;
     }
 
@@ -2017,8 +2161,11 @@ public class ApiTreePanel extends JPanel {
             Object userObj = ((DefaultMutableTreeNode) node).getUserObject();
             if (userObj instanceof ApiDefinition) {
                 result.add((ApiDefinition) userObj);
+            } else if (userObj instanceof StarredApiNode) {
+                // 收藏视图：节点包装为 StarredApiNode，按接口定义收集
+                result.add(((StarredApiNode) userObj).api);
             }
-            // Controller 节点不展开 — 严格只导出用户明确点击的接口
+            // Controller / Folder 节点不展开 — 严格只导出用户明确点击的接口
         }
         // 去重（按 ApiDefinition 自身 hashCode/equals）—— 用户不可能多选同节点但防御下
         java.util.LinkedHashSet<ApiDefinition> uniq = new java.util.LinkedHashSet<>(result);
@@ -2058,7 +2205,17 @@ public class ApiTreePanel extends JPanel {
      * </ul>
      */
     private void exportSelectedApisAsMarkdown() {
-        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        exportApisAsMarkdown(getSelectedApisForExport());
+    }
+
+    /**
+     * 导出指定接口列表为 Markdown 文档（含最近测试数据）。
+     * <ul>
+     *   <li>文件命名与 Word 导出一致：<code>RestAutoLab-yyyyMMddHHmmss.md</code></li>
+     *   <li>导出前弹出确认框，列出要导出的接口（按 Controller 分组），用户可取消</li>
+     * </ul>
+     */
+    private void exportApisAsMarkdown(java.util.List<ApiDefinition> selected) {
         if (selected.isEmpty()) {
             Messages.showInfoMessage(project,
                     "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Markdown\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Markdown\n• Shift 连选接口后再右键 → 导出 Markdown",
@@ -2123,7 +2280,15 @@ public class ApiTreePanel extends JPanel {
      * DTO 等嵌套对象的全部字段以点号路径展开。
      */
     private void exportSelectedApisAsWord() {
-        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        exportApisAsWord(getSelectedApisForExport());
+    }
+
+    /**
+     * 导出指定接口列表为 Word 文档，使用内置「设计开发接口模版」：
+     * 接口设计标题 + 接口名称/地址 + 接口入参/出参三列表格（字段名/类型/注释），
+     * DTO 等嵌套对象的全部字段以点号路径展开。
+     */
+    private void exportApisAsWord(java.util.List<ApiDefinition> selected) {
         if (selected.isEmpty()) {
             Messages.showInfoMessage(project,
                     "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Word\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Word\n• Shift 连选接口后再右键 → 导出 Word",
@@ -2180,7 +2345,13 @@ public class ApiTreePanel extends JPanel {
      * 导出选中的接口（支持单选/多选）为 Postman / Apifox 可导入的 JSON Collection
      */
     private void exportSelectedApisAsPostmanJson() {
-        java.util.List<ApiDefinition> selected = getSelectedApisForExport();
+        exportApisAsPostmanJson(getSelectedApisForExport());
+    }
+
+    /**
+     * 导出指定接口列表为 Postman / Apifox 可导入的 JSON Collection
+     */
+    private void exportApisAsPostmanJson(java.util.List<ApiDefinition> selected) {
         if (selected.isEmpty()) {
             Messages.showInfoMessage(project,
                     "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出 Postman JSON\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出 Postman JSON\n• Shift 连选接口后再右键 → 导出 Postman JSON",
@@ -2398,10 +2569,14 @@ public class ApiTreePanel extends JPanel {
                 setText("<html><b>" + escapeHtml(f.getName()) + "</b> <span style='color:#888;font-size:10px;'>("
                         + f.getApiKeys().size() + ")</span></html>");
                 if (!sel) setForeground(JBColor.foreground());
+                // 多级目录：给文件夹行加垂直内边距，拉开文件夹之间的上下间距（树为可变行高，行高随组件自适应）
+                setBorder(JBUI.Borders.empty(4, 2));
                 return this;
             }
             if (userObj instanceof StarredApiNode) {
                 renderStarredApiNode((StarredApiNode) userObj, sel);
+                // 收藏接口行也留少量垂直内边距，与文件夹行对齐
+                setBorder(JBUI.Borders.empty(1, 2));
                 return this;
             }
 
