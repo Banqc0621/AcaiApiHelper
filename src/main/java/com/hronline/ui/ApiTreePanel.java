@@ -2628,11 +2628,22 @@ public class ApiTreePanel extends JPanel {
      */
     private static class ApiTreeCellRenderer extends DefaultTreeCellRenderer {
 
+        ApiTreeCellRenderer() {
+            // 彻底去掉 DefaultTreeCellRenderer 默认绘制的灰色背景块，
+            // 让每行接口完全透明，背景由 IDE 工具窗口 LaF 统一控制。
+            setBackgroundSelectionColor(null);
+            setBackgroundNonSelectionColor(null);
+            setTextSelectionColor(null);
+            setTextNonSelectionColor(null);
+            setBorderSelectionColor(null);
+        }
+
         @Override
         public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel,
                                                        boolean expanded, boolean leaf, int row, boolean hasFocus) {
             super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
             setBorder(null);
+            setOpaque(false);
 
             if (!(value instanceof DefaultMutableTreeNode)) return this;
             Object userObj = ((DefaultMutableTreeNode) value).getUserObject();
