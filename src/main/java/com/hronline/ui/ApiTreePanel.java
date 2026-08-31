@@ -141,6 +141,7 @@ public class ApiTreePanel extends JPanel {
 
     public ApiTreePanel(@NotNull Project project) {
         super(new BorderLayout());
+        setOpaque(false);
         this.project = project;
         this.folderService = StarredFolderService.getInstance(project);
         this.aiService = AiParameterService.getInstance(project);
@@ -159,9 +160,8 @@ public class ApiTreePanel extends JPanel {
         tree.setRowHeight(0);  // 可变行高，适配HTML渲染
         tree.setBorder(JBUI.Borders.emptyLeft(6));
         tree.setFont(tree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
-        // 去掉「灰尘」背景：不再强制自定义树背景，整体跟随 IDE 工具窗口的 LaF 默认底色，
+        // 去掉「灰尘」背景：不再设置任何自定义背景色，完全跟随 IDE 工具窗口 LaF，
         // 列表区域与周边面板浑然一体，不会再出现灰蒙蒙的杂色块。
-        tree.setBackground(UIManager.getColor("Tree.background"));
 
         // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
         tree.setDragEnabled(true);
@@ -466,14 +466,18 @@ public class ApiTreePanel extends JPanel {
 
         // 构建树面板（用 CardLayout 切换 树/空状态）
         JPanel centerPanel = new JPanel(new CardLayout());
+        centerPanel.setOpaque(false);
         JBScrollPane scrollPane = new JBScrollPane(tree);
         scrollPane.setBorder(null);
+        scrollPane.setOpaque(false);
+        scrollPane.getViewport().setOpaque(false);
         centerPanel.add(scrollPane, "tree");
         centerPanel.add(createEmptyStatePanel(), "empty");
         add(centerPanel, BorderLayout.CENTER);
 
         // 底部统计栏
         JPanel bottomPanel = new JPanel(new BorderLayout());
+        bottomPanel.setOpaque(false);
         bottomPanel.setBorder(JBUI.Borders.empty(2, 6));
         statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         statsLabel.setForeground(JBColor.GRAY);
@@ -489,6 +493,7 @@ public class ApiTreePanel extends JPanel {
      */
     private JPanel createEmptyStatePanel() {
         JPanel panel = new JPanel(new GridBagLayout());
+        panel.setOpaque(false);
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.gridx = 0;
         gbc.insets = new Insets(4, 0, 4, 0);
