@@ -159,7 +159,9 @@ public class ApiTreePanel extends JPanel {
         tree.setRowHeight(0);  // 可变行高，适配HTML渲染
         tree.setBorder(JBUI.Borders.emptyLeft(6));
         tree.setFont(tree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
-        tree.setBackground(JBColor.namedColor("Tree.background", Color.WHITE));
+        // 去掉「灰尘」背景：不再强制自定义树背景，整体跟随 IDE 工具窗口的 LaF 默认底色，
+        // 列表区域与周边面板浑然一体，不会再出现灰蒙蒙的杂色块。
+        tree.setBackground(UIManager.getColor("Tree.background"));
 
         // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
         tree.setDragEnabled(true);
