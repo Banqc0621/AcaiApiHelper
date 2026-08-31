@@ -970,6 +970,11 @@ public class ApiDebuggerPanel extends JPanel {
         bodyFormatCombo.addActionListener(e -> applySelectedBodyFormat());
         topBar.add(bodyFormatCombo);
 
+        // 「回显」按钮：把请求体里手动填写的 JSON 回显到参数列表（先清空现有参数）
+        JButton echoBtn = iconButton("回显", AllIcons.Actions.Download, e -> echoBodyToParams());
+        echoBtn.setToolTipText("把请求体中的 JSON 回显到参数列表（会清空现有参数行）");
+        topBar.add(echoBtn);
+
         topBar.add(Box.createHorizontalStrut(16));
         cookieStatusLabel = new JBLabel("Cookie: (无)");
         UiStyle.hint(cookieStatusLabel);
@@ -2467,6 +2472,92 @@ public class ApiDebuggerPanel extends JPanel {
             bodyEditor.setText(gson.toJson(elem));
         } catch (Exception e) {
             Messages.showWarningDialog(project, "JSON错误: " + e.getMessage(), "格式化失败");
+        }
+    }
+
+    /**
+     * 「回显」：把请求体编辑器中手动填写的 JSON 解析后回显到参数列表。
+     * <p>按需求：先清空参数列表现有数据，再把 JSON 的键值逐行写入（位置=BODY）。
+     * 嵌套对象递归展开为点号路径行（与加载接口时的展开规则一致），
+     * 数组整体作为一行（值为紧凑 JSON 字符串）。</p>
+     */
+    private void echoBodyToParams() {
+        String text = bodyEditor.getText();
+        if (text == null || text.isBlank()) {
+            Messages.showWarningDialog(project, "请求体为空，无法回显", "回显");
+            return;
+        }
+        final com.google.gson.JsonElement parsed;
+        try {
+            parsed = JsonParser.parseString(text);
+        } catch (Exception ex) {
+            Messages.showWarningDialog(project, "请求体不是合法 JSON: " + ex.getMessage(), "回显失败");
+            return;
+        }
+        if (!parsed.isJsonObject()) {
+            Messages.showWarningDialog(project, "回显仅支持 JSON 对象，当前请求体不是 JSON 对象", "回显失败");
+            return;
+        }
+        List<Object[]> rows = flattenJsonToParamRows(parsed.getAsJsonObject(), "", 0);
+        if (rows.isEmpty()) {
+            Messages.showWarningDialog(project, "请求体 JSON 为空对象，没有可回显的字段", "回显");
+            return;
+        }
+        // 回显：先清空参数列表现有数据，再写入回显行
+        paramTableModel.setRowCount(0);
+        for (Object[] row : rows) {
+            paramTableModel.addRow(row);
+        }
+        statusLabel.setText("● 回显完成: 共 " + rows.size() + " 个参数行");
+        // 切回「参数」Tab，让用户立即看到回显结果
+        tabbedPane.setSelectedIndex(0);
+    }
+
+    /**
+     * 把 JSON 对象递归展平为参数表行：{@code [名称, 类型, "BODY", 值, "否", 描述]}。
+     * <ul>
+     *   <li>嵌套对象：父行值为空并提示「对象」，子字段按点号路径继续展开（最多 4 层）</li>
+     *   <li>数组：整体一行，值为紧凑 JSON 字符串，类型 Array</li>
+     *   <li>基础类型：按 JSON 类型推断 String / Boolean / Integer / Long / Double</li>
+     * </ul>
+     */
+    static List<Object[]> flattenJsonToParamRows(com.google.gson.JsonObject obj, String prefix, int depth) {
+        List<Object[]> rows = new ArrayList<>();
+        for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
+            String name = prefix.isEmpty() ? entry.getKey() : prefix + "." + entry.getKey();
+            com.google.gson.JsonElement el = entry.getValue();
+            if (el.isJsonObject()) {
+                if (depth >= 4) {
+                    rows.add(new Object[]{name, "Object", "BODY", el.toString(), "否", "回显（嵌套过深，整体作为字符串）"});
+                    continue;
+                }
+                rows.add(new Object[]{name, "Object", "BODY", "", "否", "对象，字段见下方 " + name + ".* 行"});
+                rows.addAll(flattenJsonToParamRows(el.getAsJsonObject(), name, depth + 1));
+            } else if (el.isJsonArray()) {
+                rows.add(new Object[]{name, "Array", "BODY", el.toString(), "否", "回显（数组）"});
+            } else if (el.isJsonNull()) {
+                rows.add(new Object[]{name, "String", "BODY", "", "否", "回显（null）"});
+            } else if (el.getAsJsonPrimitive().isBoolean()) {
+                rows.add(new Object[]{name, "Boolean", "BODY", el.getAsString(), "否", "回显"});
+            } else if (el.getAsJsonPrimitive().isNumber()) {
+                rows.add(new Object[]{name, inferNumberType(el.getAsString()), "BODY", el.getAsString(), "否", "回显"});
+            } else {
+                rows.add(new Object[]{name, "String", "BODY", el.getAsString(), "否", "回显"});
+            }
+        }
+        return rows;
+    }
+
+    /** 按数字字面量推断类型：含小数点/科学计数法 → Double；超出 int 范围 → Long；否则 Integer。 */
+    static String inferNumberType(String literal) {
+        if (literal.indexOf('.') >= 0 || literal.indexOf('e') >= 0 || literal.indexOf('E') >= 0) {
+            return "Double";
+        }
+        try {
+            long v = Long.parseLong(literal);
+            return (v >= Integer.MIN_VALUE && v <= Integer.MAX_VALUE) ? "Integer" : "Long";
+        } catch (NumberFormatException ex) {
+            return "Double";
         }
     }
     
