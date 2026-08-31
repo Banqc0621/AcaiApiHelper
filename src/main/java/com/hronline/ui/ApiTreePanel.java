@@ -20,11 +20,14 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vfs.JarFileSystem;
 import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.DocumentAdapter;
 import com.intellij.openapi.diagnostic.Logger;
@@ -2446,8 +2449,17 @@ public class ApiTreePanel extends JPanel {
      * 修复提单「快速跳转无效」：扫描时记录的绝对路径可能已失效（项目换目录/换盘符），
      * 先对目标路径做定向刷新（refreshAndFindFileByPath，仅刷新该路径，不做全量 VFS 刷新），
      * 仍找不到时按文件名在项目内回退查找。
+     * <p>修复提单「找不到源文件（.jar!/*.class）」：扫描范围 allScope 会把依赖库里带
+     * {@code @RestController}/{@code @RequestMapping} 的类（如 mybatis-plus-generator-ui 内置
+     * TemplateController）也收录进来，其路径形如 {@code xxx.jar!/com/.../Xxx.class}，
+     * LocalFileSystem 不认 {@code !/} 分隔符。对这类路径改用 JarFileSystem 解析，
+     * 打开 .class 后由 IDEA 内置反编译器展示；.class 记录优先尝试项目内同包同名 .java 源码。</p>
      */
     private VirtualFile resolveSourceFile(String recordedPath) {
+        String[] jarParts = splitJarEntryPath(recordedPath);
+        if (jarParts != null) {
+            return resolveJarEntry(recordedPath, jarParts[0], jarParts[1]);
+        }
         VirtualFile virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(recordedPath);
         if (virtualFile == null || !virtualFile.isValid()) {
             virtualFile = locateByFileName(recordedPath);
@@ -2455,7 +2467,60 @@ public class ApiTreePanel extends JPanel {
         return virtualFile;
     }
 
-    /** 打开编辑器并跳转到指定行（必须在 EDT 调用） */
+    /**
+     * 拆分 {@code xxx.jar!/pkg/Foo.class} 形式路径为 [jar 本地路径, jar 内条目路径]。
+     * 非 jar!/ 路径或条目为空时返回 null。（包私有，供单元测试）
+     */
+    static String[] splitJarEntryPath(String recordedPath) {
+        if (recordedPath == null) return null;
+        int jarSep = recordedPath.indexOf("!/");
+        if (jarSep <= 0) return null;
+        String entry = recordedPath.substring(jarSep + 2);
+        if (entry.isBlank()) return null;
+        return new String[]{recordedPath.substring(0, jarSep), entry};
+    }
+
+    /**
+     * jar 内 .class 条目路径 → 对应 .java 源码路径（用于优先跳源码）；非 .class 返回 null。
+     * （包私有，供单元测试）
+     */
+    static String classEntryToJavaPath(String recordedPath) {
+        if (recordedPath == null || !recordedPath.endsWith(".class")) return null;
+        return recordedPath.substring(0, recordedPath.length() - ".class".length()) + ".java";
+    }
+
+    /** 解析 jar!/ 内部条目路径：优先项目内同名 .java 源码，其次 jar 内 .class（IDEA 自动反编译） */
+    private VirtualFile resolveJarEntry(String recordedPath, String jarPath, String entryPath) {
+        // .class → 先找项目内同包同名 .java（依赖挂了 sources jar 时可直达源码）；
+        // 仅接受包路径后缀精确匹配，避免跳到项目里同名但不同包的类
+        VirtualFile source = locateByFileName(classEntryToJavaPath(recordedPath));
+        if (source != null) return source;
+        try {
+            VirtualFile jarFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(jarPath);
+            if (jarFile == null || !jarFile.isValid()) {
+                // jar 本体路径失效时按文件名回退查找（依赖可能换了本地仓库路径）
+                jarFile = locateByFileName(jarPath);
+            }
+            if (jarFile == null || !jarFile.isValid()) return null;
+            final VirtualFile localJar = jarFile;
+            VirtualFile entry = ReadAction.compute(() -> {
+                try {
+                    return JarFileSystem.getInstance().getRootByLocal(localJar);
+                } catch (Exception ex) {
+                    return null;
+                }
+            });
+            if (entry == null || !entry.isValid()) return null;
+            VirtualFile inside = VfsUtil.findRelativeFile(entry, entryPath.split("/"));
+            return (inside != null && inside.isValid()) ? inside : null;
+        } catch (Exception ex) {
+            LOG.warn("解析 jar 内源文件失败: " + recordedPath, ex);
+            return null;
+        }
+    }
+
+    /** 打开编辑器并跳转到指定行（必须在 EDT 调用）。
+     *  用 openEditor 而非 openTextEditor：jar 内 .class 走反编译编辑器，后者会抛异常。 */
     private void openSourceFile(VirtualFile virtualFile, int line, String recordedPath) {
         try {
             // 行号从 1 开始；非法行号（<=0）退化为不指定行，避免 OpenFileDescriptor 抛 IllegalArgumentException
@@ -2463,7 +2528,7 @@ public class ApiTreePanel extends JPanel {
             OpenFileDescriptor descriptor = offsetLine >= 0
                     ? new OpenFileDescriptor(project, virtualFile, offsetLine, 0)
                     : new OpenFileDescriptor(project, virtualFile);
-            FileEditorManager.getInstance(project).openTextEditor(descriptor, true);
+            FileEditorManager.getInstance(project).openEditor(descriptor, true);
         } catch (Exception ex) {
             LOG.warn("跳转到源码失败: " + recordedPath, ex);
             Messages.showErrorDialog(project, "跳转到源码失败：" + ex.getMessage(), "跳转失败");
@@ -2480,15 +2545,18 @@ public class ApiTreePanel extends JPanel {
                 com.intellij.psi.PsiFile[] files = com.intellij.psi.search.FilenameIndex.getFilesByName(
                         project, fileName, com.intellij.psi.search.GlobalSearchScope.projectScope(project));
                 if (files.length == 0) return null;
-                // 优先：路径后缀与记录路径一致（同包同名文件）
-                String norm = recordedPath.replace('\\', '/');
+                // 优先：路径后缀与记录路径一致（同包同名文件）。
+                // jar!/ 路径取 !/ 之后的条目路径做后缀，避免误命中项目里同名但不同包的类
+                String suffix = recordedPath.replace('\\', '/');
+                int jarSep = suffix.indexOf("!/");
+                if (jarSep >= 0) suffix = suffix.substring(jarSep + 2);
                 for (com.intellij.psi.PsiFile f : files) {
                     if (f.getVirtualFile() != null
-                            && f.getVirtualFile().getPath().replace('\\', '/').endsWith(norm)) {
+                            && f.getVirtualFile().getPath().replace('\\', '/').endsWith(suffix)) {
                         return f.getVirtualFile();
                     }
                 }
-                return files[0].getVirtualFile();
+                return files.length == 1 ? files[0].getVirtualFile() : null;
             });
         } catch (Exception ex) {
             LOG.warn("按文件名回退查找失败: " + recordedPath, ex);
