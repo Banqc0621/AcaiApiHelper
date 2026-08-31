@@ -2610,6 +2610,8 @@ public class ApiTreePanel extends JPanel {
      * 将Color转为CSS可用的hex字符串，自动解析JBColor的当前主题颜色
      */
     static String toHex(Color color) {
+        // 防御：前景/背景色在部分 LaF 渲染路径下可能为 null，回退到主题前景色
+        if (color == null) color = JBColor.foreground();
         // JBColor的getRed/getGreen/getBlue会自动返回当前主题的颜色值
         return String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
     }
@@ -2633,9 +2635,11 @@ public class ApiTreePanel extends JPanel {
             // 让每行接口完全透明，背景由 IDE 工具窗口 LaF 统一控制。
             setBackgroundSelectionColor(null);
             setBackgroundNonSelectionColor(null);
-            setTextSelectionColor(null);
-            setTextNonSelectionColor(null);
             setBorderSelectionColor(null);
+            // 文字前景色不能置 null：DefaultTreeCellRenderer 会用它设置
+            // 组件前景色，为 null 时 toHex(getForeground()) 会 NPE。
+            setTextSelectionColor(JBColor.foreground());
+            setTextNonSelectionColor(JBColor.foreground());
         }
 
         @Override
