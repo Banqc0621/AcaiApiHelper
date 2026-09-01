@@ -3603,8 +3603,10 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private void removeHistoryEntry(RequestHistory selected) {
-        requestHistory.removeIf(h -> h == selected
-                || (h.getId() != null && h.getId().equals(selected.getId())));
+        if (requestHistory.remove(selected)) return;
+        if (selected.getId() != null) {
+            requestHistory.removeIf(h -> selected.getId().equals(h.getId()));
+        }
     }
 
     /** 双击历史记录查看请求头、入参和请求体。 */
