@@ -169,6 +169,15 @@ public class ApiTreePanel extends JPanel {
 
         // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
         tree.setDragEnabled(true);
+        // 收藏模式支持 drop 在节点上/节点之间/节点之上/之下，需要 ON_OR_INSERT 模式让 JTree
+        // 计算 childIndex；空 insert 位置 drop 仍由 ON 处理（移动到目标文件夹内）。
+        if (FILTER_STARRED.equals(currentFilter)) {
+            try {
+                tree.setDropMode(javax.swing.DropMode.ON_OR_INSERT);
+            } catch (Throwable ignore) {
+                // 老 LaF 可能不支持，降级为默认
+            }
+        }
         tree.setTransferHandler(new StarredDragTransferHandler());
 
         // 双击事件：跳转到API源码（收藏模式下双击接口 → 停留在收藏视图并跳转到项目中该接口的源码位置）

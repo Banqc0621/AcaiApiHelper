@@ -1088,19 +1088,12 @@ public class ApiDebuggerPanel extends JPanel {
         });
         clearBtn.setToolTipText("清空响应内容");
 
-        JBLabel hintLabel = new JBLabel("提示：切换『树形视图』可折叠展开 JSON 节点；状态/耗时按级别自动着色");
-        hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
-        hintLabel.setForeground(JBColor.GRAY);
-
         btnPanel.add(viewToggleBtn);
         btnPanel.add(fmtBtn);
         btnPanel.add(copyBtn);
         btnPanel.add(clearBtn);
 
-        JPanel southPanel = new JPanel(new BorderLayout(4, 0));
-        southPanel.add(btnPanel, BorderLayout.WEST);
-        southPanel.add(hintLabel, BorderLayout.CENTER);
-        panel.add(southPanel, BorderLayout.SOUTH);
+        panel.add(btnPanel, BorderLayout.SOUTH);
 
         return panel;
     }
