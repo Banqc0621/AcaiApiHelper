@@ -2670,8 +2670,8 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private void removeSelectedParameter() {
-        int row = paramTable.getSelectedRow();
-        if (row >= 0) paramTableModel.removeRow(row);
+        int viewRow = paramTable.getSelectedRow();
+        if (viewRow >= 0) paramTableModel.removeRow(paramTable.convertRowIndexToModel(viewRow));
     }
 
     private void clearParameterValues() {
