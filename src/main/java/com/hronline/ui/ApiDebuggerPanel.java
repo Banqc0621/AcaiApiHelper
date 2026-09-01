@@ -151,12 +151,18 @@ public class ApiDebuggerPanel extends JPanel {
 
     private DefaultListModel<RequestHistory> historyListModel;
     private JList<RequestHistory> historyList;
+    private JBLabel historyTitleLabel;
     private DefaultTableModel assertionTableModel;
     private JBTable assertionTable;
     private JComboBox<String> expectedStatusCombo;
     private JBLabel cookieStatusLabel;
     private List<RequestHistory> requestHistory = new ArrayList<>();
     private TestResult lastResult = null;
+    /**
+     * 按 apiKey 缓存最近一次响应 —— 切换接口时恢复该接口自己的「上次响应」，
+     * 与「点击接口只看该接口历史」语义对齐：历史和响应都按接口隔离。
+     */
+    private final Map<String, TestResult> lastResponseByApi = new LinkedHashMap<>();
     private final List<ResponseAssertion> currentAssertions = new ArrayList<>();
 
     private final JTabbedPane tabbedPane = new JTabbedPane();
@@ -1652,9 +1658,49 @@ public class ApiDebuggerPanel extends JPanel {
         responseStatusLabel.setText("状态: -");
         responseStatusLabel.setForeground(JBColor.foreground());
         responseTimeLabel.setText("耗时: -");
+        responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>-</b></html>");
+
+        refreshHistoryList();
+
+        // 恢复该接口自己的最近一次响应（与「按接口过滤历史」对齐）：
+        // 切回旧接口时不再被「已清空」逼着重发请求，但显示的也只是它自己的响应。
+        TestResult cached = lastResponseByApi.get(api.uniqueKey());
+        if (cached == null) {
+            RequestHistory latest = null;
+            for (RequestHistory h : requestHistory) {
+                if (historyBelongsToCurrentApi(h)
+                        && (latest == null || h.getTimestamp() > latest.getTimestamp())) {
+                    latest = h;
+                }
+            }
+            if (latest != null) cached = toTestResult(latest, api);
+        }
+        if (cached != null) {
+            lastResult = cached;
+            displayResponse(cached);
+        } else {
+            lastResult = null;
+            responsePane.setTextAndHighlight("");
+            responsePane.setCaretPosition(0);
+            responseCardLayout.show(responseContentPanel, "text");
+            responseViewTree = false;
+        }
 
         tabbedPane.setSelectedIndex(0);
         statusLabel.setText("● 已加载: " + api.displayLabel());
+    }
+
+    private TestResult toTestResult(RequestHistory history, ApiDefinition api) {
+        TestResult result = new TestResult(api);
+        result.setStatusCode(history.getStatusCode());
+        result.setResponseBody(history.getResponseBody());
+        result.setRequestUrl(history.getUrl());
+        result.setRequestBody(history.getRequestBody());
+        result.setDurationMs(history.getDurationMs());
+        result.setTimestamp(history.getTimestamp());
+        result.setStatus(history.getStatusCode() >= 200 && history.getStatusCode() < 300
+                ? TestStatus.PASSED : TestStatus.FAILED);
+        return result;
     }
 
     private void rebuildHeadersForApi(ApiDefinition api) {
@@ -3456,47 +3502,155 @@ public class ApiDebuggerPanel extends JPanel {
         historyList.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_HINT));
         historyList.setFixedCellHeight(26);
 
-        // 加载历史
-        for (RequestHistory h : requestHistory) {
-            historyListModel.addElement(h);
-        }
-
-        JBLabel historyTitle = new JBLabel("请求历史 (最近" + RestAutoLabConstants.MAX_HISTORY_SIZE + "条)，双击重新发送");
-        UiStyle.hint(historyTitle);
-        panel.add(historyTitle, BorderLayout.NORTH);
+        historyTitleLabel = new JBLabel();
+        UiStyle.hint(historyTitleLabel);
+        panel.add(historyTitleLabel, BorderLayout.NORTH);
         panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         JButton resendBtn = iconButton("重新发送", AllIcons.Actions.Execute, e -> resendHistory());
+        JButton viewBtn = iconButton("查看请求", AllIcons.Actions.Edit, e -> viewHistoryDetails());
         JButton diffBtn = iconButton("Diff对比", AllIcons.Actions.Diff, e -> diffSelectedHistory());
         JButton delBtn = iconButton("删除", AllIcons.General.Remove, e -> {
-            int idx = historyList.getSelectedIndex();
-            if (idx >= 0) {
-                historyListModel.remove(idx);
-                requestHistory.remove(idx);
+            RequestHistory selected = historyList.getSelectedValue();
+            if (selected != null) {
+                removeHistoryEntry(selected);
                 persistHistory();
+                refreshHistoryList();
             }
         });
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
-            historyListModel.clear();
-            requestHistory.clear();
+            if (currentApi == null) {
+                requestHistory.clear();
+            } else {
+                requestHistory.removeIf(this::historyBelongsToCurrentApi);
+            }
             persistHistory();
+            refreshHistoryList();
         });
         btnPanel.add(resendBtn);
+        btnPanel.add(viewBtn);
         btnPanel.add(diffBtn);
         btnPanel.add(delBtn);
         btnPanel.add(clearBtn);
         panel.add(btnPanel, BorderLayout.SOUTH);
 
-        // 双击重发
+        // 双击查看请求详情（请求头、入参和请求体）；重新发送保留为显式按钮，避免误触。
         historyList.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mouseClicked(java.awt.event.MouseEvent e) {
-                if (e.getClickCount() == 2) resendHistory();
+                if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e)) {
+                    viewHistoryDetails();
+                }
             }
         });
 
+        refreshHistoryList();
         return panel;
+    }
+
+    /** 当前接口对应的历史记录；未选择接口时保留全量历史。 */
+    private List<RequestHistory> getVisibleHistory() {
+        if (currentApi == null) return new ArrayList<>(requestHistory);
+        List<RequestHistory> visible = new ArrayList<>();
+        for (RequestHistory h : requestHistory) {
+            if (historyBelongsToCurrentApi(h)) visible.add(h);
+        }
+        return visible;
+    }
+
+    /** 兼容旧版没有 apiKey 的记录，按方法 + 路径做一次安全回退匹配。 */
+    private boolean historyBelongsToCurrentApi(RequestHistory h) {
+        if (h == null || currentApi == null) return false;
+        String apiKey = h.getApiKey();
+        if (apiKey != null && !apiKey.isBlank()) {
+            return apiKey.equals(currentApi.uniqueKey());
+        }
+        if (!currentApi.getHttpMethod().equalsIgnoreCase(h.getMethod())) return false;
+        String apiUrl = normalizeHistoryPath(currentApi.getUrl());
+        String historyUrl = normalizeHistoryPath(h.getUrl());
+        return historyUrl.equals(apiUrl)
+                || historyUrl.startsWith(apiUrl + "?")
+                || historyUrl.endsWith(apiUrl)
+                || historyUrl.endsWith(apiUrl + "/");
+    }
+
+    private String normalizeHistoryPath(String url) {
+        if (url == null) return "";
+        String value = url.trim().replace('\\', '/');
+        try {
+            java.net.URI uri = java.net.URI.create(value);
+            if (uri.getPath() != null && !uri.getPath().isBlank()) {
+                value = uri.getPath() + (uri.getQuery() == null ? "" : "?" + uri.getQuery());
+            }
+        } catch (Exception ignored) {
+            // 旧记录可能只保存了相对路径，保留原文本匹配。
+        }
+        if (value.length() > 1 && value.endsWith("/")) value = value.substring(0, value.length() - 1);
+        return value;
+    }
+
+    /** 用全局历史对象刷新当前过滤后的列表，避免可见索引与持久化索引错位。 */
+    private void refreshHistoryList() {
+        if (historyListModel == null) return;
+        historyListModel.clear();
+        List<RequestHistory> visible = getVisibleHistory();
+        for (RequestHistory h : visible) historyListModel.addElement(h);
+        if (historyTitleLabel != null) {
+            String scope = currentApi == null ? "全部接口" : currentApi.displayLabel();
+            historyTitleLabel.setText("请求历史 · " + scope + "（" + visible.size() + " 条），双击查看请求详情");
+        }
+    }
+
+    private void removeHistoryEntry(RequestHistory selected) {
+        requestHistory.removeIf(h -> h == selected
+                || (h.getId() != null && h.getId().equals(selected.getId())));
+    }
+
+    /** 双击历史记录查看请求头、入参和请求体。 */
+    private void viewHistoryDetails() {
+        RequestHistory h = historyList == null ? null : historyList.getSelectedValue();
+        if (h == null) return;
+
+        JDialog dialog = new JDialog(
+                SwingUtilities.getWindowAncestor(this),
+                "请求详情 · " + h.getMethod() + " " + h.getUrl(),
+                Dialog.ModalityType.APPLICATION_MODAL);
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.setBorder(JBUI.Borders.empty(10));
+        JBLabel summary = new JBLabel("<html><b>" + escapeHtml(h.getMethod()) + "</b> "
+                + escapeHtml(h.getUrl()) + " · " + h.getStatusCode() + " · "
+                + h.getDurationMs() + " ms</html>");
+        content.add(summary, BorderLayout.NORTH);
+
+        JTabbedPane details = new JTabbedPane();
+        details.addTab("请求头", createHistoryTextPane(formatMap(h.getHeaders(), "（无请求头记录）")));
+        details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
+        details.addTab("请求体", createHistoryTextPane(
+                h.getRequestBody() == null || h.getRequestBody().isBlank() ? "（无请求体）" : h.getRequestBody()));
+        content.add(details, BorderLayout.CENTER);
+
+        JButton close = iconButton("关闭", AllIcons.Actions.Close, e -> dialog.dispose());
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        actions.add(close);
+        content.add(actions, BorderLayout.SOUTH);
+        dialog.setContentPane(content);
+        dialog.setSize(700, 480);
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
+    }
+
+    private JComponent createHistoryTextPane(String text) {
+        JBTextArea area = new JBTextArea(text);
+        area.setEditable(false);
+        area.setLineWrap(false);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
+        return new JBScrollPane(area);
+    }
+
+    private String formatMap(Map<String, String> values, String emptyText) {
+        if (values == null || values.isEmpty()) return emptyText;
+        return gson.toJson(values);
     }
 
     private static class HistoryCellRenderer extends DefaultListCellRenderer {
@@ -3520,7 +3674,8 @@ public class ApiDebuggerPanel extends JPanel {
                 result.getApiDefinition().getHttpMethod(),
                 result.getRequestUrl(),
                 result.getApiDefinition().uniqueKey(),
-                result.getResponseHeaders(),
+                result.getRequestHeaders(),
+                result.getRequestParameters(),
                 result.getRequestBody(),
                 result.getStatusCode(),
                 result.getResponseBody(),
@@ -3533,12 +3688,7 @@ public class ApiDebuggerPanel extends JPanel {
             requestHistory.remove(requestHistory.size() - 1);
         }
         // 更新列表
-        if (historyListModel != null) {
-            historyListModel.clear();
-            for (RequestHistory rh : requestHistory) {
-                historyListModel.addElement(rh);
-            }
-        }
+        refreshHistoryList();
         persistHistory();
 
         // 更新Cookie状态
@@ -3554,6 +3704,8 @@ public class ApiDebuggerPanel extends JPanel {
         }
 
         lastResult = result;
+        // 缓存该接口自己的最近响应 —— 切回此接口时能立刻恢复展示
+        lastResponseByApi.put(result.getApiDefinition().uniqueKey(), result);
 
         // 更新断言结果
         updateAssertionResults(result);
@@ -3582,10 +3734,14 @@ public class ApiDebuggerPanel extends JPanel {
             }
             api.setUrl(urlPath);
 
-            TestResult result = http.executeRequest(api, baseUrl, Collections.emptyMap(),
+            TestResult result = http.executeRequest(api, baseUrl,
+                    h.getRequestParameters() != null ? h.getRequestParameters() : Collections.emptyMap(),
                     h.getHeaders() != null ? h.getHeaders() : Collections.emptyMap(),
                     h.getRequestBody(), HttpExecutorService.BODY_FORMAT_JSON, getCurrentEnvironment(), currentAssertions);
-            ApplicationManager.getApplication().invokeLater(() -> displayResponse(result));
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (currentApi != null && !historyBelongsToCurrentApi(h)) return;
+                displayResponse(result);
+            });
         });
     }
 
@@ -4231,12 +4387,7 @@ public class ApiDebuggerPanel extends JPanel {
             String result = TestDataExporter.importTestData(settings, scanner, inputPath);
             // 刷新历史列表 UI
             requestHistory = settings.loadRequestHistory();
-            if (historyListModel != null) {
-                historyListModel.clear();
-                for (RequestHistory rh : requestHistory) {
-                    historyListModel.addElement(rh);
-                }
-            }
+            refreshHistoryList();
             Messages.showInfoMessage(project, result, "导入成功");
             statusLabel.setText("● 接口数据已导入并合并");
         } catch (IOException e) {

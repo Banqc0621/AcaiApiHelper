@@ -16,6 +16,8 @@ public class RequestHistory {
     /** 接口稳定键（ApiDefinition.uniqueKey()）— 用于在历史中精确找回该接口的测试记录 */
     private String apiKey = "";
     private Map<String, String> headers = Collections.emptyMap();
+    /** 请求执行时的参数快照（路径 / 查询 / Header / Body 参数） */
+    private Map<String, String> requestParameters = Collections.emptyMap();
     private String requestBody = "";
     private int statusCode = 0;
     private String responseBody = "";
@@ -31,11 +33,19 @@ public class RequestHistory {
 
     public RequestHistory(String method, String url, String apiKey, Map<String, String> headers, String requestBody,
                            int statusCode, String responseBody, long durationMs, String apiName) {
+        this(method, url, apiKey, headers, Collections.emptyMap(), requestBody,
+                statusCode, responseBody, durationMs, apiName);
+    }
+
+    public RequestHistory(String method, String url, String apiKey, Map<String, String> headers,
+                          Map<String, String> requestParameters, String requestBody,
+                          int statusCode, String responseBody, long durationMs, String apiName) {
         this.id = String.valueOf(System.currentTimeMillis());
         this.method = method != null ? method : "";
         this.url = url != null ? url : "";
         this.apiKey = apiKey != null ? apiKey : "";
         this.headers = headers != null ? headers : Collections.emptyMap();
+        this.requestParameters = requestParameters != null ? requestParameters : Collections.emptyMap();
         this.requestBody = requestBody != null ? requestBody : "";
         this.statusCode = statusCode;
         this.responseBody = responseBody != null ? responseBody : "";
@@ -62,6 +72,16 @@ public class RequestHistory {
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
     public Map<String, String> getHeaders() { return headers; }
     public void setHeaders(Map<String, String> headers) { this.headers = headers; }
+    /** 请求头语义别名，保留 getHeaders 兼容已有导出代码。 */
+    public Map<String, String> getRequestHeaders() { return getHeaders(); }
+    public void setRequestHeaders(Map<String, String> requestHeaders) { setHeaders(requestHeaders); }
+    public Map<String, String> getRequestParameters() { return requestParameters; }
+    public void setRequestParameters(Map<String, String> requestParameters) {
+        this.requestParameters = requestParameters != null ? requestParameters : Collections.emptyMap();
+    }
+    /** 兼容调用方的简写别名。 */
+    public Map<String, String> getParameters() { return getRequestParameters(); }
+    public void setParameters(Map<String, String> parameters) { setRequestParameters(parameters); }
     public String getRequestBody() { return requestBody; }
     public void setRequestBody(String requestBody) { this.requestBody = requestBody; }
     public int getStatusCode() { return statusCode; }

@@ -66,6 +66,16 @@ public class StarredFolderPanel extends JPanel {
     /** apiKey(uniqueKey) -> ApiDefinition 解析表 */
     private final Map<String, ApiDefinition> apiByKey = new LinkedHashMap<>();
 
+    /** JTree row 命中区域扩展到整行，便于在文件夹行任意位置触发右键菜单。 */
+    private int getRowForFullWidthPoint(int x, int y) {
+        int row = tree.getRowForLocation(x, y);
+        if (row >= 0) return row;
+        int closest = tree.getClosestRowForLocation(x, y);
+        if (closest < 0) return -1;
+        Rectangle bounds = tree.getRowBounds(closest);
+        return bounds != null && y >= bounds.y && y < bounds.y + bounds.height ? closest : -1;
+    }
+
     public StarredFolderPanel(@NotNull Project project) {
         super(new BorderLayout());
         this.project = project;
@@ -417,7 +427,7 @@ public class StarredFolderPanel extends JPanel {
 
         private void maybeShow(MouseEvent e) {
             if (!e.isPopupTrigger()) return;
-            int row = tree.getRowForLocation(e.getX(), e.getY());
+            int row = getRowForFullWidthPoint(e.getX(), e.getY());
             if (row < 0) {
                 // 空白处右键：提供「新建文件夹」
                 DefaultActionGroup g = new DefaultActionGroup();

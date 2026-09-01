@@ -101,6 +101,8 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnAll = new JToggleButton(FILTER_ALL, AllIcons.General.Filter);
     private final JToggleButton btnStarred = new JToggleButton(FILTER_STARRED, AllIcons.Nodes.Favorite);
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
+    /** 收藏视图右上角的一键折叠按钮 */
+    private JButton collapseAllFoldersButton;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
@@ -160,8 +162,10 @@ public class ApiTreePanel extends JPanel {
         tree.setRowHeight(0);  // 可变行高，适配HTML渲染
         tree.setBorder(JBUI.Borders.emptyLeft(6));
         tree.setFont(tree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
-        // 去掉「灰尘」背景：不再设置任何自定义背景色，完全跟随 IDE 工具窗口 LaF，
-        // 列表区域与周边面板浑然一体，不会再出现灰蒙蒙的杂色块。
+        // 去掉「灰尘」背景：树背景显式设置为 IDE 工具窗口面板背景，
+        // 渲染器又 setOpaque(false) + 背景 null —— 两层都是透明的，
+        // 实际呈现的是父容器（centerPanel）的背景，与 IDE LaF 完全融为一体。
+        tree.setBackground(UIUtil.getPanelBackground());
 
         // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
         tree.setDragEnabled(true);
@@ -548,6 +552,7 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
+            updateCollapseAllFoldersButton();
             // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
             // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
             // 即时恢复全量列表（不必等后台重扫），然后后台异步触发一次扫描刷新缓存。
@@ -574,7 +579,11 @@ public class ApiTreePanel extends JPanel {
             }
             applyFilters();
         });
-        btnStarred.addActionListener(e -> { currentFilter = FILTER_STARRED; applyFilters(); });
+        btnStarred.addActionListener(e -> {
+            currentFilter = FILTER_STARRED;
+            updateCollapseAllFoldersButton();
+            applyFilters();
+        });
         // 一伦 #62：双击「收藏」按钮刷新收藏接口列表（重新拉取收藏文件夹与接口状态）。
         // 单击已由 ActionListener 负责切换视图；这里只处理双击，且仅在已处于收藏视图时生效。
         // #65：双击时必须触发一次完整扫描，否则 allApis 仍是旧数据；扫描内部会自动按
@@ -592,6 +601,7 @@ public class ApiTreePanel extends JPanel {
         });
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
+            updateCollapseAllFoldersButton();
             // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
             triggerScanIfNeeded("最新");
             triggerLatestFilter();
@@ -630,10 +640,35 @@ public class ApiTreePanel extends JPanel {
         });
         row.add(settingsBtn);
 
-        // 弹性空白放在最后 —— 吸收右侧剩余空间，按钮组始终固定靠左
+        // 弹性空白把收藏视图操作推到右上角。
         row.add(Box.createHorizontalGlue());
 
+        collapseAllFoldersButton = new JButton(AllIcons.Actions.Collapseall);
+        collapseAllFoldersButton.setToolTipText("一键收起所有文件夹");
+        collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起所有文件夹");
+        collapseAllFoldersButton.setFocusPainted(false);
+        collapseAllFoldersButton.setBorderPainted(false);
+        collapseAllFoldersButton.setContentAreaFilled(false);
+        collapseAllFoldersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        collapseAllFoldersButton.setPreferredSize(new Dimension(28, 28));
+        collapseAllFoldersButton.setMinimumSize(new Dimension(28, 28));
+        collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
+        collapseAllFoldersButton.addActionListener(e -> collapseAllFolderNodes());
+        row.add(collapseAllFoldersButton);
+        updateCollapseAllFoldersButton();
+
         return row;
+    }
+
+    private void updateCollapseAllFoldersButton() {
+        if (collapseAllFoldersButton == null) return;
+        boolean starred = FILTER_STARRED.equals(currentFilter);
+        collapseAllFoldersButton.setVisible(starred);
+        collapseAllFoldersButton.setEnabled(starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
+                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0);
+        collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起所有文件夹");
+        collapseAllFoldersButton.getParent().revalidate();
+        collapseAllFoldersButton.getParent().repaint();
     }
 
     /**
@@ -1025,6 +1060,7 @@ public class ApiTreePanel extends JPanel {
                     counters[0], counters[1],
                     counters[3] > 0 ? " · ⚠失效 " + counters[3] : "",
                     counters[2]));
+            updateCollapseAllFoldersButton();
         };
         if (ApplicationManager.getApplication().isDispatchThread()) {
             build.run();
@@ -1078,6 +1114,39 @@ public class ApiTreePanel extends JPanel {
                 expandAllFolderNodes(child);
             }
         }
+    }
+
+    /** 一键收起收藏视图中的所有文件夹（后序折叠，确保多级路径仍然有效）。 */
+    private void collapseAllFolderNodes() {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
+            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
+        }
+        tree.clearSelection();
+        updateCollapseAllFoldersButton();
+    }
+
+    private void collapseFolderNode(DefaultMutableTreeNode node) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
+        }
+        tree.collapsePath(new TreePath(node.getPath()));
+    }
+
+    /**
+     * JTree 默认只把 renderer 的文字宽度视为 row 命中区域；收藏夹右键需要覆盖整行。
+     */
+    private int getRowForFullWidthPoint(int x, int y) {
+        int row = tree.getRowForLocation(x, y);
+        if (row >= 0) return row;
+        int closest = tree.getClosestRowForLocation(x, y);
+        if (closest < 0) return -1;
+        Rectangle bounds = tree.getRowBounds(closest);
+        return bounds != null && y >= bounds.y && y < bounds.y + bounds.height ? closest : -1;
     }
 
     /** 获取收藏模式下选中的文件夹节点 */
@@ -1160,7 +1229,7 @@ public class ApiTreePanel extends JPanel {
     }
 
     private void showStarredPopup(MouseEvent e) {
-        int row = tree.getRowForLocation(e.getX(), e.getY());
+        int row = getRowForFullWidthPoint(e.getX(), e.getY());
         DefaultActionGroup group = new DefaultActionGroup();
 
         if (row < 0) {
@@ -2631,14 +2700,14 @@ public class ApiTreePanel extends JPanel {
     private static class ApiTreeCellRenderer extends DefaultTreeCellRenderer {
 
         ApiTreeCellRenderer() {
-            // 彻底去掉 DefaultTreeCellRenderer 默认绘制的灰色背景块，
-            // 让每行接口完全透明，背景由 IDE 工具窗口 LaF 统一控制。
+            // 选中色完全交给 IDE 主题：TreeUI 自身负责绘制选中行底色，
+            // renderer 只负责文字前景色（用 IDE 主题的标准选中/未选中前景色）。
+            // 关键修复：之前 trae halo 用 JBColor.foreground() 让选中/未选中前景色相同，
+            // 导致选中行看起来和未选中没区别——这是「选中色乱了」的根因。
             setBackgroundSelectionColor(null);
             setBackgroundNonSelectionColor(null);
             setBorderSelectionColor(null);
-            // 文字前景色不能置 null：DefaultTreeCellRenderer 会用它设置
-            // 组件前景色，为 null 时 toHex(getForeground()) 会 NPE。
-            setTextSelectionColor(JBColor.foreground());
+            setTextSelectionColor(JBColor.namedColor("Tree.selectionForeground", Color.WHITE));
             setTextNonSelectionColor(JBColor.foreground());
         }
 
@@ -2647,7 +2716,17 @@ public class ApiTreePanel extends JPanel {
                                                        boolean expanded, boolean leaf, int row, boolean hasFocus) {
             super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
             setBorder(null);
-            setOpaque(false);
+            // 仅选中行绘制 IDE 原生选中底色；未选中的具体接口行保持完全透明，
+            // 避免 DefaultTreeCellRenderer 的灰色背景块污染列表。
+            Color selectionBackground = UIManager.getColor("Tree.selectionBackground");
+            Color selectionForeground = UIManager.getColor("Tree.selectionForeground");
+            if (selectionBackground == null) selectionBackground = JBColor.namedColor("Tree.selectionBackground", new Color(0x36, 0x75, 0xB8));
+            if (selectionForeground == null) selectionForeground = JBColor.namedColor("Tree.selectionForeground", Color.WHITE);
+            setOpaque(sel);
+            setBackground(sel ? selectionBackground : null);
+            setForeground(sel ? selectionForeground : JBColor.foreground());
+            setTextSelectionColor(selectionForeground);
+            setTextNonSelectionColor(JBColor.foreground());
 
             if (!(value instanceof DefaultMutableTreeNode)) return this;
             Object userObj = ((DefaultMutableTreeNode) value).getUserObject();
@@ -2656,7 +2735,8 @@ public class ApiTreePanel extends JPanel {
             if (userObj instanceof FolderNode) {
                 StarredFolder f = ((FolderNode) userObj).folder;
                 setIcon(AllIcons.Nodes.Folder);
-                setText("<html><b>" + escapeHtml(f.getName()) + "</b> <span style='color:#888;font-size:10px;'>("
+                String countColor = sel ? toHex(selectionForeground) : "#888";
+                setText("<html><b>" + escapeHtml(f.getName()) + "</b> <span style='color:" + countColor + ";font-size:10px;'>("
                         + f.getApiKeys().size() + ")</span></html>");
                 if (!sel) setForeground(JBColor.foreground());
                 // 多级目录：给文件夹行加垂直内边距，拉开文件夹之间的上下间距（树为可变行高，行高随组件自适应）
@@ -2692,23 +2772,24 @@ public class ApiTreePanel extends JPanel {
             boolean green = st != null && st.isPassed() && st.getTestedAt() > 0 && !red;
 
             String textColor;
-            if (red) textColor = sel ? "#FFCCCC" : "#CC0000";
-            else if (green) textColor = sel ? "#BBF0BB" : "#2E7D32";
-            else textColor = sel ? "#FFFFFF" : toHex(getForeground());
+            if (red) textColor = sel ? toHex(selectionForeground()) : "#CC0000";
+            else if (green) textColor = sel ? toHex(selectionForeground()) : "#2E7D32";
+            else textColor = sel ? toHex(selectionForeground()) : toHex(getForeground());
 
             StringBuilder text = new StringBuilder("<html><span style='background-color:").append(methodHex)
                     .append("; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>").append(method)
                     .append("</span>&nbsp;<span style='color:").append(textColor)
                     .append("; font-size:11px;'>").append(escapeHtml(url)).append("</span>");
             if (red) {
-                text.append(" <span style='color:#CC0000;font-size:10px;'>✗ ")
+                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#CC0000").append(";font-size:10px;'>✗ ")
                         .append(escapeHtml(st.getMessage() == null ? "失败" : st.getMessage())).append("</span>");
             } else if (green) {
-                text.append(" <span style='color:#2E7D32;font-size:10px;'>✓</span>");
+                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#2E7D32").append(";font-size:10px;'>✓</span>");
             }
             // 已配置参数标记（蓝色小标签），让用户直观看到参数已持久化
             if (node.hasParams) {
-                text.append(" <span style='color:#1565C0;font-size:9px;'>[参数]</span>");
+                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#1565C0")
+                        .append(";font-size:9px;'>[参数]</span>");
             }
             setText(text.append("</html>").toString());
             setIcon(AllIcons.Nodes.Plugin);
@@ -2734,12 +2815,12 @@ public class ApiTreePanel extends JPanel {
 
             // 废弃 API：strikethrough + 红色
             if (api.isDeprecated()) {
-                String depColor = sel ? "#FFAAAA" : toHex(RestAutoLabConstants.COLOR_TREE_DEPRECATED);
+                String depColor = sel ? toHex(selectionForeground()) : toHex(RestAutoLabConstants.COLOR_TREE_DEPRECATED);
                 String text = "<html><span style='background-color:" + methodHex
                         + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
                         + "</span>&nbsp;<span style='color:" + depColor
                         + "; text-decoration:line-through; font-size:11px;'>" + escapeHtml(url) + "</span>";
-                if (isStarred) text += " ⭐";
+                if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
                 if (description != null && !description.isBlank()) {
                     text += "&nbsp;<span style='color:" + depColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
                 }
@@ -2751,13 +2832,15 @@ public class ApiTreePanel extends JPanel {
 
             // 手动 API：灰色文字 + 手势图标
             if (!api.isAutoDetected()) {
-                String manualColor = sel ? "#CCCCCC" : toHex(RestAutoLabConstants.COLOR_TREE_MANUAL);
+                String manualColor = sel ? toHex(selectionForeground()) : toHex(RestAutoLabConstants.COLOR_TREE_MANUAL);
                 String text = "<html><span style='background-color:" + methodHex
                         + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
                         + "</span>&nbsp;<span style='color:" + manualColor + "; font-size:11px;'>"
                         + escapeHtml(url) + " \u270b</span>";
-                if (isStarred) text += " ⭐";
-                if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;'>\uD83D\uDF32</span>";
+                if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
+                if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) {
+                    text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#2E7D32") + ";'>● 新增</span>";
+                }
                 if (description != null && !description.isBlank()) {
                     text += "&nbsp;<span style='color:" + manualColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
                 }
@@ -2768,13 +2851,15 @@ public class ApiTreePanel extends JPanel {
             }
 
             // 普通自动 API
-            String textColor = sel ? "#FFFFFF" : toHex(getForeground());
+            String textColor = sel ? toHex(selectionForeground()) : toHex(getForeground());
             String text = "<html><span style='background-color:" + methodHex
                     + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
                     + "</span>&nbsp;<span style='color:" + textColor + "; font-size:11px;'>"
                     + escapeHtml(url) + "</span>";
-            if (isStarred) text += " <span style='color:#FFA000;'>⭐</span>";
-            if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) text += " <span style='color:#2E7D32;font-size:10px;'>● 新增</span>";
+            if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
+            if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) {
+                text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#2E7D32") + ";font-size:10px;'>● 新增</span>";
+            }
             if (description != null && !description.isBlank()) {
                 text += "&nbsp;<span style='color:" + textColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
             }
@@ -2786,9 +2871,14 @@ public class ApiTreePanel extends JPanel {
          * 渲染控制器分组节点：图标 + 加粗名称
          */
         private void renderControllerNode(String label, boolean expanded, boolean sel) {
-            String textColor = sel ? "#FFFFFF" : toHex(getForeground());
+            String textColor = sel ? toHex(selectionForeground()) : toHex(getForeground());
             setText("<html><b style='color:" + textColor + ";'>" + escapeHtml(label) + "</b></html>");
             setIcon(expanded ? AllIcons.Nodes.Module : AllIcons.Nodes.Folder);
+        }
+
+        private Color selectionForeground() {
+            Color color = UIManager.getColor("Tree.selectionForeground");
+            return color != null ? color : JBColor.namedColor("Tree.selectionForeground", Color.WHITE);
         }
 
         /**

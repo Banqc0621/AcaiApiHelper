@@ -159,6 +159,9 @@ public final class HttpExecutorService {
             result.setResponseHeaders(extractResponseHeaders(response));
             result.setRequestUrl(fullUrl);
             result.setRequestBody(requestBodyDisplay);
+            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
+                    ? Collections.emptyMap() : paramValues));
+            result.setRequestHeaders(buildRequestHeaders(api, extraHeaders, contentType, environment));
             result.setDurationMs(duration);
             result.setTimestamp(System.currentTimeMillis());
 
@@ -197,6 +200,12 @@ public final class HttpExecutorService {
             result.setApiDefinition(api);
             result.setStatus(TestStatus.CANCELLED);
             result.setErrorMessage("请求已取消");
+            result.setRequestUrl(api == null ? "" : api.getUrl());
+            result.setRequestBody(requestBody == null ? "" : requestBody);
+            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
+                    ? Collections.emptyMap() : paramValues));
+            result.setRequestHeaders(new LinkedHashMap<>(extraHeaders == null
+                    ? Collections.emptyMap() : extraHeaders));
             result.setDurationMs(System.currentTimeMillis() - startTime);
             result.setTimestamp(System.currentTimeMillis());
             log.info("请求已取消: " + api.getHttpMethod() + " " + api.getUrl());
@@ -209,6 +218,12 @@ public final class HttpExecutorService {
             result.setApiDefinition(api);
             result.setStatus(TestStatus.ERROR);
             result.setErrorMessage(e.getClass().getSimpleName() + ": " + e.getMessage());
+            result.setRequestUrl(api == null ? "" : api.getUrl());
+            result.setRequestBody(requestBody == null ? "" : requestBody);
+            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
+                    ? Collections.emptyMap() : paramValues));
+            result.setRequestHeaders(new LinkedHashMap<>(extraHeaders == null
+                    ? Collections.emptyMap() : extraHeaders));
             result.setDurationMs(duration);
             result.setTimestamp(System.currentTimeMillis());
 
@@ -217,6 +232,23 @@ public final class HttpExecutorService {
             }
             return result;
         }
+    }
+
+    /**
+     * 生成历史记录用的有效请求头快照，与 buildHttpRequest 的覆盖顺序保持一致。
+     */
+    private Map<String, String> buildRequestHeaders(ApiDefinition api, Map<String, String> extraHeaders,
+                                                     String contentType, Environment env) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put(RestAutoLabConstants.HEADER_CONTENT_TYPE, resolveEnvVars(contentType, env));
+        headers.put(RestAutoLabConstants.HEADER_ACCEPT, resolveEnvVars(api.getProduces(), env));
+        if (api.getHeaders() != null) {
+            api.getHeaders().forEach((k, v) -> headers.put(k, resolveEnvVars(v, env)));
+        }
+        if (extraHeaders != null) {
+            extraHeaders.forEach((k, v) -> headers.put(k, resolveEnvVars(v, env)));
+        }
+        return headers;
     }
 
     /** 简化版本（使用默认JSON body格式，无断言） */

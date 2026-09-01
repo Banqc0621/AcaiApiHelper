@@ -30,6 +30,10 @@ public class TestResult {
     private String requestUrl = "";
     /** 实际发送的请求体 */
     private String requestBody = "";
+    /** 实际发送的请求头（含接口、环境及本次请求覆盖值） */
+    private Map<String, String> requestHeaders = Collections.emptyMap();
+    /** 实际发送的参数（路径 / 查询 / Header / Body 参数的键值快照） */
+    private Map<String, String> requestParameters = Collections.emptyMap();
     /** 请求耗时（毫秒） */
     private long durationMs = 0;
     /** 异常信息（仅ERROR状态时有值） */
@@ -85,6 +89,16 @@ public class TestResult {
 
     public String getRequestBody() { return requestBody; }
     public void setRequestBody(String requestBody) { this.requestBody = requestBody; }
+
+    public Map<String, String> getRequestHeaders() { return requestHeaders; }
+    public void setRequestHeaders(Map<String, String> requestHeaders) {
+        this.requestHeaders = requestHeaders != null ? requestHeaders : Collections.emptyMap();
+    }
+
+    public Map<String, String> getRequestParameters() { return requestParameters; }
+    public void setRequestParameters(Map<String, String> requestParameters) {
+        this.requestParameters = requestParameters != null ? requestParameters : Collections.emptyMap();
+    }
 
     public long getDurationMs() { return durationMs; }
     public void setDurationMs(long durationMs) { this.durationMs = durationMs; }
