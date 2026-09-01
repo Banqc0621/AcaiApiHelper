@@ -31,6 +31,8 @@ public class RestAutoLabToolWindowFactory implements ToolWindowFactory {
         splitter.setHonorComponentsMinimumSize(false);
         // 持久化拖动比例，下次打开工具窗口自动恢复
         splitter.setSplitterProportionKey("RestAutoLabToolWindow.splitter.proportion");
+        // 左右主分割线使用与调试区一致的高对比度样式，扩大拖动命中区并显示方向光标。
+        ApiDebuggerPanel.installSplitterHint(splitter);
 
         // 把 treePanel 注入到 debuggerPanel，使其能获取用户在树中的多选（用于 Markdown 导出）
         debuggerPanel.setTreePanel(treePanel);

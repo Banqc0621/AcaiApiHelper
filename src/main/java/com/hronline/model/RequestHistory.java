@@ -16,11 +16,15 @@ public class RequestHistory {
     /** 接口稳定键（ApiDefinition.uniqueKey()）— 用于在历史中精确找回该接口的测试记录 */
     private String apiKey = "";
     private Map<String, String> headers = Collections.emptyMap();
+    /** HTTP 响应头快照；旧版本历史数据没有该字段时按空集合兼容。 */
+    private Map<String, String> responseHeaders = Collections.emptyMap();
     /** 请求执行时的参数快照（路径 / 查询 / Header / Body 参数） */
     private Map<String, String> requestParameters = Collections.emptyMap();
     private String requestBody = "";
     private int statusCode = 0;
     private String responseBody = "";
+    /** 请求执行异常描述（例如 JSON 解析异常）；正常响应时为空。 */
+    private String errorMessage = "";
     private long durationMs = 0;
     private String apiName = "";
 
@@ -75,6 +79,10 @@ public class RequestHistory {
     /** 请求头语义别名，保留 getHeaders 兼容已有导出代码。 */
     public Map<String, String> getRequestHeaders() { return getHeaders(); }
     public void setRequestHeaders(Map<String, String> requestHeaders) { setHeaders(requestHeaders); }
+    public Map<String, String> getResponseHeaders() { return responseHeaders; }
+    public void setResponseHeaders(Map<String, String> responseHeaders) {
+        this.responseHeaders = responseHeaders != null ? responseHeaders : Collections.emptyMap();
+    }
     public Map<String, String> getRequestParameters() { return requestParameters; }
     public void setRequestParameters(Map<String, String> requestParameters) {
         this.requestParameters = requestParameters != null ? requestParameters : Collections.emptyMap();
@@ -88,6 +96,10 @@ public class RequestHistory {
     public void setStatusCode(int statusCode) { this.statusCode = statusCode; }
     public String getResponseBody() { return responseBody; }
     public void setResponseBody(String responseBody) { this.responseBody = responseBody; }
+    public String getErrorMessage() { return errorMessage; }
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage != null ? errorMessage : "";
+    }
     public long getDurationMs() { return durationMs; }
     public void setDurationMs(long durationMs) { this.durationMs = durationMs; }
     public String getApiName() { return apiName; }

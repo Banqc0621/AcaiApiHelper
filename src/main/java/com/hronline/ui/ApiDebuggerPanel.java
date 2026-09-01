@@ -240,7 +240,7 @@ public class ApiDebuggerPanel extends JPanel {
         splitter.setHonorComponentsMinimumSize(false);
         // 持久化拖动比例，下次打开工具窗口自动恢复
         splitter.setSplitterProportionKey("RestAutoLab.Debugger.VerticalSplitter");
-        // Round 4：分割线视觉强化 —— 主题色 + 抓手光标 + hover 加深，便于定位拖动
+        // Round 4：分割线视觉强化 —— 主题色 + 加宽命中区 + 方向正确的拖动光标
         installSplitterHint(splitter);
         add(splitter, BorderLayout.CENTER);
 
@@ -793,9 +793,12 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * Round 4：保存当前请求体到当前接口的持久化层。
+     * Round 4：显式保存当前接口的请求配置。
      * 收藏视图（currentFolderId != null）→ 按 (folderId, apiKey) 存，
-     * 全量视图（folderId == null）→ 按 apiKey 存，保证切换页面后自动恢复。
+     * 全量视图（folderId == null）→ 按 apiKey 存，保证切换页面后参数、请求头、请求体都能恢复。
+     *
+     * <p>保存按钮位于“请求体”页，保存的是当前编辑中的整套请求配置，而不是只保存
+     * body 文本。这样取消“发起请求即保存”后，用户仍可在发起请求前一次性提交所有编辑。</p>
      */
     private void saveCurrentRequestBody() {
         if (currentApi == null) {
@@ -805,69 +808,84 @@ public class ApiDebuggerPanel extends JPanel {
         String body = bodyEditor.getText();
         String normalized = (body != null && !body.isBlank()) ? body : null;
         String apiKey = currentApi.uniqueKey();
+        Map<String, String> params = collectAllParameterPairs();
+        Map<String, String> headers = collectHeaderValues();
         try {
             if (currentFolderId != null) {
                 StarredFolderService svc = StarredFolderService.getInstance(project);
+                svc.setParams(currentFolderId, apiKey, params);
+                svc.setHeaders(currentFolderId, apiKey, headers);
                 svc.setBody(currentFolderId, apiKey, normalized);
             } else {
                 RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-                Map<String, String> all = settings.loadApiRequestBodies();
-                if (normalized == null) all.remove(apiKey);
-                else all.put(apiKey, normalized);
-                settings.saveApiRequestBodies(all);
+                Map<String, Map<String, String>> allParams = settings.loadApiRequestParams();
+                if (params.isEmpty()) allParams.remove(apiKey);
+                else allParams.put(apiKey, new LinkedHashMap<>(params));
+                settings.saveApiRequestParams(allParams);
+
+                Map<String, Map<String, String>> allHeaders = settings.loadApiRequestHeaders();
+                if (headers.isEmpty()) allHeaders.remove(apiKey);
+                else allHeaders.put(apiKey, new LinkedHashMap<>(headers));
+                settings.saveApiRequestHeaders(allHeaders);
+
+                Map<String, String> allBodies = settings.loadApiRequestBodies();
+                if (normalized == null) allBodies.remove(apiKey);
+                else allBodies.put(apiKey, normalized);
+                settings.saveApiRequestBodies(allBodies);
             }
-            statusLabel.setText("● 已保存请求体: " + currentApi.displayLabel());
+            statusLabel.setText("● 已保存参数、请求头和请求体: " + currentApi.displayLabel());
         } catch (Exception ex) {
-            LOG.warn("[保存请求体] 写入失败: apiKey=" + apiKey, ex);
-            statusLabel.setText("● 保存请求体失败: " + ex.getMessage());
+            LOG.warn("[保存请求配置] 写入失败: apiKey=" + apiKey, ex);
+            statusLabel.setText("● 保存请求配置失败: " + ex.getMessage());
         }
     }
 
     /**
-     * Round 4：分割线视觉强化。JBSplitter 内部 divider 默认是 1px 透明或浅灰线，
-     * 用户反馈难拖。这里：
-     * <ol>
-     *   <li>递归找 splitter 里名为 "Divider" 的内部子组件，背景设为边框色 + 抓手光标</li>
-     *   <li>splitter 自身在 shown 后整块加 1px 边框 hover 高亮，方便定位拖动区</li>
-     * </ol>
+     * Round 4：分割线视觉强化。默认 divider 过窄且颜色接近背景，难以定位和拖动。
+     * 加宽到 8px（扩大命中区），按 splitter 方向使用左右/上下光标，并在悬停时
+     * 提升对比度。响应式分割线本身才接收鼠标事件，避免只悬停在父容器时才反馈。
      */
-    private void installSplitterHint(JBSplitter splitter) {
-        Color dividerColor = JBColor.namedColor("Borders.color", new JBColor(0xC0C0C0, 0x555555));
-        Cursor grabCursor = Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR);
-        Runnable styleDivider = () -> {
-            for (Component c : splitter.getComponents()) {
-                if (c == null) continue;
-                String name = c.getClass().getSimpleName();
-                if (name.contains("Divider") || c instanceof javax.swing.JComponent jc && "Divider".equals(jc.getName())) {
-                    c.setBackground(dividerColor);
-                    c.setCursor(grabCursor);
-                    if (c instanceof javax.swing.JComponent jc2) {
-                        jc2.setOpaque(true);
-                    }
-                }
-            }
-        };
-        // 初次显示 + 之后每次重排都刷一次
-        splitter.addComponentListener(new java.awt.event.ComponentAdapter() {
-            @Override public void componentShown(java.awt.event.ComponentEvent e) { styleDivider.run(); }
-            @Override public void componentResized(java.awt.event.ComponentEvent e) { styleDivider.run(); }
-        });
-        // hover 高亮整 splitter 的浅边框，光标变为 N_RESIZE 提示可拖
-        Color hoverBorder = JBColor.namedColor("Component.focusColor", new JBColor(0x4A90E2, 0x4A90E2));
-        javax.swing.border.Border idleBorder = JBUI.Borders.customLine(dividerColor, 0, 0, 1, 0);
-        javax.swing.border.Border hoverBorderLine = JBUI.Borders.customLine(hoverBorder, 0, 0, 2, 0);
-        splitter.setBorder(idleBorder);
-        splitter.addMouseListener(new java.awt.event.MouseAdapter() {
+    static void installSplitterHint(JBSplitter splitter) {
+        JPanel divider = splitter.getDivider();
+        if (divider == null) return;
+
+        boolean vertical = splitter.isVertical();
+        int dividerWidth = JBUI.scale(8);
+        Color dividerColor = JBColor.namedColor("Borders.color", new JBColor(0xAEB6C2, 0x5C6673));
+        Color hoverColor = JBColor.namedColor("Component.focusColor", new JBColor(0x4A90E2, 0x6EA8FE));
+        Cursor dragCursor = Cursor.getPredefinedCursor(
+                vertical ? Cursor.N_RESIZE_CURSOR : Cursor.E_RESIZE_CURSOR);
+        divider.setPreferredSize(vertical
+                ? new Dimension(1, dividerWidth)
+                : new Dimension(dividerWidth, 1));
+        divider.setMinimumSize(vertical
+                ? new Dimension(1, dividerWidth)
+                : new Dimension(dividerWidth, 1));
+        divider.setBackground(dividerColor);
+        divider.setOpaque(true);
+        divider.setCursor(dragCursor);
+        divider.setToolTipText(vertical ? "拖动调整上下区域高度" : "拖动调整左右面板宽度");
+        divider.getAccessibleContext().setAccessibleName("可拖动分割线");
+        divider.setBorder(vertical
+                ? BorderFactory.createMatteBorder(1, 0, 1, 0, dividerColor)
+                : BorderFactory.createMatteBorder(0, 1, 0, 1, dividerColor));
+        splitter.setDividerWidth(dividerWidth);
+
+        divider.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseEntered(java.awt.event.MouseEvent e) {
-                splitter.setBorder(hoverBorderLine);
-                splitter.setCursor(grabCursor);
+                divider.setBackground(hoverColor);
+                divider.setBorder(vertical
+                        ? BorderFactory.createMatteBorder(1, 0, 1, 0, hoverColor)
+                        : BorderFactory.createMatteBorder(0, 1, 0, 1, hoverColor));
             }
+
             @Override public void mouseExited(java.awt.event.MouseEvent e) {
-                splitter.setBorder(idleBorder);
-                splitter.setCursor(Cursor.getDefaultCursor());
+                divider.setBackground(dividerColor);
+                divider.setBorder(vertical
+                        ? BorderFactory.createMatteBorder(1, 0, 1, 0, dividerColor)
+                        : BorderFactory.createMatteBorder(0, 1, 0, 1, dividerColor));
             }
         });
-        styleDivider.run();
     }
 
     private void loadPreRequestConfig(ApiDefinition api) {
@@ -1224,12 +1242,11 @@ public class ApiDebuggerPanel extends JPanel {
 
         // ── 底部：格式化 / 保存 / 清空 按钮 ──
         // Round 4：在「格式化」与「清空」之间插入「保存」按钮。用户明确反对发送即保存，
-        // 改为显式触发：点击后把当前 body 持久化到当前接口（收藏视图按 (folderId, apiKey)，
-        // 全量视图按 apiKey），确保切换页面不丢。状态栏给出「● 已保存」反馈。
+        // 改为显式触发：点击后把当前参数、请求头和 body 持久化到当前接口，确保切换页面不丢。
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatJson());
         JButton saveBtn = iconButton("保存", AllIcons.Actions.Commit, e -> saveCurrentRequestBody());
-        saveBtn.setToolTipText("把当前请求体保存到当前接口（切换页面后自动恢复）");
+        saveBtn.setToolTipText("保存当前接口的参数、请求头和请求体（切换页面后自动恢复）");
         JButton clrBtn = iconButton("清空", AllIcons.Actions.GC, e -> bodyEditor.setText(""));
         btnPanel.add(fmtBtn);
         btnPanel.add(saveBtn);
@@ -1962,11 +1979,16 @@ public class ApiDebuggerPanel extends JPanel {
         result.setResponseBody(history.getResponseBody());
         result.setRequestUrl(history.getUrl());
         result.setRequestHeaders(history.getHeaders());
+        result.setResponseHeaders(history.getResponseHeaders());
         result.setRequestParameters(history.getRequestParameters());
         result.setRequestBody(history.getRequestBody());
         result.setDurationMs(history.getDurationMs());
         result.setTimestamp(history.getTimestamp());
-        result.setStatus(history.getStatusCode() >= 200 && history.getStatusCode() < 300
+        String historyError = history.getErrorMessage();
+        result.setErrorMessage(historyError);
+        result.setStatus(historyError != null && !historyError.isBlank() && history.getStatusCode() == 0
+                ? TestStatus.ERROR
+                : history.getStatusCode() >= 200 && history.getStatusCode() < 300
                 ? TestStatus.PASSED : TestStatus.FAILED);
         return result;
     }
@@ -3979,10 +4001,9 @@ public class ApiDebuggerPanel extends JPanel {
         details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
         details.addTab("请求体", createHistoryTextPane(
                 h.getRequestBody() == null || h.getRequestBody().isBlank() ? "（无请求体）" : h.getRequestBody()));
-        // Round 4：补「响应」tab —— 显示当时那次的完整响应 body，按状态码着色头部摘要。
-        String responseBody = h.getResponseBody() == null ? "" : h.getResponseBody();
-        if (responseBody.isBlank()) responseBody = "（无响应记录）";
-        details.addTab("响应", createHistoryTextPane(responseBody));
+        // Round 4：补「响应」tab —— 显示当时那次的完整响应（状态、响应头、响应体及异常文本），
+        // 不截断 body；网络/JSON 异常也要把用户可见的原始描述保留下来。
+        details.addTab("响应", createHistoryTextPane(formatHistoryResponse(h)));
         // 默认打开「响应」tab，因为用户的诉求就是看历史响应
         details.setSelectedIndex(3);
         content.add(details, BorderLayout.CENTER);
@@ -4008,6 +4029,20 @@ public class ApiDebuggerPanel extends JPanel {
     private String formatMap(Map<String, String> values, String emptyText) {
         if (values == null || values.isEmpty()) return emptyText;
         return gson.toJson(values);
+    }
+
+    private String formatHistoryResponse(RequestHistory h) {
+        String body = h.getResponseBody() == null ? "" : h.getResponseBody();
+        String error = h.getErrorMessage() == null ? "" : h.getErrorMessage();
+        StringBuilder text = new StringBuilder();
+        text.append("状态码: ").append(h.getStatusCode()).append('\n');
+        if (h.getResponseHeaders() != null && !h.getResponseHeaders().isEmpty()) {
+            text.append("\n响应头:\n").append(formatMap(h.getResponseHeaders(), "（无响应头）")).append('\n');
+        }
+        if (!body.isBlank()) text.append("\n响应体:\n").append(body);
+        if (!error.isBlank()) text.append("\n\n异常:\n").append(error);
+        if (text.toString().equals("状态码: 0\n")) return "（无响应记录）";
+        return text.toString();
     }
 
     private static class HistoryCellRenderer extends DefaultListCellRenderer {
@@ -4039,6 +4074,8 @@ public class ApiDebuggerPanel extends JPanel {
                 result.getDurationMs(),
                 result.getApiDefinition().getName()
         );
+        h.setResponseHeaders(result.getResponseHeaders());
+        h.setErrorMessage(result.getErrorMessage());
         requestHistory.add(0, h);
         // 限制历史记录数量
         while (requestHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {
