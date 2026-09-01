@@ -5,6 +5,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParser;
 import com.hronline.model.*;
+import com.hronline.service.ExceptionRuleEvaluator;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
@@ -183,6 +184,15 @@ public final class HttpExecutorService {
             } else {
                 // 默认：使用接口的预期状态码判定
                 passed = api.isStatusCodeExpected(response.statusCode());
+            }
+            // Round 7：HTTP 通过后再跑异常自定义规则判定（字段缺失 / 字段值不在白名单）
+            if (passed && api != null) {
+                ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluate(
+                        project, api, result.getResponseBody());
+                if (!er.isPassed()) {
+                    passed = false;
+                    result.setErrorMessage(er.reason());
+                }
             }
             result.setStatus(passed ? TestStatus.PASSED : TestStatus.FAILED);
 

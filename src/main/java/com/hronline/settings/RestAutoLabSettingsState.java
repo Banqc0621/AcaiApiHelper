@@ -79,6 +79,8 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public String apiRequestHeadersJson = "";
         /** 全量接口视图下保存的请求体（key=apiKey -> body 字符串） */
         public String apiRequestBodiesJson = "";
+        /** Round 7：异常自定义规则（key=apiKey -> List<ExceptionRule>） */
+        public String exceptionRulesJson = "";
         /** 文件夹内接口测试状态 JSON（key=folderId\napiKey -> FolderApiStatus） */
         public String folderApiStatusJson = "";
         /** 接口级前置脚本（key=apiKey -> script） */
@@ -372,6 +374,25 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     /** 保存全量接口视图下的请求体。 */
     public void saveApiRequestBodies(Map<String, String> bodies) {
         myState.apiRequestBodiesJson = gson.toJson(bodies == null ? Collections.emptyMap() : bodies);
+    }
+
+    /** Round 7：加载异常自定义规则（key=apiKey -> List<ExceptionRule>）。 */
+    public Map<String, List<ExceptionRule>> loadExceptionRules() {
+        if (myState.exceptionRulesJson == null || myState.exceptionRulesJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, List<ExceptionRule>>>(){}.getType();
+            Map<String, List<ExceptionRule>> v = gson.fromJson(myState.exceptionRulesJson, t);
+            return v != null ? v : new LinkedHashMap<>();
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** Round 7：保存异常自定义规则。 */
+    public void saveExceptionRules(Map<String, List<ExceptionRule>> rules) {
+        myState.exceptionRulesJson = gson.toJson(rules == null ? Collections.emptyMap() : rules);
     }
 
     private Map<String, Map<String, String>> loadNestedStringMap(String json) {

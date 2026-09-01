@@ -4494,6 +4494,25 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
+     * Round 7：打开「异常自定义」对话框 —— 编辑当前接口的字段规则。
+     * <p>调用方：左侧"…"弹层 → 异常自定义。读取 currentApi 和最近一次响应 body
+     * （用于「自动扫描」填充字段候选）。</p>
+     */
+    public void openExceptionRulesDialog() {
+        try {
+            String refBody = lastResult == null ? null : lastResult.getResponseBody();
+            ExceptionRulesDialog dlg = new ExceptionRulesDialog(project, currentApi, refBody);
+            dlg.show();
+        } catch (Throwable t) {
+            com.intellij.openapi.diagnostic.Logger.getInstance(ApiDebuggerPanel.class)
+                    .error("[RestAutoLab] ExceptionRulesDialog 打开失败", t);
+            Messages.showErrorDialog(project,
+                    "异常自定义对话框打开失败：" + t.getClass().getSimpleName() + "\n" + t.getMessage(),
+                    "打开失败");
+        }
+    }
+
+    /**
      * 一伦优化 R4：「环境 & 数据」统一入口。
      * <p>一伦优化 #3 时把"环境"和"数据"合并；R4 进一步把"前置脚本&变量覆盖"、"AI 配置"作为新 Tab 注入，
      * 让左侧"…"弹层只剩下"环境 & 数据"一个入口。Tab 顺序：环境 / 前置脚本 / AI 配置 / 数据。</p>
@@ -4501,6 +4520,7 @@ public class ApiDebuggerPanel extends JPanel {
      * 用 invokeLater + defaultModalityState 执行（Windows 模态兼容）。</p>
      */
     public void openEnvAndDataManageDialog() {
+        // 一伦优化 v24：包一层 try-catch，弹窗构造/初始化任何一步失败时弹真实堆栈给用户。
         // 一伦优化 v24：包一层 try-catch，弹窗构造/初始化任何一步失败时弹真实堆栈给用户。
         // 设置按钮的 listener 也加了 catch —— 这里只捕构造期间同步异常，运行期 fireChange 链路的
         // 异常已经被各 fireChange 调用点内部 try-catch 吞掉或弹错。
