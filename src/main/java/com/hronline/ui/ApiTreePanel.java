@@ -190,6 +190,21 @@ public class ApiTreePanel extends JPanel {
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
+                // Round 5：单击收藏接口 → 触发该接口所在文件单文件重扫，把最新定义即时刷新到调试面板。
+                // 单文件扫描比全量 scanProjectApisAsync 轻量得多（<100ms），适合作为「刷新接口信息」语义。
+                // ScanListener 会自动驱动树刷新，无需手动 rebuild。
+                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)
+                        && FILTER_STARRED.equals(currentFilter)) {
+                    StarredApiNode single = getSelectedStarredApiNode();
+                    if (single != null && single.api != null) {
+                        String filePath = single.api.getSourceFilePath();
+                        if (filePath != null && !filePath.isBlank()) {
+                            ApiScannerService.getInstance(project).scanSelectedSourcesAsync(
+                                    java.util.Collections.singletonList(filePath));
+                        }
+                    }
+                    return;
+                }
                 if (e.getClickCount() == 2) {
                     if (FILTER_STARRED.equals(currentFilter)) {
                         StarredApiNode n = getSelectedStarredApiNode();
@@ -598,22 +613,17 @@ public class ApiTreePanel extends JPanel {
             currentFilter = FILTER_STARRED;
             updateCollapseAllFoldersButton();
             applyFilters();
+            // 一伦 #67：收藏按钮单击即刷新接口信息，不再要求用户双击。
+            // 触发完整扫描以同步源码中的 URL/方法变化；扫描完成后回调会再次走
+            // updateTree → applyFilters → refreshStarredApiIndex + buildStarredTree，
+            // 收藏视图中的接口信息会自动更新。
+            statsLabel.setText("● 正在扫描API（收藏刷新）...");
+            ApiScannerService.getInstance(project).scanProjectApisAsync();
         });
-        // 一伦 #62：双击「收藏」按钮刷新收藏接口列表（重新拉取收藏文件夹与接口状态）。
-        // 单击已由 ActionListener 负责切换视图；这里只处理双击，且仅在已处于收藏视图时生效。
-        // #65：双击时必须触发一次完整扫描，否则 allApis 仍是旧数据；扫描内部会自动按
-        // sourceFilePath+sourceLineNumber 把 starredApis/folder.apiKeys 等持久化字段从旧 key 改写到新 key，
-        // 完成后回调会走 updateTree → applyFilters → refreshStarredApiIndex + buildStarredTree，
-        // 收藏视图里的路径会立刻反映新 URL。
-        btnStarred.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (e.getClickCount() == 2 && FILTER_STARRED.equals(currentFilter)) {
-                    statsLabel.setText("● 正在扫描API（收藏刷新）...");
-                    ApiScannerService.getInstance(project).scanProjectApisAsync();
-                }
-            }
-        });
+        // 旧版在这里监听双击收藏按钮刷新；刷新已迁移到上面的单击 ActionListener，
+        // 不再注册 MouseListener，避免双击与按钮默认点击行为竞争。
+        // 完整扫描仍会按 sourceFilePath + sourceLineNumber 把 starredApis/folder.apiKeys
+        // 等持久化字段从旧 key 改写到新 key，完成后收藏视图会自动反映最新接口信息。
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
             updateCollapseAllFoldersButton();
@@ -761,7 +771,7 @@ public class ApiTreePanel extends JPanel {
                 btn.setToolTipText("显示所有API接口");
                 break;
             case FILTER_STARRED:
-                btn.setToolTipText("打开收藏文件夹管理（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试）");
+                btn.setToolTipText("单击打开收藏并刷新接口信息（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试）");
                 break;
             case FILTER_LATEST:
                 btn.setToolTipText("仅显示最近（" + LATEST_CHANGE_DAYS + "天）Git 变更涉及的接口");
