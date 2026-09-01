@@ -103,6 +103,8 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
     /** 收藏视图右上角的一键折叠按钮 */
     private JButton collapseAllFoldersButton;
+    /** 收藏视图右上角的一键展开按钮（与折叠按钮并列，v2.2 加） */
+    private JButton expandAllFoldersButton;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
@@ -170,13 +172,11 @@ public class ApiTreePanel extends JPanel {
         // 拖拽支持：收藏模式下拖动接口节点到目标文件夹节点即移动
         tree.setDragEnabled(true);
         // 收藏模式支持 drop 在节点上/节点之间/节点之上/之下，需要 ON_OR_INSERT 模式让 JTree
-        // 计算 childIndex；空 insert 位置 drop 仍由 ON 处理（移动到目标文件夹内）。
-        if (FILTER_STARRED.equals(currentFilter)) {
-            try {
-                tree.setDropMode(javax.swing.DropMode.ON_OR_INSERT);
-            } catch (Throwable ignore) {
-                // 老 LaF 可能不支持，降级为默认
-            }
+        // 计算 childIndex；其他模式下 transfer handler 直接拒绝，所以 DropMode 设置无害。
+        try {
+            tree.setDropMode(javax.swing.DropMode.ON_OR_INSERT);
+        } catch (Throwable ignore) {
+            // 老 LaF 可能不支持，降级为默认
         }
         tree.setTransferHandler(new StarredDragTransferHandler());
 
@@ -664,6 +664,21 @@ public class ApiTreePanel extends JPanel {
         collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
         collapseAllFoldersButton.addActionListener(e -> collapseAllFolderNodes());
         row.add(collapseAllFoldersButton);
+
+        // v2.2：折叠旁加一个一键展开按钮，对称操作（IDEA 工具栏风格）
+        expandAllFoldersButton = new JButton(AllIcons.Actions.Expandall);
+        expandAllFoldersButton.setToolTipText("一键展开所有文件夹");
+        expandAllFoldersButton.getAccessibleContext().setAccessibleName("一键展开所有文件夹");
+        expandAllFoldersButton.setFocusPainted(false);
+        expandAllFoldersButton.setBorderPainted(false);
+        expandAllFoldersButton.setContentAreaFilled(false);
+        expandAllFoldersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        expandAllFoldersButton.setPreferredSize(new Dimension(28, 28));
+        expandAllFoldersButton.setMinimumSize(new Dimension(28, 28));
+        expandAllFoldersButton.setMaximumSize(new Dimension(28, 28));
+        expandAllFoldersButton.addActionListener(e -> expandAllFolderNodesFromToolbar());
+        row.add(expandAllFoldersButton);
+
         updateCollapseAllFoldersButton();
 
         return row;
@@ -672,12 +687,20 @@ public class ApiTreePanel extends JPanel {
     private void updateCollapseAllFoldersButton() {
         if (collapseAllFoldersButton == null) return;
         boolean starred = FILTER_STARRED.equals(currentFilter);
+        boolean hasContent = starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
+                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
         collapseAllFoldersButton.setVisible(starred);
-        collapseAllFoldersButton.setEnabled(starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
-                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0);
+        collapseAllFoldersButton.setEnabled(hasContent);
         collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起所有文件夹");
-        collapseAllFoldersButton.getParent().revalidate();
-        collapseAllFoldersButton.getParent().repaint();
+        if (expandAllFoldersButton != null) {
+            expandAllFoldersButton.setVisible(starred);
+            expandAllFoldersButton.setEnabled(hasContent);
+            expandAllFoldersButton.getAccessibleContext().setAccessibleName("一键展开所有文件夹");
+        }
+        if (collapseAllFoldersButton.getParent() != null) {
+            collapseAllFoldersButton.getParent().revalidate();
+            collapseAllFoldersButton.getParent().repaint();
+        }
     }
 
     /**
@@ -1138,6 +1161,25 @@ public class ApiTreePanel extends JPanel {
         updateCollapseAllFoldersButton();
     }
 
+    /** v2.2 一键展开收藏视图中的所有文件夹（工具栏按钮入口）。
+     *  先收起全部再展开，可恢复「上次折叠过的中间节点」再次可见，避免 buildStarredTree
+     *  后只能展开顶层的问题。 */
+    private void expandAllFolderNodesFromToolbar() {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        // 先全部收起，再展开，确保所有中间节点都处于展开态
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
+            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
+        }
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
+            if (child.getUserObject() instanceof FolderNode) expandAllFolderNodes(child);
+        }
+        tree.clearSelection();
+    }
+
     private void collapseFolderNode(DefaultMutableTreeNode node) {
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
@@ -1183,10 +1225,18 @@ public class ApiTreePanel extends JPanel {
 
     // ── 收藏模式右键菜单 ──
 
-    /** 拖拽 TransferHandler：收藏模式下拖接口到文件夹即移动；非收藏模式不干预 */
+    /** 拖拽 TransferHandler：
+     *  - 收藏模式下支持：单选/多选接口拖到文件夹、单选/多选文件夹拖到目标位置（前后/子级）
+     *  - 非收藏模式不干预
+     *  - 用两个 DataFlavor 区分：{@code apiFlavor} 装 {@code List<StarredApiNode>}，
+     *    {@code folderFlavor} 装 {@code List<FolderNode>}。同一个 Transferable 同时提供两个
+     *    flavor，{@link #canImport} 根据当前拖拽内容选择处理路径。
+     */
     private final class StarredDragTransferHandler extends TransferHandler {
-        private final java.awt.datatransfer.DataFlavor flavor =
+        private final java.awt.datatransfer.DataFlavor apiFlavor =
                 new java.awt.datatransfer.DataFlavor(StarredApiNode.class, "StarredApiNode");
+        private final java.awt.datatransfer.DataFlavor folderFlavor =
+                new java.awt.datatransfer.DataFlavor(FolderNode.class, "FolderNode");
 
         @Override public int getSourceActions(JComponent c) {
             return FILTER_STARRED.equals(currentFilter) ? MOVE : NONE;
@@ -1194,15 +1244,38 @@ public class ApiTreePanel extends JPanel {
 
         @Override protected Transferable createTransferable(JComponent c) {
             if (!FILTER_STARRED.equals(currentFilter)) return null;
-            StarredApiNode n = getSelectedStarredApiNode();
-            if (n == null) return null;
-            final StarredApiNode data = n;
+            // 优先选 folder（用户拖文件夹），否则选所有 multi-select 内的接口
+            List<StarredFolder> selFolders = getSelectedStarredFolders();
+            if (!selFolders.isEmpty()) {
+                final List<FolderNode> data = new ArrayList<>();
+                for (StarredFolder f : selFolders) data.add(new FolderNode(f));
+                return new Transferable() {
+                    @Override public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
+                        return new java.awt.datatransfer.DataFlavor[]{folderFlavor};
+                    }
+                    @Override public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) {
+                        return folderFlavor.equals(f);
+                    }
+                    @Override public Object getTransferData(java.awt.datatransfer.DataFlavor f)
+                            throws java.awt.datatransfer.UnsupportedFlavorException {
+                        if (!folderFlavor.equals(f)) throw new java.awt.datatransfer.UnsupportedFlavorException(f);
+                        return data;
+                    }
+                };
+            }
+            List<StarredApiNode> selApis = getSelectedStarredApiNodes();
+            if (selApis.isEmpty()) return null;
+            final List<StarredApiNode> data = new ArrayList<>(selApis);
             return new Transferable() {
-                @Override public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() { return new java.awt.datatransfer.DataFlavor[]{flavor}; }
-                @Override public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) { return flavor.equals(f); }
+                @Override public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() {
+                    return new java.awt.datatransfer.DataFlavor[]{apiFlavor};
+                }
+                @Override public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) {
+                    return apiFlavor.equals(f);
+                }
                 @Override public Object getTransferData(java.awt.datatransfer.DataFlavor f)
                         throws java.awt.datatransfer.UnsupportedFlavorException {
-                    if (!flavor.equals(f)) throw new java.awt.datatransfer.UnsupportedFlavorException(f);
+                    if (!apiFlavor.equals(f)) throw new java.awt.datatransfer.UnsupportedFlavorException(f);
                     return data;
                 }
             };
@@ -1210,31 +1283,128 @@ public class ApiTreePanel extends JPanel {
 
         @Override public boolean canImport(TransferHandler.TransferSupport support) {
             if (!FILTER_STARRED.equals(currentFilter)) return false;
-            if (!support.isDataFlavorSupported(flavor)) return false;
             if (support.getDropLocation() == null) return false;
             JTree.DropLocation dl = (JTree.DropLocation) support.getDropLocation();
             TreePath path = dl.getPath();
             if (path == null) return false;
             Object node = path.getLastPathComponent();
             if (!(node instanceof DefaultMutableTreeNode)) return false;
-            return ((DefaultMutableTreeNode) node).getUserObject() instanceof FolderNode;
+            Object uo = ((DefaultMutableTreeNode) node).getUserObject();
+            // 任意节点都允许 drop；具体动作在 importData 里按拖拽内容 + drop 位置决定
+            return uo instanceof FolderNode || uo instanceof StarredApiNode;
         }
 
         @Override public boolean importData(TransferHandler.TransferSupport support) {
             if (!canImport(support)) return false;
             try {
-                StarredApiNode n = (StarredApiNode) support.getTransferable().getTransferData(flavor);
+                Transferable t = support.getTransferable();
                 JTree.DropLocation dl = (JTree.DropLocation) support.getDropLocation();
                 DefaultMutableTreeNode targetNode = (DefaultMutableTreeNode) dl.getPath().getLastPathComponent();
-                FolderNode fn = (FolderNode) targetNode.getUserObject();
-                if (n.folderId.equals(fn.folder.getId())) return false; // 同文件夹不处理
-                boolean ok = folderService.moveApi(n.api.uniqueKey(), n.folderId, fn.folder.getId());
-                if (ok) SwingUtilities.invokeLater(ApiTreePanel.this::buildStarredTree);
-                return ok;
+                Object targetUo = targetNode.getUserObject();
+                int childIndex = dl.getChildIndex();
+
+                if (t.isDataFlavorSupported(folderFlavor)) {
+                    @SuppressWarnings("unchecked")
+                    List<FolderNode> dragged = (List<FolderNode>) t.getTransferData(folderFlavor);
+                    return importFolders(dragged, targetNode, targetUo, childIndex, dl);
+                }
+                if (t.isDataFlavorSupported(apiFlavor)) {
+                    @SuppressWarnings("unchecked")
+                    List<StarredApiNode> dragged = (List<StarredApiNode>) t.getTransferData(apiFlavor);
+                    return importApis(dragged, targetNode, targetUo, childIndex);
+                }
+                return false;
             } catch (java.awt.datatransfer.UnsupportedFlavorException | java.io.IOException ex) {
                 return false;
             }
         }
+
+        /** 把多个接口拖到目标位置：drop ON folder = 移到该文件夹；drop BETWEEN = 移到该 API 所在的文件夹。 */
+        private boolean importApis(List<StarredApiNode> dragged, DefaultMutableTreeNode targetNode,
+                                    Object targetUo, int childIndex) {
+            StarredFolder targetFolder = null;
+            if (targetUo instanceof FolderNode) {
+                targetFolder = ((FolderNode) targetUo).folder;
+            } else if (targetUo instanceof StarredApiNode) {
+                StarredApiNode s = (StarredApiNode) targetUo;
+                targetFolder = folderService.loadFolders().stream()
+                        .filter(f -> s.folderId.equals(f.getId())).findFirst().orElse(null);
+            }
+            if (targetFolder == null) return false;
+
+            boolean anyChanged = false;
+            for (StarredApiNode n : dragged) {
+                if (n.folderId.equals(targetFolder.getId())) continue; // 已在目标文件夹
+                if (folderService.moveApi(n.api.uniqueKey(), n.folderId, targetFolder.getId())) {
+                    anyChanged = true;
+                }
+            }
+            if (anyChanged) {
+                SwingUtilities.invokeLater(ApiTreePanel.this::buildStarredTree);
+            }
+            return anyChanged;
+        }
+
+        /** 把多个文件夹拖到目标位置：drop ON folder = 作为子级；drop BEFORE/AFTER = 兄弟级。 */
+        private boolean importFolders(List<FolderNode> dragged, DefaultMutableTreeNode targetNode,
+                                       Object targetUo, int childIndex, JTree.DropLocation dl) {
+            // 解析目标：anchor folder + 位置（before/after/child）
+            StarredFolder anchor = null;
+            String position;
+            if (targetUo instanceof FolderNode) {
+                anchor = ((FolderNode) targetUo).folder;
+                if (childIndex == -1) {
+                    position = "child";
+                } else {
+                    // childIndex == folders 中 target 父下的兄弟下标
+                    // 0 = 锚点之前；其他 = 锚点之后（因为只有 1 个 anchor 节点）
+                    position = childIndex == 0 ? "before" : "after";
+                }
+            } else {
+                // drop 在 API 上 → 锚点 = 该 API 所在的文件夹，child 语义相同
+                StarredApiNode s = (StarredApiNode) targetUo;
+                anchor = folderService.loadFolders().stream()
+                        .filter(f -> s.folderId.equals(f.getId())).findFirst().orElse(null);
+                if (anchor == null) return false;
+                position = "child";
+            }
+
+            boolean anyChanged = false;
+            for (FolderNode fn : dragged) {
+                if (fn.folder.getId().equals(anchor.getId())) continue;
+                if ("child".equals(position) && folderService.isDescendantOf(
+                        folderService.loadFolders(), anchor.getId(), fn.folder.getId())) {
+                    // 拖到自己后代上 = 不能
+                    continue;
+                }
+                if (folderService.moveFolder(fn.folder.getId(),
+                        anchor.isTopLevel() ? null : anchor.getParentId(),
+                        anchor.getId(), position)) {
+                    anyChanged = true;
+                }
+            }
+            if (anyChanged) {
+                SwingUtilities.invokeLater(ApiTreePanel.this::buildStarredTree);
+            }
+            return anyChanged;
+        }
+    }
+
+    /** 当前选中的所有 FolderNode（多选场景）；不会展开到 StarredApiNode 的父文件夹。 */
+    private List<StarredFolder> getSelectedStarredFolders() {
+        List<StarredFolder> result = new ArrayList<>();
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null) return result;
+        for (TreePath tp : paths) {
+            Object node = tp.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) continue;
+            Object uo = ((DefaultMutableTreeNode) node).getUserObject();
+            if (uo instanceof FolderNode) {
+                StarredFolder f = ((FolderNode) uo).folder;
+                if (!result.contains(f)) result.add(f);
+            }
+        }
+        return result;
     }
 
     private void showStarredPopup(MouseEvent e) {

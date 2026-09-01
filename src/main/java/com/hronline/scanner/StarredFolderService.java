@@ -285,124 +285,140 @@ public final class StarredFolderService {
      * 把文件夹拖到目标位置（拖拽实现）。
      *
      * @param folderId    要移动的文件夹 id
-     * @param newParentId 新的父 id；{@code null}/空 = 顶层
-     * @param anchorId    同级锚点 id；{@code null}/空 = 作为该父下第一项（无锚点）
-     * @param position    相对锚点的位置："before" / "after" / "child"（child 表示作为锚点的子级）
-     * @return 是否真的发生了移动
+     * @param newParentId 新的父 id（仅在 {@code anchorId} 为 null 时生效；{@code null}/空 = 顶层）
+     * @param anchorId    锚点文件夹 id；{@code null}/空 = 作为目标父下第一项
+     * @param position    相对锚点的位置："before" / "after" / "child"
+     * @return 是否真的发生了移动（no-op 时返回 false）
      */
     public boolean moveFolder(String folderId, String newParentId, String anchorId, String position) {
-        if (folderId == null || folderId.isBlank() || position == null) return false;
+        List<StarredFolder> folders = loadFolders();
+        List<StarredFolder> result = applyFolderMove(folders, folderId, newParentId, anchorId, position);
+        if (result == null) return false;
+        settings().saveStarredFolders(result);
+        syncStarredSet(result);
+        return true;
+    }
+
+    /**
+     * 纯函数：把 {@code folderId} 拖到目标位置，返回修改后的文件夹列表。
+     * <p>返回 {@code null} 表示非法或 no-op（调用方应跳过持久化）。</p>
+     * <p>便于单测——不依赖 Project / Service 容器，纯算法验证。</p>
+     */
+    public static List<StarredFolder> applyFolderMove(List<StarredFolder> folders, String folderId,
+                                                       String newParentId, String anchorId, String position) {
+        if (folders == null) return null;
+        if (folderId == null || folderId.isBlank() || position == null) return null;
         if (!List.of("before", "after", "child").contains(position)) {
             throw new IllegalArgumentException("position 必须是 before/after/child，实际=" + position);
         }
-        List<StarredFolder> folders = loadFolders();
         StarredFolder moved = null;
         for (StarredFolder f : folders) {
             if (folderId.equals(f.getId())) { moved = f; break; }
         }
-        if (moved == null) return false;
+        if (moved == null) return null;
 
-        // 「child」语义：把 moved 挂到 anchorId 下；其他两个语义：作为 anchorId 的兄弟
         String targetParentId;
         if ("child".equals(position)) {
-            // anchor 必须是另一文件夹（不能是自己或自己的后代）
-            if (anchorId == null || anchorId.isBlank() || folderId.equals(anchorId)) return false;
-            if (!existsFolder(folders, anchorId)) return false;
-            if (isDescendantOf(folders, anchorId, folderId)) return false; // 不能移到自己的后代
-            targetParentId = anchorId;
+            if (folderId.equals(anchorId)) return null;
+            StarredFolder anchor = null;
+            if (anchorId != null && !anchorId.isBlank()) {
+                for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
+                if (anchor == null) return null;
+                if (isDescendantOf(folders, anchorId, folderId)) return null; // 不能移到自己的后代
+                targetParentId = anchorId;
+            } else {
+                // 无 anchor：按 newParentId 解析（API 用法：直接指定新父 + child）
+                targetParentId = normalizeParentIdPure(folders, newParentId);
+            }
         } else {
             if (anchorId == null || anchorId.isBlank()) {
-                targetParentId = normalizeParentId(folders, newParentId);
+                targetParentId = normalizeParentIdPure(folders, newParentId);
             } else {
-                StarredFolder anchor = findById(folders, anchorId);
-                if (anchor == null) return false;
-                if (anchor.getId().equals(folderId)) return false; // 不能以自己为锚点
-                // 锚点的父 = 新父（即使拖到不同层级的锚点旁，仍按锚点同级处理）
+                StarredFolder anchor = null;
+                for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
+                if (anchor == null || anchor.getId().equals(folderId)) return null;
                 targetParentId = anchor.getParentId();
             }
         }
-        // 同父同位 = no-op
-        if (java.util.Objects.equals(targetParentId, moved.getParentId())
-                && position.equals("before") && sameParentNeighbour(folders, moved, anchorId, true)) {
-            return false;
+
+        int originalIdx = folders.indexOf(moved);
+        // 在副本上操作，避免污染调用方的 list
+        List<StarredFolder> next = new ArrayList<>(folders);
+        next.remove(moved);
+        StarredFolder movedCopy = copyWithParent(moved, targetParentId);
+        // next 已不含 moved，所以 computeInsertIndexPure 返回的下标可直接用于 next.add
+        int insertPos = computeInsertIndexPure(next, targetParentId, anchorId, position);
+        insertPos = Math.max(0, Math.min(insertPos, next.size()));
+        // no-op 检测：插入位置 = 原始下标 且 父级未变 = 没动
+        if (insertPos == originalIdx && java.util.Objects.equals(targetParentId, moved.getParentId())) {
+            return null;
         }
-
-        // 把 moved 从当前位置摘出（仅修改内存中的 list）
-        folders.remove(moved);
-        moved.setParentId(targetParentId);
-
-        // 计算插入位置：基于 targetParentId 下所有 siblings 在 folders 列表中的实际下标
-        int insertPos = computeInsertIndex(folders, targetParentId, anchorId, position);
-        folders.add(insertPos, moved);
-
-        settings().saveStarredFolders(folders);
-        syncStarredSet(folders);
-        return true;
+        next.add(insertPos, movedCopy);
+        return next;
     }
 
-    private boolean existsFolder(List<StarredFolder> folders, String id) {
-        for (StarredFolder f : folders) if (id.equals(f.getId())) return true;
-        return false;
+    private static StarredFolder copyWithParent(StarredFolder src, String newParentId) {
+        StarredFolder copy = new StarredFolder(src.getId(), src.getName(), newParentId);
+        copy.getApiKeys().addAll(src.getApiKeys());
+        return copy;
     }
 
-    private StarredFolder findById(List<StarredFolder> folders, String id) {
-        for (StarredFolder f : folders) if (id.equals(f.getId())) return f;
+    private static String normalizeParentIdPure(List<StarredFolder> folders, String parentId) {
+        if (parentId == null || parentId.isBlank()) return null;
+        for (StarredFolder f : folders) if (parentId.equals(f.getId())) return parentId;
         return null;
     }
 
-    /** anchor 是不是 moved 在同父下的直接邻居（用于识别 no-op）。 */
-    private boolean sameParentNeighbour(List<StarredFolder> folders, StarredFolder moved,
-                                         String anchorId, boolean beforeSide) {
-        if (anchorId == null) return false;
-        StarredFolder anchor = findById(folders, anchorId);
-        if (anchor == null) return false;
-        if (!java.util.Objects.equals(anchor.getParentId(), moved.getParentId())) return false;
-        int anchorIdx = folders.indexOf(anchor);
-        int movedIdx = folders.indexOf(moved);
-        if (anchorIdx < 0 || movedIdx < 0) return false;
-        return beforeSide ? anchorIdx == movedIdx + 1 : anchorIdx == movedIdx - 1;
-    }
-
     /**
-     * 计算把 moved 插入到 folders 列表中的下标。
-     * <p>锚点所在的「同一父级下的兄弟块」在 folders 列表中是连续的；我们要插在锚点块前/后/锚点块开头。</p>
+     * 计算把 moved 插入到 folders 列表中的下标（folders 此时不含 moved）。
+     * <p>约定：folders 中的同父兄弟是连续的（DFS 顺序：父 + 子块）。</p>
      */
-    private int computeInsertIndex(List<StarredFolder> folders, String targetParentId,
-                                    String anchorId, String position) {
-        // 找到 targetParentId 下兄弟的第一个和最后一个下标
-        int first = -1, last = -1;
-        for (int i = 0; i < folders.size(); i++) {
-            StarredFolder f = folders.get(i);
-            String fp = f.getParentId();
-            boolean sameParent = targetParentId == null
-                    ? (fp == null || fp.isBlank())
-                    : targetParentId.equals(fp);
-            if (sameParent) {
-                if (first < 0) first = i;
-                last = i;
+    private static int computeInsertIndexPure(List<StarredFolder> folders, String targetParentId,
+                                                String anchorId, String position) {
+        if (anchorId == null || anchorId.isBlank()) {
+            // 无锚点：作为目标父下第一个兄弟；找不到任何目标父的兄弟则追加
+            for (int i = 0; i < folders.size(); i++) {
+                if (isSameParentStatic(folders.get(i), targetParentId)) return i;
             }
-        }
-        if (first < 0) {
-            // 没有兄弟（罕见：拖到空目录的 child），直接 append
             return folders.size();
         }
-        if (anchorId == null || anchorId.isBlank()) {
-            // 无锚点：作为第一个兄弟
-            return first;
-        }
-        StarredFolder anchor = findById(folders, anchorId);
+        StarredFolder anchor = null;
+        for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
         if (anchor == null) return folders.size();
         int anchorIdx = folders.indexOf(anchor);
-        if ("before".equals(position)) {
-            // 插在锚点所在兄弟块的开头
-            return first;
-        } else if ("after".equals(position)) {
-            // 插在锚点所在兄弟块的末尾之后
-            return last + 1;
-        } else {
-            // child：作为锚点的第一个子
-            return anchorIdx + 1;
+
+        if ("child".equals(position)) {
+            // 追加为锚点的最后一个子之后（folders 中子紧跟父）
+            int lastChild = anchorIdx;
+            for (int i = anchorIdx + 1; i < folders.size(); i++) {
+                if (anchorId.equals(folders.get(i).getParentId())) lastChild = i;
+                else break;
+            }
+            return lastChild + 1;
         }
+        if ("before".equals(position)) {
+            // 锚点所在兄弟块的开头
+            String anchorParent = anchor.getParentId();
+            int first = anchorIdx;
+            for (int i = anchorIdx - 1; i >= 0; i--) {
+                if (isSameParentStatic(folders.get(i), anchorParent)) first = i;
+                else break;
+            }
+            return first;
+        }
+        // after：锚点所在兄弟块的末尾之后
+        String anchorParent = anchor.getParentId();
+        int last = anchorIdx;
+        for (int i = anchorIdx + 1; i < folders.size(); i++) {
+            if (isSameParentStatic(folders.get(i), anchorParent)) last = i;
+            else break;
+        }
+        return last + 1;
+    }
+
+    private static boolean isSameParentStatic(StarredFolder f, String parentId) {
+        String fp = f.getParentId();
+        return parentId == null ? (fp == null || fp.isBlank()) : parentId.equals(fp);
     }
 
     /** id 是否为 ancestorId 的后代（防把文件夹移到自己的子树里）。 */
