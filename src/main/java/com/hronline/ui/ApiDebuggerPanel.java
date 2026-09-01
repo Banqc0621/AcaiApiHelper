@@ -4004,8 +4004,9 @@ public class ApiDebuggerPanel extends JPanel {
         // Round 4：补「响应」tab —— 显示当时那次的完整响应（状态、响应头、响应体及异常文本），
         // 不截断 body；网络/JSON 异常也要把用户可见的原始描述保留下来。
         details.addTab("响应", createHistoryTextPane(formatHistoryResponse(h)));
-        // Round 6：用户反悔了 —— 历史详情默认切回「入参」tab（按用户原意这是排查接口的核心）
-        details.setSelectedIndex(1);
+        // 历史详情默认打开「入参」tab，便于先核对当时实际发送的参数；响应仍可切换查看。
+        int requestParamsTab = details.indexOfTab("入参");
+        if (requestParamsTab >= 0) details.setSelectedIndex(requestParamsTab);
         content.add(details, BorderLayout.CENTER);
 
         JButton close = iconButton("关闭", AllIcons.Actions.Close, e -> dialog.dispose());
