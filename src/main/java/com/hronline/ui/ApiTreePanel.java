@@ -103,8 +103,6 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
     /** 收藏视图右上角的一键折叠按钮 */
     private JButton collapseAllFoldersButton;
-    /** 收藏视图右上角的一键展开按钮（与折叠按钮并列，v2.2 加） */
-    private JButton expandAllFoldersButton;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
@@ -179,6 +177,14 @@ public class ApiTreePanel extends JPanel {
             // 老 LaF 可能不支持，降级为默认
         }
         tree.setTransferHandler(new StarredDragTransferHandler());
+        tree.addTreeExpansionListener(new javax.swing.event.TreeExpansionListener() {
+            @Override public void treeExpanded(javax.swing.event.TreeExpansionEvent event) {
+                updateCollapseAllFoldersButton();
+            }
+            @Override public void treeCollapsed(javax.swing.event.TreeExpansionEvent event) {
+                updateCollapseAllFoldersButton();
+            }
+        });
 
         // 双击事件：跳转到API源码（收藏模式下双击接口 → 停留在收藏视图并跳转到项目中该接口的源码位置）
         tree.addMouseListener(new MouseAdapter() {
@@ -662,23 +668,8 @@ public class ApiTreePanel extends JPanel {
         collapseAllFoldersButton.setPreferredSize(new Dimension(28, 28));
         collapseAllFoldersButton.setMinimumSize(new Dimension(28, 28));
         collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
-        collapseAllFoldersButton.addActionListener(e -> collapseAllFolderNodes());
+        collapseAllFoldersButton.addActionListener(e -> toggleAllFolderNodes());
         row.add(collapseAllFoldersButton);
-
-        // v2.2：折叠旁加一个一键展开按钮，对称操作（IDEA 工具栏风格）
-        expandAllFoldersButton = new JButton(AllIcons.Actions.Expandall);
-        expandAllFoldersButton.setToolTipText("一键展开所有文件夹");
-        expandAllFoldersButton.getAccessibleContext().setAccessibleName("一键展开所有文件夹");
-        expandAllFoldersButton.setFocusPainted(false);
-        expandAllFoldersButton.setBorderPainted(false);
-        expandAllFoldersButton.setContentAreaFilled(false);
-        expandAllFoldersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        expandAllFoldersButton.setPreferredSize(new Dimension(28, 28));
-        expandAllFoldersButton.setMinimumSize(new Dimension(28, 28));
-        expandAllFoldersButton.setMaximumSize(new Dimension(28, 28));
-        expandAllFoldersButton.addActionListener(e -> expandAllFolderNodesFromToolbar());
-        row.add(expandAllFoldersButton);
-
         updateCollapseAllFoldersButton();
 
         return row;
@@ -691,12 +682,11 @@ public class ApiTreePanel extends JPanel {
                 && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
         collapseAllFoldersButton.setVisible(starred);
         collapseAllFoldersButton.setEnabled(hasContent);
-        collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起所有文件夹");
-        if (expandAllFoldersButton != null) {
-            expandAllFoldersButton.setVisible(starred);
-            expandAllFoldersButton.setEnabled(hasContent);
-            expandAllFoldersButton.getAccessibleContext().setAccessibleName("一键展开所有文件夹");
-        }
+        boolean expanded = hasContent && areAllFolderNodesExpanded((DefaultMutableTreeNode) treeModel.getRoot());
+        String actionName = expanded ? "一键收起所有文件夹" : "一键展开所有文件夹";
+        collapseAllFoldersButton.setIcon(expanded ? AllIcons.Actions.Collapseall : AllIcons.Actions.Expandall);
+        collapseAllFoldersButton.setToolTipText(actionName);
+        collapseAllFoldersButton.getAccessibleContext().setAccessibleName(actionName);
         if (collapseAllFoldersButton.getParent() != null) {
             collapseAllFoldersButton.getParent().revalidate();
             collapseAllFoldersButton.getParent().repaint();
@@ -1161,6 +1151,30 @@ public class ApiTreePanel extends JPanel {
         updateCollapseAllFoldersButton();
     }
 
+    /** 当前收藏树是否已经把所有有子节点的文件夹展开。 */
+    private boolean areAllFolderNodesExpanded(DefaultMutableTreeNode node) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            TreePath path = new TreePath(child.getPath());
+            if (child.getChildCount() > 0 && !tree.isExpanded(path)) return false;
+            if (!areAllFolderNodesExpanded(child)) return false;
+        }
+        return true;
+    }
+
+    /** 单一工具栏按钮在“全部展开”和“全部收起”之间切换。 */
+    private void toggleAllFolderNodes() {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        if (areAllFolderNodesExpanded(root)) {
+            collapseAllFolderNodes();
+        } else {
+            expandAllFolderNodesFromToolbar();
+        }
+    }
+
     /** v2.2 一键展开收藏视图中的所有文件夹（工具栏按钮入口）。
      *  先收起全部再展开，可恢复「上次折叠过的中间节点」再次可见，避免 buildStarredTree
      *  后只能展开顶层的问题。 */
@@ -1178,6 +1192,7 @@ public class ApiTreePanel extends JPanel {
             if (child.getUserObject() instanceof FolderNode) expandAllFolderNodes(child);
         }
         tree.clearSelection();
+        updateCollapseAllFoldersButton();
     }
 
     private void collapseFolderNode(DefaultMutableTreeNode node) {
@@ -1247,6 +1262,9 @@ public class ApiTreePanel extends JPanel {
             // 优先选 folder（用户拖文件夹），否则选所有 multi-select 内的接口
             List<StarredFolder> selFolders = getSelectedStarredFolders();
             if (!selFolders.isEmpty()) {
+                // 同时选中父文件夹和其子文件夹时，只移动最上层节点，保持整个子树完整。
+                List<StarredFolder> selectedSnapshot = new ArrayList<>(selFolders);
+                selFolders.removeIf(folder -> hasSelectedAncestor(folder, selectedSnapshot));
                 final List<FolderNode> data = new ArrayList<>();
                 for (StarredFolder f : selFolders) data.add(new FolderNode(f));
                 return new Transferable() {
@@ -1281,6 +1299,23 @@ public class ApiTreePanel extends JPanel {
             };
         }
 
+        private boolean hasSelectedAncestor(StarredFolder folder, List<StarredFolder> selected) {
+            Set<String> selectedIds = new HashSet<>();
+            for (StarredFolder f : selected) selectedIds.add(f.getId());
+            String parentId = folder.getParentId();
+            Set<String> seen = new HashSet<>();
+            List<StarredFolder> folders = folderService.loadFolders();
+            while (parentId != null && !parentId.isBlank() && seen.add(parentId)) {
+                if (selectedIds.contains(parentId)) return true;
+                String currentParentId = parentId;
+                StarredFolder parent = folders.stream()
+                        .filter(f -> currentParentId.equals(f.getId())).findFirst().orElse(null);
+                if (parent == null) break;
+                parentId = parent.getParentId();
+            }
+            return false;
+        }
+
         @Override public boolean canImport(TransferHandler.TransferSupport support) {
             if (!FILTER_STARRED.equals(currentFilter)) return false;
             if (support.getDropLocation() == null) return false;
@@ -1291,7 +1326,8 @@ public class ApiTreePanel extends JPanel {
             if (!(node instanceof DefaultMutableTreeNode)) return false;
             Object uo = ((DefaultMutableTreeNode) node).getUserObject();
             // 任意节点都允许 drop；具体动作在 importData 里按拖拽内容 + drop 位置决定
-            return uo instanceof FolderNode || uo instanceof StarredApiNode;
+            return uo instanceof FolderNode || uo instanceof StarredApiNode
+                    || ("root".equals(uo) && support.isDataFlavorSupported(folderFlavor));
         }
 
         @Override public boolean importData(TransferHandler.TransferSupport support) {
@@ -1319,22 +1355,43 @@ public class ApiTreePanel extends JPanel {
             }
         }
 
-        /** 把多个接口拖到目标位置：drop ON folder = 移到该文件夹；drop BETWEEN = 移到该 API 所在的文件夹。 */
+        /** 把多个接口拖到目标位置：目标文件夹 = 批量移动，目标接口 = 批量调整顺序/移动到其文件夹。 */
         private boolean importApis(List<StarredApiNode> dragged, DefaultMutableTreeNode targetNode,
                                     Object targetUo, int childIndex) {
             StarredFolder targetFolder = null;
+            String anchorApiKey = null;
             if (targetUo instanceof FolderNode) {
                 targetFolder = ((FolderNode) targetUo).folder;
+                // ON_OR_INSERT 在文件夹子节点之间插入时，path 指向文件夹、childIndex 指向插槽；
+                // 取插槽后的接口作为排序锚点。
+                if (childIndex >= 0 && childIndex < targetNode.getChildCount()) {
+                    Object next = ((DefaultMutableTreeNode) targetNode.getChildAt(childIndex)).getUserObject();
+                    if (next instanceof StarredApiNode apiNode) anchorApiKey = apiNode.api.uniqueKey();
+                }
             } else if (targetUo instanceof StarredApiNode) {
                 StarredApiNode s = (StarredApiNode) targetUo;
+                anchorApiKey = s.api.uniqueKey();
                 targetFolder = folderService.loadFolders().stream()
                         .filter(f -> s.folderId.equals(f.getId())).findFirst().orElse(null);
             }
             if (targetFolder == null) return false;
 
             boolean anyChanged = false;
+            if (anchorApiKey != null) {
+                List<String> sameFolderKeys = new ArrayList<>();
+                for (StarredApiNode n : dragged) {
+                    if (n.folderId.equals(targetFolder.getId())) sameFolderKeys.add(n.api.uniqueKey());
+                }
+                if (!sameFolderKeys.isEmpty()) {
+                    anyChanged = folderService.moveApisWithinFolder(
+                            targetFolder.getId(), sameFolderKeys, anchorApiKey, false);
+                }
+            }
             for (StarredApiNode n : dragged) {
-                if (n.folderId.equals(targetFolder.getId())) continue; // 已在目标文件夹
+                if (n.folderId.equals(targetFolder.getId())) {
+                    // 同文件夹的节点已在上面作为一个批量操作调整顺序。
+                    continue;
+                }
                 if (folderService.moveApi(n.api.uniqueKey(), n.folderId, targetFolder.getId())) {
                     anyChanged = true;
                 }
@@ -1348,17 +1405,51 @@ public class ApiTreePanel extends JPanel {
         /** 把多个文件夹拖到目标位置：drop ON folder = 作为子级；drop BEFORE/AFTER = 兄弟级。 */
         private boolean importFolders(List<FolderNode> dragged, DefaultMutableTreeNode targetNode,
                                        Object targetUo, int childIndex, JTree.DropLocation dl) {
-            // 解析目标：anchor folder + 位置（before/after/child）
+            if (dragged == null || dragged.isEmpty()) return false;
+            // 解析目标：ON 节点 = 子级；节点之间 = 目标父下的 before/after。
             StarredFolder anchor = null;
-            String position;
-            if (targetUo instanceof FolderNode) {
-                anchor = ((FolderNode) targetUo).folder;
-                if (childIndex == -1) {
-                    position = "child";
+            String position = "child";
+            String newParentId = null;
+            if ("root".equals(targetUo)) {
+                // 顶层节点之间拖动：path=root，childIndex 是顶层插槽。
+                DefaultMutableTreeNode parentNode = targetNode;
+                DefaultMutableTreeNode before = childIndex > 0 && childIndex - 1 < parentNode.getChildCount()
+                        ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex - 1) : null;
+                DefaultMutableTreeNode after = childIndex < parentNode.getChildCount()
+                        ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex) : null;
+                if (after != null && after.getUserObject() instanceof FolderNode) {
+                    anchor = ((FolderNode) after.getUserObject()).folder;
+                    position = "before";
+                } else if (before != null && before.getUserObject() instanceof FolderNode) {
+                    anchor = ((FolderNode) before.getUserObject()).folder;
+                    position = "after";
                 } else {
-                    // childIndex == folders 中 target 父下的兄弟下标
-                    // 0 = 锚点之前；其他 = 锚点之后（因为只有 1 个 anchor 节点）
-                    position = childIndex == 0 ? "before" : "after";
+                    position = "child";
+                    newParentId = null;
+                }
+            } else if (targetUo instanceof FolderNode) {
+                StarredFolder targetFolder = ((FolderNode) targetUo).folder;
+                if (childIndex == -1) {
+                    anchor = targetFolder;
+                } else {
+                    // ON_OR_INSERT 的 path 是插入位置所在父节点，childIndex 指向插入槽位。
+                    DefaultMutableTreeNode parentNode = targetNode;
+                    DefaultMutableTreeNode before = childIndex > 0 && childIndex - 1 < parentNode.getChildCount()
+                            ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex - 1) : null;
+                    DefaultMutableTreeNode after = childIndex < parentNode.getChildCount()
+                            ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex) : null;
+                    if (after != null && after.getUserObject() instanceof FolderNode) {
+                        anchor = ((FolderNode) after.getUserObject()).folder;
+                        position = "before";
+                    } else if (before != null && before.getUserObject() instanceof FolderNode) {
+                        anchor = ((FolderNode) before.getUserObject()).folder;
+                        position = "after";
+                    } else {
+                        // 父节点没有文件夹兄弟（例如只含接口）：插入为该文件夹的第一个子级。
+                        newParentId = targetFolder.getId();
+                        anchor = null;
+                        position = "child";
+                    }
                 }
             } else {
                 // drop 在 API 上 → 锚点 = 该 API 所在的文件夹，child 语义相同
@@ -1370,16 +1461,23 @@ public class ApiTreePanel extends JPanel {
             }
 
             boolean anyChanged = false;
+            List<StarredFolder> currentFolders = folderService.loadFolders();
             for (FolderNode fn : dragged) {
-                if (fn.folder.getId().equals(anchor.getId())) continue;
-                if ("child".equals(position) && folderService.isDescendantOf(
-                        folderService.loadFolders(), anchor.getId(), fn.folder.getId())) {
+                if (anchor != null && fn.folder.getId().equals(anchor.getId())) continue;
+                String parentId = newParentId;
+                if (anchor != null && !"child".equals(position)) parentId = anchor.getParentId();
+                if ("child".equals(position) && parentId != null
+                        && folderService.isDescendantOf(currentFolders, parentId, fn.folder.getId())) {
+                    // 不能把文件夹放进自己或自己的后代，避免形成 parentId 环。
+                    continue;
+                }
+                if ("child".equals(position) && anchor != null && folderService.isDescendantOf(
+                        currentFolders, anchor.getId(), fn.folder.getId())) {
                     // 拖到自己后代上 = 不能
                     continue;
                 }
                 if (folderService.moveFolder(fn.folder.getId(),
-                        anchor.isTopLevel() ? null : anchor.getParentId(),
-                        anchor.getId(), position)) {
+                        parentId, anchor == null ? null : anchor.getId(), position)) {
                     anyChanged = true;
                 }
             }
@@ -2938,13 +3036,14 @@ public class ApiTreePanel extends JPanel {
             return this;
         }
 
-        /** 渲染收藏模式下的接口节点：方法徽章 + URL + 测试状态（失败标红/通过标绿） */
+        /** 渲染收藏模式下的接口节点：方法标签 + URL + 测试状态（失败标红/通过标绿） */
         private void renderStarredApiNode(StarredApiNode node, boolean sel) {
             ApiDefinition api = node.api;
             String method = api.getHttpMethod();
             String url = api.getUrl();
             Color methodColor = getMethodColor(method);
             String methodHex = toHex(methodColor);
+            String methodTextColor = sel ? toHex(selectionForeground()) : methodHex;
 
             FolderApiStatus st = node.status;
             boolean red = st != null && st.shouldHighlightRed();
@@ -2955,8 +3054,8 @@ public class ApiTreePanel extends JPanel {
             else if (green) textColor = sel ? toHex(selectionForeground()) : "#2E7D32";
             else textColor = sel ? toHex(selectionForeground()) : toHex(getForeground());
 
-            StringBuilder text = new StringBuilder("<html><span style='background-color:").append(methodHex)
-                    .append("; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>").append(method)
+            StringBuilder text = new StringBuilder("<html><span style='color:").append(methodTextColor)
+                    .append("; font-weight:bold;'>[").append(method).append("]")
                     .append("</span>&nbsp;<span style='color:").append(textColor)
                     .append("; font-size:11px;'>").append(escapeHtml(url)).append("</span>");
             if (red) {
@@ -2980,7 +3079,7 @@ public class ApiTreePanel extends JPanel {
         }
 
         /**
-         * 渲染API节点：彩色方法徽章 + URL + 接口说明 + 收藏/变更标记
+         * 渲染API节点：彩色方法标签 + URL + 接口说明 + 收藏/变更标记
          */
         private void renderApiNode(ApiDefinition api, boolean sel) {
             String method = api.getHttpMethod();
@@ -2988,6 +3087,7 @@ public class ApiTreePanel extends JPanel {
             String description = api.getDescription();
             Color methodColor = getMethodColor(method);
             String methodHex = toHex(methodColor);
+            String methodTextColor = sel ? toHex(selectionForeground()) : methodHex;
             // Check starred status (restored from settings during scan)
             boolean isStarred = api.isStarred();
             String changeMarker = api.getChangeMarker();
@@ -2995,8 +3095,8 @@ public class ApiTreePanel extends JPanel {
             // 废弃 API：strikethrough + 红色
             if (api.isDeprecated()) {
                 String depColor = sel ? toHex(selectionForeground()) : toHex(RestAutoLabConstants.COLOR_TREE_DEPRECATED);
-                String text = "<html><span style='background-color:" + methodHex
-                        + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
+                String text = "<html><span style='color:" + methodTextColor
+                        + "; font-weight:bold;'>[" + method + "]"
                         + "</span>&nbsp;<span style='color:" + depColor
                         + "; text-decoration:line-through; font-size:11px;'>" + escapeHtml(url) + "</span>";
                 if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
@@ -3012,8 +3112,8 @@ public class ApiTreePanel extends JPanel {
             // 手动 API：灰色文字 + 手势图标
             if (!api.isAutoDetected()) {
                 String manualColor = sel ? toHex(selectionForeground()) : toHex(RestAutoLabConstants.COLOR_TREE_MANUAL);
-                String text = "<html><span style='background-color:" + methodHex
-                        + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
+                String text = "<html><span style='color:" + methodTextColor
+                        + "; font-weight:bold;'>[" + method + "]"
                         + "</span>&nbsp;<span style='color:" + manualColor + "; font-size:11px;'>"
                         + escapeHtml(url) + " \u270b</span>";
                 if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
@@ -3031,8 +3131,8 @@ public class ApiTreePanel extends JPanel {
 
             // 普通自动 API
             String textColor = sel ? toHex(selectionForeground()) : toHex(getForeground());
-            String text = "<html><span style='background-color:" + methodHex
-                    + "; color:#FFFFFF; font-weight:bold; padding:2px 6px;'>" + method
+            String text = "<html><span style='color:" + methodTextColor
+                    + "; font-weight:bold;'>[" + method + "]"
                     + "</span>&nbsp;<span style='color:" + textColor + "; font-size:11px;'>"
                     + escapeHtml(url) + "</span>";
             if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";

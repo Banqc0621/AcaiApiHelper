@@ -1,7 +1,6 @@
 package com.hronline.ui;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonParser;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
@@ -13,9 +12,9 @@ import com.intellij.ui.components.*;
 import com.intellij.util.ui.JBUI;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
+import com.hronline.util.LenientJsonFormatter;
 
 import javax.swing.*;
-import javax.swing.border.Border;
 import java.awt.*;
 import java.util.Map;
 
@@ -229,6 +228,20 @@ class SmartValueEditor extends DefaultCellEditor {
         area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         area.setLineWrap(false);
         area.setTabSize(2);
+        javax.swing.undo.UndoManager undoManager = new javax.swing.undo.UndoManager();
+        final boolean[] suppressUndo = {false};
+        area.getDocument().addUndoableEditListener(e -> {
+            if (!suppressUndo[0] && e.getEdit().isSignificant()) undoManager.addEdit(e.getEdit());
+        });
+        bindUndo(area, undoManager, javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Z, java.awt.event.InputEvent.CTRL_DOWN_MASK), false);
+        bindUndo(area, undoManager, javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Y, java.awt.event.InputEvent.CTRL_DOWN_MASK), true);
+        bindUndo(area, undoManager, javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Z, java.awt.event.InputEvent.META_DOWN_MASK), false);
+        bindUndo(area, undoManager, javax.swing.KeyStroke.getKeyStroke(
+                java.awt.event.KeyEvent.VK_Z,
+                java.awt.event.InputEvent.META_DOWN_MASK | java.awt.event.InputEvent.SHIFT_DOWN_MASK), true);
         JScrollPane scroll = new JBScrollPane(area);
         scroll.setBorder(JBUI.Borders.empty(4));
         dialog.add(scroll, BorderLayout.CENTER);
@@ -236,10 +249,9 @@ class SmartValueEditor extends DefaultCellEditor {
         JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 4));
         JButton fmtBtn = UiStyle.button("格式化JSON", AllIcons.Actions.PrettyPrint, ev -> {
             try {
-                var elem = JsonParser.parseString(area.getText().trim());
-                area.setText(gson.toJson(elem));
+                area.setText(LenientJsonFormatter.format(area.getText().trim()));
             } catch (Exception ex) {
-                Messages.showWarningDialog(dialog, "JSON格式错误: " + ex.getMessage(), "格式化失败");
+                Messages.showWarningDialog(dialog, "JSON 格式无法识别。支持自动修复缺逗号、单引号、尾逗号和裸 key。\n\nJSON错误: " + ex.getMessage(), "格式化失败");
             }
         });
         final String[] result = {null};
@@ -254,16 +266,33 @@ class SmartValueEditor extends DefaultCellEditor {
         dialog.add(btnBar, BorderLayout.SOUTH);
 
         if (initial != null && !initial.isBlank()) {
+            suppressUndo[0] = true;
             try {
-                var elem = JsonParser.parseString(initial.trim());
-                area.setText(gson.toJson(elem));
+                area.setText(LenientJsonFormatter.format(initial.trim()));
             } catch (Exception ignored) {
                 /* keep original */
+            } finally {
+                suppressUndo[0] = false;
             }
         }
         area.setCaretPosition(0);
         dialog.setVisible(true);
         return result[0];
+    }
+
+    private static void bindUndo(JTextArea area, javax.swing.undo.UndoManager manager,
+                                 javax.swing.KeyStroke keyStroke, boolean redo) {
+        String id = "json-" + (redo ? "redo" : "undo") + "-" + keyStroke;
+        area.getInputMap().put(keyStroke, id);
+        area.getActionMap().put(id, new AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent e) {
+                if (redo) {
+                    if (manager.canRedo()) manager.redo();
+                } else if (manager.canUndo()) {
+                    manager.undo();
+                }
+            }
+        });
     }
 
     /**

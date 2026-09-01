@@ -118,25 +118,6 @@ public class ApiDebuggerPanel extends JPanel {
     private boolean suppressBodyUndo = false;
     private boolean suppressParameterUndo = false;
     private List<Object[]> parameterUndoSnapshot = Collections.emptyList();
-    /** v2.2：参数表撤销管理器 —— 把每次单元格 UPDATE 捕获为可撤销单元。 */
-    private final javax.swing.undo.UndoManager paramUndoManager = new javax.swing.undo.UndoManager();
-    /**
-     * 参数表单元格编辑开始时的旧值快照（行 × 列）。
-     * <p>TableModelListener 收不到旧值，所以这里在 {@code tableCellEditor} 变化时记录一份，
-     * 后续 UPDATE 事件用快照 → 现值配成一对，构成一次可撤销编辑。</p>
-     * <p>10 行 × 6 列覆盖常规接口参数规模；动态增长参数行时通过
-     * {@link #ensureParamSnapshotCapacity(int)} 扩容。</p>
-     */
-    private Object[][] lastParamEditOldValues = new Object[16][6];
-
-    /** 必要时把快照表扩到能装下指定行 */
-    private void ensureParamSnapshotCapacity(int row) {
-        if (row < lastParamEditOldValues.length) return;
-        Object[][] bigger = new Object[row + 8][6];
-        System.arraycopy(lastParamEditOldValues, 0, bigger, 0, lastParamEditOldValues.length);
-        lastParamEditOldValues = bigger;
-    }
-
     // ── 响应区（v2.0.0：JsonSyntaxPane 提供语法高亮 + Ctrl+滚轮缩放 + 右键菜单）──
     private final JBTextArea responseArea = new JBTextArea();
     /** 响应文本视图：带 JSON 语法高亮 / 缩放 / 右键菜单的高亮面板（responseArea 仅作后台数据兼容） */
@@ -354,21 +335,7 @@ public class ApiDebuggerPanel extends JPanel {
         paramTableModel.addTableModelListener(e -> {
             if (suppressParameterUndo) return;
             List<Object[]> after = captureParameterSnapshot();
-            if (sameParameterSnapshot(parameterUndoSnapshot, after)) return;
-            List<Object[]> before = copyParameterSnapshot(parameterUndoSnapshot);
-            List<Object[]> committed = copyParameterSnapshot(after);
-            parameterUndoManager.addEdit(new javax.swing.undo.AbstractUndoableEdit() {
-                @Override public void undo() throws javax.swing.undo.CannotUndoException {
-                    super.undo();
-                    restoreParameterSnapshot(before);
-                }
-
-                @Override public void redo() throws javax.swing.undo.CannotRedoException {
-                    super.redo();
-                    restoreParameterSnapshot(committed);
-                }
-            });
-            parameterUndoSnapshot = committed;
+            recordParameterUndo(after);
         });
         bindUndoKeyOnTable(paramTable, parameterUndoManager, "params", java.awt.event.KeyEvent.VK_Z,
                 java.awt.event.InputEvent.CTRL_DOWN_MASK, false);
@@ -405,6 +372,41 @@ public class ApiDebuggerPanel extends JPanel {
             if (!Arrays.equals(first.get(i), second.get(i))) return false;
         }
         return true;
+    }
+
+    private void recordParameterUndo(List<Object[]> after) {
+        if (sameParameterSnapshot(parameterUndoSnapshot, after)) return;
+        List<Object[]> before = copyParameterSnapshot(parameterUndoSnapshot);
+        List<Object[]> committed = copyParameterSnapshot(after);
+        parameterUndoManager.addEdit(new javax.swing.undo.AbstractUndoableEdit() {
+            @Override public void undo() throws javax.swing.undo.CannotUndoException {
+                super.undo();
+                restoreParameterSnapshot(before);
+            }
+
+            @Override public void redo() throws javax.swing.undo.CannotRedoException {
+                super.redo();
+                restoreParameterSnapshot(committed);
+            }
+        });
+        parameterUndoSnapshot = committed;
+    }
+
+    /** 以一个可撤销操作替换整张参数表（回显、批量生成等场景）。 */
+    private void replaceParameterRows(List<Object[]> rows) {
+        List<Object[]> before = copyParameterSnapshot(parameterUndoSnapshot);
+        suppressParameterUndo = true;
+        try {
+            paramTableModel.setRowCount(0);
+            if (rows != null) {
+                for (Object[] row : rows) paramTableModel.addRow(row == null ? new Object[0] : row.clone());
+            }
+        } finally {
+            suppressParameterUndo = false;
+        }
+        List<Object[]> after = captureParameterSnapshot();
+        parameterUndoSnapshot = before;
+        recordParameterUndo(after);
     }
 
     private void restoreParameterSnapshot(List<Object[]> snapshot) {
@@ -836,44 +838,6 @@ public class ApiDebuggerPanel extends JPanel {
         paramTable.getColumnModel().getColumn(4).setCellEditor(new RequiredComboBoxEditor());
         paramTable.getColumnModel().getColumn(4).setCellRenderer(new RequiredComboBoxRenderer());
         paramTable.getColumnModel().getColumn(2).setCellRenderer(new LocationCellRenderer());
-
-        // v2.2：参数表撤销支持 —— 监听 model 变更，把单元格 UPDATE 包成可撤销单元
-        paramTableModel.addTableModelListener(e -> {
-            if (e.getType() != javax.swing.event.TableModelEvent.UPDATE) return;
-            int row = e.getFirstRow();
-            int col = e.getColumn();
-            if (row < 0 || col < 0) return;
-            // 只有参数名、类型、值 三列真正需要 undo（位置/必填/描述由系统生成，undo 体验差）
-            if (col != 0 && col != 1 && col != 3) return;
-            Object newVal = paramTableModel.getValueAt(row, col);
-            // 注意：e 没有提供旧值；通过 savedSnapshot 在 editing 开始时记录
-            Object oldVal = lastParamEditOldValues[row][col];
-            if (java.util.Objects.equals(oldVal, newVal)) return;
-            final int r = row;
-            final int c = col;
-            final Object o = oldVal;
-            final Object n = newVal;
-            paramUndoManager.addEdit(new javax.swing.undo.AbstractUndoableEdit() {
-                @Override public void undo() {
-                    paramTableModel.setValueAt(o, r, c);
-                }
-                @Override public void redo() {
-                    paramTableModel.setValueAt(n, r, c);
-                }
-                @Override public boolean isSignificant() { return true; }
-                @Override public String getPresentationName() { return "编辑参数"; }
-            });
-        });
-        // 编辑开始时快照旧值，便于 model listener 拿到 before/after 对
-        paramTable.addPropertyChangeListener("tableCellEditor", evt -> {
-            if (paramTable.getCellEditor() != null) {
-                int row = paramTable.getEditingRow();
-                int col = paramTable.getEditingColumn();
-                if (row >= 0 && col >= 0) {
-                    lastParamEditOldValues[row][col] = paramTableModel.getValueAt(row, col);
-                }
-            }
-        });
 
         // v2.0.0：值列渲染器 - 文件类型参数显示「📎 文件名」（完整路径放 tooltip），长值也用 tooltip 辅助查看
         paramTable.getColumnModel().getColumn(3).setCellRenderer(new ValueCellRenderer());
@@ -1711,7 +1675,7 @@ public class ApiDebuggerPanel extends JPanel {
      *   <li>非空：从 {@link StarredFolderService} 读取该文件夹下此接口
      *       的实时参数并覆盖到参数表，并在发送请求时回写——保证同一接口在不同文件夹中
      *       各自归档、互不干扰。</li>
-     *   <li>null：全量视图，仅使用接口默认参数，不回写。</li>
+     *   <li>null：全量视图，使用接口默认参数并按接口唯一键保存最近一次请求配置。</li>
      * </ul></p>
      */
     public void loadApi(ApiDefinition api, String folderId) {
@@ -1909,6 +1873,8 @@ public class ApiDebuggerPanel extends JPanel {
         result.setStatusCode(history.getStatusCode());
         result.setResponseBody(history.getResponseBody());
         result.setRequestUrl(history.getUrl());
+        result.setRequestHeaders(history.getHeaders());
+        result.setRequestParameters(history.getRequestParameters());
         result.setRequestBody(history.getRequestBody());
         result.setDurationMs(history.getDurationMs());
         result.setTimestamp(history.getTimestamp());
@@ -2330,6 +2296,7 @@ public class ApiDebuggerPanel extends JPanel {
      */
     private void applySelectedBodyFormat() {
         String format = resolveSelectedBodyFormat();
+        boolean formatError = false;
         // 1. JSON 时自动格式化内容
         if (HttpExecutorService.BODY_FORMAT_JSON.equals(format)) {
             String text = bodyEditor.getText();
@@ -2337,6 +2304,7 @@ public class ApiDebuggerPanel extends JPanel {
                 try {
                     bodyEditor.setText(LenientJsonFormatter.format(text));
                 } catch (Exception ex) {
+                    formatError = true;
                     statusLabel.setText("● JSON 格式无法识别，请检查括号、引号或字段值");
                 }
             }
@@ -2346,7 +2314,9 @@ public class ApiDebuggerPanel extends JPanel {
                 ? selectedBodyFormatContentType(currentApi)
                 : RestAutoLabConstants.DEFAULT_CONTENT_TYPE;
         setHeaderValue(RestAutoLabConstants.HEADER_CONTENT_TYPE, contentType);
-        statusLabel.setText("● 请求体格式已切换: " + bodyFormatCombo.getSelectedItem());
+        if (!formatError) {
+            statusLabel.setText("● 请求体格式已切换: " + bodyFormatCombo.getSelectedItem());
+        }
     }
 
     /** 设置/覆盖指定名称的请求头值（大小写不敏感匹配已有行） */
@@ -2791,84 +2761,32 @@ public class ApiDebuggerPanel extends JPanel {
             return;
         }
 
-        // 1) 先按严格模式尝试解析
         try {
-            var elem = com.google.gson.JsonParser.parseString(original);
-            bodyEditor.setText(gson.toJson(elem));
-            statusLabel.setText("● JSON 已格式化");
-            return;
-        } catch (Exception ignored) {
-            // 进入修复路径
+            String normalized = LenientJsonFormatter.normalize(original);
+            bodyEditor.setText(gson.toJson(JsonParser.parseString(normalized)));
+            statusLabel.setText(normalized.equals(original.trim())
+                    ? "● JSON 已格式化" : "● 已自动修复常见 JSON 格式问题并格式化");
+        } catch (Exception ex) {
+            Messages.showWarningDialog(project,
+                    "JSON 格式无法识别。\n可能原因：嵌套结构不匹配、引号未闭合、字段类型非法等。\n"
+                            + "支持自动修复缺逗号、单引号、尾逗号和裸 key；请检查后再试。\n\n"
+                            + "JSON错误: " + ex.getMessage(),
+                    "格式化失败");
         }
-
-        // 2) 尝试 Gson lenient 模式（允许未加引号的 key、注释等）
-        try {
-            com.google.gson.stream.JsonReader jr =
-                    new com.google.gson.stream.JsonReader(new java.io.StringReader(original));
-            jr.setLenient(true);
-            var elem = com.google.gson.JsonParser.parseReader(jr);
-            bodyEditor.setText(gson.toJson(elem));
-            statusLabel.setText("● JSON 已格式化（lenient 模式）");
-            return;
-        } catch (Exception ignored) {
-            // 进入启发式修复
-        }
-
-        // 3) 启发式修复常见错误（缺逗号、单引号、尾逗号、未加引号 key）
-        String repaired = repairCommonJsonErrors(original);
-        if (!repaired.equals(original)) {
-            try {
-                var elem = com.google.gson.JsonParser.parseString(repaired);
-                bodyEditor.setText(gson.toJson(elem));
-                statusLabel.setText("● 已自动修复常见 JSON 格式问题并格式化");
-                return;
-            } catch (Exception ignored) {
-                // 修复无效，进入错误提示
-            }
-        }
-
-        // 4) 所有尝试都失败 — 给出可读的提示，引导用户继续调整
-        Messages.showWarningDialog(project,
-                "JSON 格式无法识别。\n"
-                        + "可能原因：嵌套结构不匹配、引号未闭合、字段类型非法等。\n"
-                        + "已尝试自动修复常见格式问题（缺逗号 / 单引号 / 尾逗号 / 裸 key）但仍不合法。\n"
-                        + "请人工检查后再试。",
-                "格式化失败");
     }
 
     /**
-     * 启发式修复 JSON 中的常见格式错误（非完整 parser，仅处理高频 case）：
+     * 将请求体中的常见宽松 JSON 写法归一化为标准 JSON（规则由 LenientJsonFormatter 集中维护）。
      * <ul>
      *   <li>相邻值之间缺逗号（典型 case：10065\n"nextKey"）</li>
      *   <li>尾逗号（`,` 后紧跟 `}`/`]`）</li>
      *   <li>单引号字符串（成对的 `'…'` 改成 `"…"`）</li>
      *   <li>裸 key（`{name:val}` → `{"name":val}`）</li>
      * </ul>
-     * 若输入不包含任何 JSON 特征字符（`{}[]:"`），直接返回原文不修复（避免误伤）。
+     * 保留该方法作为旧调用方的兼容入口。
      */
     static String repairCommonJsonErrors(String text) {
-        if (text == null || text.isBlank()) return text;
-        // 非 JSON 内容（无花括号/方括号/引号）—— 不修复，避免破坏 XML/SQL 等
-        if (text.indexOf('{') < 0 && text.indexOf('[') < 0) return text;
-
-        // 1. 单引号 → 双引号（仅在看起来像字符串字面量内：'...'）
-        String s = text.replaceAll("'([^'\\n]*)'", "\"$1\"");
-
-        // 2. 缺逗号：在「值结束后紧跟 key 起始引号」的位置插入 ,
-        //    匹配 value-end（数字、引号、}、]、true/false/null）后空白接 "
-        s = s.replaceAll(
-                "([\\}\\]\"0-9]|true|false|null)\\s+(?=\")",
-                "$1, ");
-
-        // 3. 尾逗号：`,` 后紧跟 `}` / `]` → 删除逗号
-        s = s.replaceAll(",(\\s*[}\\]])", "$1");
-
-        // 4. 裸 key：在 `{` 或 `,` 后紧跟字母/下划线开头的 token + `:` → 加引号
-        s = s.replaceAll(
-                "([{,]\\s*)([A-Za-z_][A-Za-z0-9_-]*)\\s*:",
-                "$1\"$2\":");
-
-        return s;
+        return LenientJsonFormatter.normalize(text);
     }
 
     /**
@@ -2885,9 +2803,9 @@ public class ApiDebuggerPanel extends JPanel {
         }
         final com.google.gson.JsonElement parsed;
         try {
-            parsed = JsonParser.parseString(text);
+            parsed = JsonParser.parseString(LenientJsonFormatter.normalize(text));
         } catch (Exception ex) {
-            Messages.showWarningDialog(project, "请求体不是合法 JSON: " + ex.getMessage(), "回显失败");
+            Messages.showWarningDialog(project, "请求体 JSON 格式无法识别，已尝试修复缺逗号/单引号/尾逗号后仍失败：\n" + ex.getMessage(), "回显失败");
             return;
         }
         if (!parsed.isJsonObject()) {
@@ -2899,11 +2817,8 @@ public class ApiDebuggerPanel extends JPanel {
             Messages.showWarningDialog(project, "请求体 JSON 为空对象，没有可回显的字段", "回显");
             return;
         }
-        // 回显：先清空参数列表现有数据，再写入回显行
-        paramTableModel.setRowCount(0);
-        for (Object[] row : rows) {
-            paramTableModel.addRow(row);
-        }
+        // 回显：先清空参数列表现有数据，再写入回显行；整体作为一个可撤销操作。
+        replaceParameterRows(rows);
         statusLabel.setText("● 回显完成: 共 " + rows.size() + " 个参数行");
         // 切回「参数」Tab，让用户立即看到回显结果
         tabbedPane.setSelectedIndex(0);
@@ -3872,11 +3787,14 @@ public class ApiDebuggerPanel extends JPanel {
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
             if (currentApi == null) {
                 requestHistory.clear();
+                lastResponseByApi.clear();
             } else {
                 requestHistory.removeIf(this::historyBelongsToCurrentApi);
+                lastResponseByApi.remove(currentApi.uniqueKey());
             }
             persistHistory();
             refreshHistoryList();
+            clearDisplayedResponse();
         });
         btnPanel.add(resendBtn);
         btnPanel.add(viewBtn);
@@ -3950,6 +3868,20 @@ public class ApiDebuggerPanel extends JPanel {
             String scope = currentApi == null ? "全部接口" : currentApi.displayLabel();
             historyTitleLabel.setText("请求历史 · " + scope + "（" + visible.size() + " 条），双击查看请求详情");
         }
+    }
+
+    /** 清除响应区当前展示，保持“清空当前接口历史”后的结果区语义一致。 */
+    private void clearDisplayedResponse() {
+        lastResult = null;
+        responseArea.setText("");
+        responsePane.setTextAndHighlight("");
+        responsePane.setCaretPosition(0);
+        responseStatusLabel.setText("状态: -");
+        responseStatusLabel.setForeground(JBColor.foreground());
+        responseTimeLabel.setText("耗时: -");
+        responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>-</b></html>");
+        responseCardLayout.show(responseContentPanel, "text");
+        responseViewTree = false;
     }
 
     private void removeHistoryEntry(RequestHistory selected) {

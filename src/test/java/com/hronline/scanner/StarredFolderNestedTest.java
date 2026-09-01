@@ -269,6 +269,18 @@ class StarredFolderNestedTest {
         assertEquals(before, ids(folders), "applyFolderMove 必须返回新 list，不得污染输入");
     }
 
+    @Test
+    void applyFolderMoveKeepsMovedSubtreeTogether() {
+        List<StarredFolder> folders = new ArrayList<>();
+        folders.add(new StarredFolder("a", "A"));
+        folders.add(new StarredFolder("a1", "A1", "a"));
+        folders.add(new StarredFolder("b", "B"));
+        List<StarredFolder> out = StarredFolderService.applyFolderMove(folders, "a", null, "b", "after");
+        assertNotNull(out);
+        assertEquals(List.of("b", "a", "a1"), ids(out));
+        assertEquals("a", findById(out, "a1").getParentId());
+    }
+
     private StarredFolder findById(List<StarredFolder> folders, String id) {
         for (StarredFolder f : folders) {
             if (id.equals(f.getId())) return f;

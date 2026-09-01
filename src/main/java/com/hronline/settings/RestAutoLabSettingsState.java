@@ -613,8 +613,10 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     /**
      * #65 修复：把按 uniqueKey 索引的所有持久化字段统一改键。
      * <p>用户修改 @RequestMapping 路径后，旧 uniqueKey（HTTP_METHOD + URL）失效：
-     * starredApis Set / folderApiParamsJson / folderApiStatusJson / preRequestScriptsJson
-     * / apiVariableOverridesJson / apiCallCounts / apiLastCallTimes / lastScanApiSignatures
+     * starredApis Set / folderApiParamsJson / folderApiStatusJson / folderApiHeadersJson
+     * / folderApiBodiesJson / apiRequestParamsJson / apiRequestHeadersJson / apiRequestBodiesJson
+     * / preRequestScriptsJson / apiVariableOverridesJson / apiCallCounts / apiLastCallTimes
+     * / lastScanApiSignatures
      * 全部按旧 key 索引，会被「看似新增 + 旧 key 丢失」双重夹击变成孤儿。</p>
      * <p>本方法在每次扫描完成后由 {@code ApiScannerService} 调用，按
      * {@code oldKey → newKey} 重映射所有这些字段。starredApis / folder.apiKeys
@@ -656,6 +658,22 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         Map<String, String> bodies = loadFolderApiBodies();
         if (remapCompoundKeysInPlace(bodies, remap, "\n")) {
             saveFolderApiBodies(bodies);
+            count++;
+        }
+        // 全量视图的参数/请求头/请求体直接按 apiKey 索引。
+        Map<String, Map<String, String>> requestParams = loadApiRequestParams();
+        if (remapMapKeysInPlace(requestParams, remap)) {
+            saveApiRequestParams(requestParams);
+            count++;
+        }
+        Map<String, Map<String, String>> requestHeaders = loadApiRequestHeaders();
+        if (remapMapKeysInPlace(requestHeaders, remap)) {
+            saveApiRequestHeaders(requestHeaders);
+            count++;
+        }
+        Map<String, String> requestBodies = loadApiRequestBodies();
+        if (remapMapKeysInPlace(requestBodies, remap)) {
+            saveApiRequestBodies(requestBodies);
             count++;
         }
         // preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes
@@ -706,6 +724,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
      * <ul>
      *   <li>{@code starredApis} Set — 同步收藏状态</li>
      *   <li>{@code folderApiParams} / {@code folderApiStatus} / {@code folderApiHeaders} / {@code folderApiBodies} — 复合 key (folderId\napiKey) 只清 suffix 失效项</li>
+     *   <li>{@code apiRequestParams} / {@code apiRequestHeaders} / {@code apiRequestBodies} — 全量视图按 apiKey 清理</li>
      *   <li>{@code preRequestScripts} / {@code apiVariableOverrides} — 直接 key</li>
      *   <li>{@code apiCallCounts} / {@code apiLastCallTimes} — 直接 key</li>
      *   <li>{@code lastScanApiSignatures} — 用于变更检测，孤儿签名会导致后续"伪新增"</li>
@@ -767,6 +786,31 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             else removed++;
         }
         if (keptBodies.size() != bodies.size()) saveFolderApiBodies(keptBodies);
+
+        // 全量视图的参数/请求头/请求体直接按 apiKey 索引。
+        Map<String, Map<String, String>> requestParams = loadApiRequestParams();
+        int beforeRequestParams = requestParams.size();
+        requestParams.keySet().retainAll(alive);
+        if (requestParams.size() != beforeRequestParams) {
+            saveApiRequestParams(requestParams);
+            removed += beforeRequestParams - requestParams.size();
+        }
+
+        Map<String, Map<String, String>> requestHeaders = loadApiRequestHeaders();
+        int beforeRequestHeaders = requestHeaders.size();
+        requestHeaders.keySet().retainAll(alive);
+        if (requestHeaders.size() != beforeRequestHeaders) {
+            saveApiRequestHeaders(requestHeaders);
+            removed += beforeRequestHeaders - requestHeaders.size();
+        }
+
+        Map<String, String> requestBodies = loadApiRequestBodies();
+        int beforeRequestBodies = requestBodies.size();
+        requestBodies.keySet().retainAll(alive);
+        if (requestBodies.size() != beforeRequestBodies) {
+            saveApiRequestBodies(requestBodies);
+            removed += beforeRequestBodies - requestBodies.size();
+        }
 
         Map<String, FolderApiStatus> status = loadFolderApiStatus();
         Map<String, FolderApiStatus> keptStatus = new LinkedHashMap<>();

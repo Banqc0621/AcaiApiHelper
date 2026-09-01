@@ -218,10 +218,26 @@ public final class LenientJsonFormatter {
         if (next == ',' || next == '}' || next == ']' || next == ':') return index;
         // 下一个 token 以 key/值开头，说明上一个值后漏了逗号；保留原空白并在其前插入。
         if (next == '"' || next == '\'' || next == '{' || next == '['
-                || next == '-' || Character.isDigit(next) || next == 't' || next == 'f' || next == 'n') {
+                || next == '-' || Character.isDigit(next) || next == 't' || next == 'f' || next == 'n'
+                || looksLikeUnquotedKey(text, p)) {
             out.append(',');
         }
         return index;
+    }
+
+    /** 判断当前位置是否像下一个裸 key（例如 recipientUserId: ...）。 */
+    private static boolean looksLikeUnquotedKey(String text, int index) {
+        if (index >= text.length()) return false;
+        char first = text.charAt(index);
+        if (!Character.isLetter(first) && first != '_') return false;
+        int end = index + 1;
+        while (end < text.length()) {
+            char c = text.charAt(end);
+            if (Character.isLetterOrDigit(c) || c == '_' || c == '-' || c == '.') end++;
+            else break;
+        }
+        while (end < text.length() && Character.isWhitespace(text.charAt(end))) end++;
+        return end < text.length() && text.charAt(end) == ':';
     }
 
     private static String removeTrailingCommas(String text) {

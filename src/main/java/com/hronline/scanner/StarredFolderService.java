@@ -225,7 +225,7 @@ public final class StarredFolderService {
     /** 在文件夹间移动接口：从源文件夹移除，加入目标文件夹（目标去重）。
      *  <p>语义同「先 remove 再 add」，但合并为一次落盘。</p> */
     public boolean moveApi(String apiKey, String fromFolderId, String toFolderId) {
-        if (fromFolderId.equals(toFolderId)) return false;
+        if (apiKey == null || fromFolderId == null || toFolderId == null || fromFolderId.equals(toFolderId)) return false;
         List<StarredFolder> folders = loadFolders();
         StarredFolder from = null, to = null;
         for (StarredFolder f : folders) {
@@ -234,14 +234,57 @@ public final class StarredFolderService {
         }
         if (from == null || to == null) return false;
         if (!from.getApiKeys().remove(apiKey)) return false; // 源中不存在
-        // 参数/状态随接口迁移到目标文件夹
-        Map<String, Map<String, String>> params = migrateParams(fromFolderId, toFolderId, apiKey);
-        migrateStatus(fromFolderId, toFolderId, apiKey);
-        if (!to.getApiKeys().contains(apiKey)) to.getApiKeys().add(apiKey);
+        // 参数/状态随接口迁移到目标文件夹。若目标已经有同一接口，保留目标已有快照，
+        // 只清理源文件夹的快照，避免跨文件夹移动时意外覆盖用户数据。
+        boolean targetAlreadyContains = to.getApiKeys().contains(apiKey);
+        Map<String, Map<String, String>> params;
+        if (targetAlreadyContains) {
+            removeParamsAndStatus(fromFolderId, apiKey);
+            params = settings().loadFolderApiParams();
+        } else {
+            params = migrateParams(fromFolderId, toFolderId, apiKey);
+            migrateStatus(fromFolderId, toFolderId, apiKey);
+            migrateHeaders(fromFolderId, toFolderId, apiKey);
+            migrateBody(fromFolderId, toFolderId, apiKey);
+            to.getApiKeys().add(apiKey);
+        }
         settings().saveStarredFolders(folders);
         settings().saveFolderApiParams(params);
         syncStarredSet(folders);
         return true;
+    }
+
+    /** 在同一文件夹内调整接口顺序。接口列表本身是有序的，拖动到目标接口时默认插入其之前。 */
+    public boolean moveApiWithinFolder(String folderId, String apiKey, String anchorApiKey, boolean after) {
+        return moveApisWithinFolder(folderId, Collections.singletonList(apiKey), anchorApiKey, after);
+    }
+
+    /** 在同一文件夹内以一个原子操作移动多个接口，保持选中接口的相对顺序。 */
+    public boolean moveApisWithinFolder(String folderId, Collection<String> apiKeys,
+                                        String anchorApiKey, boolean after) {
+        if (folderId == null || apiKeys == null || apiKeys.isEmpty() || anchorApiKey == null) return false;
+        List<StarredFolder> folders = loadFolders();
+        for (StarredFolder folder : folders) {
+            if (!folderId.equals(folder.getId())) continue;
+            List<String> keys = folder.getApiKeys();
+            if (!keys.contains(anchorApiKey)) return false;
+            Set<String> requested = new LinkedHashSet<>(apiKeys);
+            requested.remove(anchorApiKey);
+            List<String> moving = new ArrayList<>();
+            for (String key : keys) if (requested.contains(key)) moving.add(key);
+            if (moving.isEmpty()) return false;
+            List<String> before = new ArrayList<>(keys);
+            keys.removeAll(requested);
+            int anchorIndex = keys.indexOf(anchorApiKey);
+            if (anchorIndex < 0) return false;
+            int insertIndex = after ? anchorIndex + 1 : anchorIndex;
+            keys.addAll(insertIndex, moving);
+            if (before.equals(keys)) return false;
+            settings().saveStarredFolders(folders);
+            syncStarredSet(folders);
+            return true;
+        }
+        return false;
     }
 
     /** 把接口加入收藏（默认进「未分类」）；若已在任意文件夹则不重复加 */
@@ -317,44 +360,103 @@ public final class StarredFolderService {
         }
         if (moved == null) return null;
 
-        String targetParentId;
-        if ("child".equals(position)) {
-            if (folderId.equals(anchorId)) return null;
-            StarredFolder anchor = null;
-            if (anchorId != null && !anchorId.isBlank()) {
-                for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
-                if (anchor == null) return null;
-                if (isDescendantOf(folders, anchorId, folderId)) return null; // 不能移到自己的后代
-                targetParentId = anchorId;
-            } else {
-                // 无 anchor：按 newParentId 解析（API 用法：直接指定新父 + child）
-                targetParentId = normalizeParentIdPure(folders, newParentId);
+        StarredFolder anchor = null;
+        if (anchorId != null && !anchorId.isBlank()) {
+            for (StarredFolder f : folders) {
+                if (anchorId.equals(f.getId())) { anchor = f; break; }
             }
-        } else {
-            if (anchorId == null || anchorId.isBlank()) {
-                targetParentId = normalizeParentIdPure(folders, newParentId);
-            } else {
-                StarredFolder anchor = null;
-                for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
-                if (anchor == null || anchor.getId().equals(folderId)) return null;
-                targetParentId = anchor.getParentId();
-            }
+            if (anchor == null || folderId.equals(anchor.getId())) return null;
         }
 
-        int originalIdx = folders.indexOf(moved);
-        // 在副本上操作，避免污染调用方的 list
-        List<StarredFolder> next = new ArrayList<>(folders);
-        next.remove(moved);
-        StarredFolder movedCopy = copyWithParent(moved, targetParentId);
-        // next 已不含 moved，所以 computeInsertIndexPure 返回的下标可直接用于 next.add
-        int insertPos = computeInsertIndexPure(next, targetParentId, anchorId, position);
-        insertPos = Math.max(0, Math.min(insertPos, next.size()));
-        // no-op 检测：插入位置 = 原始下标 且 父级未变 = 没动
-        if (insertPos == originalIdx && java.util.Objects.equals(targetParentId, moved.getParentId())) {
-            return null;
+        Set<String> movedSubtree = new HashSet<>(collectSubtreeIds(folders, folderId));
+        String targetParentId;
+        if ("child".equals(position)) {
+            // child + anchor 表示拖到该文件夹内部；无 anchor 时直接使用 newParentId。
+            targetParentId = anchor == null ? normalizeParentIdPure(folders, newParentId) : anchor.getId();
+        } else {
+            targetParentId = anchor == null
+                    ? normalizeParentIdPure(folders, newParentId)
+                    : normalizeParentIdPure(folders, anchor.getParentId());
         }
-        next.add(insertPos, movedCopy);
+        // 不能把文件夹放到自己或自己的后代下，避免形成 parentId 环。
+        if (folderId.equals(targetParentId)
+                || (targetParentId != null && movedSubtree.contains(targetParentId))) return null;
+
+        // 以父级 -> 子级列表为准重建顺序，而不是依赖持久化 list 恰好是 DFS 排列。
+        // 这样移动带子文件夹的节点时，整个子树都会一起移动，且 before/after 始终针对兄弟节点。
+        Map<String, List<StarredFolder>> children = new LinkedHashMap<>();
+        for (StarredFolder f : folders) {
+            if (movedSubtree.contains(f.getId())) continue;
+            String parent = normalizeParentIdPure(folders, f.getParentId());
+            children.computeIfAbsent(parent, k -> new ArrayList<>()).add(f);
+        }
+        StarredFolder movedCopy = copyWithParent(moved, targetParentId);
+        children.computeIfAbsent(targetParentId, k -> new ArrayList<>());
+        List<StarredFolder> siblings = children.get(targetParentId);
+        int insertAt;
+        if (anchor == null) {
+            // 无锚点表示目标父级下的第一个位置；拖到具体文件夹（anchor）时才追加到其子级末尾。
+            insertAt = 0;
+        } else if ("child".equals(position)) {
+            insertAt = children.computeIfAbsent(anchor.getId(), k -> new ArrayList<>()).size();
+            children.get(anchor.getId()).add(movedCopy);
+            insertAt = -1; // 已在 anchor 的子级列表追加
+        } else {
+            insertAt = -1;
+            for (int i = 0; i < siblings.size(); i++) {
+                if (anchor.getId().equals(siblings.get(i).getId())) {
+                    insertAt = "before".equals(position) ? i : i + 1;
+                    break;
+                }
+            }
+            if (insertAt < 0) return null;
+        }
+        if (insertAt >= 0) siblings.add(insertAt, movedCopy);
+
+        // 把被移动文件夹的原有子树挂回 movedCopy（子节点 parentId 不变），并按层级展平。
+        Map<String, List<StarredFolder>> allChildren = new LinkedHashMap<>();
+        for (Map.Entry<String, List<StarredFolder>> e : children.entrySet()) {
+            allChildren.put(e.getKey(), new ArrayList<>(e.getValue()));
+        }
+        List<StarredFolder> descendants = new ArrayList<>();
+        for (StarredFolder f : folders) {
+            if (movedSubtree.contains(f.getId()) && !folderId.equals(f.getId())) descendants.add(f);
+        }
+        for (StarredFolder descendant : descendants) {
+            String parent = normalizeParentIdPure(folders, descendant.getParentId());
+            allChildren.computeIfAbsent(parent, k -> new ArrayList<>()).add(descendant);
+        }
+        // movedCopy 已在 children 的 target parent 中；其 descendants 会在 allChildren 中递归挂载。
+        List<StarredFolder> next = new ArrayList<>(folders.size());
+        Set<String> emitted = new HashSet<>();
+        appendFolderTree(next, allChildren, null, emitted);
+        // 脏数据成环时仍保证所有节点可见，不丢数据。
+        for (StarredFolder f : folders) {
+            if (emitted.add(f.getId())) {
+                if (folderId.equals(f.getId())) next.add(movedCopy); else next.add(f);
+            }
+        }
+        if (sameFolderOrdering(folders, next)) return null;
         return next;
+    }
+
+    private static void appendFolderTree(List<StarredFolder> out,
+                                         Map<String, List<StarredFolder>> children,
+                                         String parentId, Set<String> emitted) {
+        for (StarredFolder f : children.getOrDefault(parentId, Collections.emptyList())) {
+            if (!emitted.add(f.getId())) continue;
+            out.add(f);
+            appendFolderTree(out, children, f.getId(), emitted);
+        }
+    }
+
+    private static boolean sameFolderOrdering(List<StarredFolder> first, List<StarredFolder> second) {
+        if (first.size() != second.size()) return false;
+        for (int i = 0; i < first.size(); i++) {
+            StarredFolder a = first.get(i), b = second.get(i);
+            if (!Objects.equals(a.getId(), b.getId()) || !Objects.equals(a.getParentId(), b.getParentId())) return false;
+        }
+        return true;
     }
 
     private static StarredFolder copyWithParent(StarredFolder src, String newParentId) {
@@ -367,58 +469,6 @@ public final class StarredFolderService {
         if (parentId == null || parentId.isBlank()) return null;
         for (StarredFolder f : folders) if (parentId.equals(f.getId())) return parentId;
         return null;
-    }
-
-    /**
-     * 计算把 moved 插入到 folders 列表中的下标（folders 此时不含 moved）。
-     * <p>约定：folders 中的同父兄弟是连续的（DFS 顺序：父 + 子块）。</p>
-     */
-    private static int computeInsertIndexPure(List<StarredFolder> folders, String targetParentId,
-                                                String anchorId, String position) {
-        if (anchorId == null || anchorId.isBlank()) {
-            // 无锚点：作为目标父下第一个兄弟；找不到任何目标父的兄弟则追加
-            for (int i = 0; i < folders.size(); i++) {
-                if (isSameParentStatic(folders.get(i), targetParentId)) return i;
-            }
-            return folders.size();
-        }
-        StarredFolder anchor = null;
-        for (StarredFolder f : folders) if (anchorId.equals(f.getId())) { anchor = f; break; }
-        if (anchor == null) return folders.size();
-        int anchorIdx = folders.indexOf(anchor);
-
-        if ("child".equals(position)) {
-            // 追加为锚点的最后一个子之后（folders 中子紧跟父）
-            int lastChild = anchorIdx;
-            for (int i = anchorIdx + 1; i < folders.size(); i++) {
-                if (anchorId.equals(folders.get(i).getParentId())) lastChild = i;
-                else break;
-            }
-            return lastChild + 1;
-        }
-        if ("before".equals(position)) {
-            // 锚点所在兄弟块的开头
-            String anchorParent = anchor.getParentId();
-            int first = anchorIdx;
-            for (int i = anchorIdx - 1; i >= 0; i--) {
-                if (isSameParentStatic(folders.get(i), anchorParent)) first = i;
-                else break;
-            }
-            return first;
-        }
-        // after：锚点所在兄弟块的末尾之后
-        String anchorParent = anchor.getParentId();
-        int last = anchorIdx;
-        for (int i = anchorIdx + 1; i < folders.size(); i++) {
-            if (isSameParentStatic(folders.get(i), anchorParent)) last = i;
-            else break;
-        }
-        return last + 1;
-    }
-
-    private static boolean isSameParentStatic(StarredFolder f, String parentId) {
-        String fp = f.getParentId();
-        return parentId == null ? (fp == null || fp.isBlank()) : parentId.equals(fp);
     }
 
     /** id 是否为 ancestorId 的后代（防把文件夹移到自己的子树里）。 */
@@ -651,5 +701,19 @@ public final class StarredFolderService {
         FolderApiStatus s = all.remove(pk(fromId, apiKey));
         if (s != null) all.put(pk(toId, apiKey), s);
         settings().saveFolderApiStatus(all);
+    }
+
+    private void migrateHeaders(String fromId, String toId, String apiKey) {
+        Map<String, Map<String, String>> all = settings().loadFolderApiHeaders();
+        Map<String, String> headers = all.remove(pk(fromId, apiKey));
+        if (headers != null) all.put(pk(toId, apiKey), headers);
+        settings().saveFolderApiHeaders(all);
+    }
+
+    private void migrateBody(String fromId, String toId, String apiKey) {
+        Map<String, String> all = settings().loadFolderApiBodies();
+        String body = all.remove(pk(fromId, apiKey));
+        if (body != null) all.put(pk(toId, apiKey), body);
+        settings().saveFolderApiBodies(all);
     }
 }

@@ -196,6 +196,9 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         s1.setTestedAt(123L);
         status.put("folder1\nGET|/api/v1/old", s1);
         state.saveFolderApiStatus(status);
+        state.saveApiRequestParams(Map.of("GET|/api/v1/old", Map.of("p", "v")));
+        state.saveApiRequestHeaders(Map.of("GET|/api/v1/old", Map.of("X-Test", "1")));
+        state.saveApiRequestBodies(Map.of("GET|/api/v1/old", "{\"p\":1}"));
         // 准备 apiCallCounts / apiLastCallTimes
         Map<String, Integer> counts = new LinkedHashMap<>();
         counts.put("GET|/api/v1/old", 7);
@@ -225,6 +228,9 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         Map<String, FolderApiStatus> reloadedStatus = state.loadFolderApiStatus();
         assertTrue(reloadedStatus.containsKey("folder1\nGET|/api/v2/new"), "status key 应改写");
         assertEquals(123L, reloadedStatus.get("folder1\nGET|/api/v2/new").getTestedAt(), "status 内容必须保留");
+        assertTrue(state.loadApiRequestParams().containsKey("GET|/api/v2/new"));
+        assertTrue(state.loadApiRequestHeaders().containsKey("GET|/api/v2/new"));
+        assertEquals("{\"p\":1}", state.loadApiRequestBodies().get("GET|/api/v2/new"));
 
         // 4. apiCallCounts / apiLastCallTimes
         assertEquals(7, state.getApiCallCount("GET|/api/v2/new"), "call count 应迁移到新 key");
@@ -261,6 +267,9 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         params.put("folder1\nGET|/alive1", Map.of("p1", "v1"));
         params.put("folder1\nGET|/stale1", Map.of("p2", "v2"));
         state.saveFolderApiParams(params);
+        state.saveApiRequestParams(Map.of("GET|/stale1", Map.of("p", "x"), "GET|/alive1", Map.of("p", "v")));
+        state.saveApiRequestHeaders(Map.of("GET|/stale2", Map.of("X", "x"), "GET|/alive2", Map.of("X", "v")));
+        state.saveApiRequestBodies(Map.of("GET|/stale1", "{}", "GET|/alive1", "{\"ok\":true}"));
         Map<String, FolderApiStatus> status = new LinkedHashMap<>();
         FolderApiStatus aliveStatus = new FolderApiStatus();
         aliveStatus.setTestedAt(1L);
@@ -294,6 +303,9 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         assertTrue(reloadedParams.containsKey("folder1\nGET|/alive1"));
         assertFalse(reloadedParams.containsKey("folder1\nGET|/stale1"), "stale params 必须清掉");
         assertEquals("v1", reloadedParams.get("folder1\nGET|/alive1").get("p1"));
+        assertFalse(state.loadApiRequestParams().containsKey("GET|/stale1"));
+        assertFalse(state.loadApiRequestHeaders().containsKey("GET|/stale2"));
+        assertFalse(state.loadApiRequestBodies().containsKey("GET|/stale1"));
 
         // 3. folderApiStatus
         Map<String, FolderApiStatus> reloadedStatus = state.loadFolderApiStatus();
