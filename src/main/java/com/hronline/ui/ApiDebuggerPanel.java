@@ -240,6 +240,8 @@ public class ApiDebuggerPanel extends JPanel {
         splitter.setHonorComponentsMinimumSize(false);
         // 持久化拖动比例，下次打开工具窗口自动恢复
         splitter.setSplitterProportionKey("RestAutoLab.Debugger.VerticalSplitter");
+        // Round 4：分割线视觉强化 —— 主题色 + 抓手光标 + hover 加深，便于定位拖动
+        installSplitterHint(splitter);
         add(splitter, BorderLayout.CENTER);
 
         // 底部状态栏
@@ -769,6 +771,8 @@ public class ApiDebuggerPanel extends JPanel {
         configSplitter.setSecondComponent(variablesPanel);
         configSplitter.setHonorComponentsMinimumSize(false);
         configSplitter.setSplitterProportionKey("RestAutoLab.Debugger.PreRequestSplitter");
+        // Round 4：同主分割线视觉强化
+        installSplitterHint(configSplitter);
         panel.add(configSplitter, BorderLayout.CENTER);
 
         preRequestScriptArea.getDocument().addDocumentListener(new DocumentAdapter() {
@@ -786,6 +790,84 @@ public class ApiDebuggerPanel extends JPanel {
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         settings.savePreRequestScript(currentApi.uniqueKey(), preRequestScriptArea.getText());
         settings.saveApiVariableOverrides(currentApi.uniqueKey(), collectVariableOverrides());
+    }
+
+    /**
+     * Round 4：保存当前请求体到当前接口的持久化层。
+     * 收藏视图（currentFolderId != null）→ 按 (folderId, apiKey) 存，
+     * 全量视图（folderId == null）→ 按 apiKey 存，保证切换页面后自动恢复。
+     */
+    private void saveCurrentRequestBody() {
+        if (currentApi == null) {
+            statusLabel.setText("● 请先选择一个 API 接口");
+            return;
+        }
+        String body = bodyEditor.getText();
+        String normalized = (body != null && !body.isBlank()) ? body : null;
+        String apiKey = currentApi.uniqueKey();
+        try {
+            if (currentFolderId != null) {
+                StarredFolderService svc = StarredFolderService.getInstance(project);
+                svc.setBody(currentFolderId, apiKey, normalized);
+            } else {
+                RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+                Map<String, String> all = settings.loadApiRequestBodies();
+                if (normalized == null) all.remove(apiKey);
+                else all.put(apiKey, normalized);
+                settings.saveApiRequestBodies(all);
+            }
+            statusLabel.setText("● 已保存请求体: " + currentApi.displayLabel());
+        } catch (Exception ex) {
+            LOG.warn("[保存请求体] 写入失败: apiKey=" + apiKey, ex);
+            statusLabel.setText("● 保存请求体失败: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Round 4：分割线视觉强化。JBSplitter 内部 divider 默认是 1px 透明或浅灰线，
+     * 用户反馈难拖。这里：
+     * <ol>
+     *   <li>递归找 splitter 里名为 "Divider" 的内部子组件，背景设为边框色 + 抓手光标</li>
+     *   <li>splitter 自身在 shown 后整块加 1px 边框 hover 高亮，方便定位拖动区</li>
+     * </ol>
+     */
+    private void installSplitterHint(JBSplitter splitter) {
+        Color dividerColor = JBColor.namedColor("Borders.color", new JBColor(0xC0C0C0, 0x555555));
+        Cursor grabCursor = Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR);
+        Runnable styleDivider = () -> {
+            for (Component c : splitter.getComponents()) {
+                if (c == null) continue;
+                String name = c.getClass().getSimpleName();
+                if (name.contains("Divider") || c instanceof javax.swing.JComponent jc && "Divider".equals(jc.getName())) {
+                    c.setBackground(dividerColor);
+                    c.setCursor(grabCursor);
+                    if (c instanceof javax.swing.JComponent jc2) {
+                        jc2.setOpaque(true);
+                    }
+                }
+            }
+        };
+        // 初次显示 + 之后每次重排都刷一次
+        splitter.addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override public void componentShown(java.awt.event.ComponentEvent e) { styleDivider.run(); }
+            @Override public void componentResized(java.awt.event.ComponentEvent e) { styleDivider.run(); }
+        });
+        // hover 高亮整 splitter 的浅边框，光标变为 N_RESIZE 提示可拖
+        Color hoverBorder = JBColor.namedColor("Component.focusColor", new JBColor(0x4A90E2, 0x4A90E2));
+        javax.swing.border.Border idleBorder = JBUI.Borders.customLine(dividerColor, 0, 0, 1, 0);
+        javax.swing.border.Border hoverBorderLine = JBUI.Borders.customLine(hoverBorder, 0, 0, 2, 0);
+        splitter.setBorder(idleBorder);
+        splitter.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mouseEntered(java.awt.event.MouseEvent e) {
+                splitter.setBorder(hoverBorderLine);
+                splitter.setCursor(grabCursor);
+            }
+            @Override public void mouseExited(java.awt.event.MouseEvent e) {
+                splitter.setBorder(idleBorder);
+                splitter.setCursor(Cursor.getDefaultCursor());
+            }
+        });
+        styleDivider.run();
     }
 
     private void loadPreRequestConfig(ApiDefinition api) {
@@ -1140,11 +1222,17 @@ public class ApiDebuggerPanel extends JPanel {
         center.add(bodyScrollPane, BorderLayout.CENTER);
         panel.add(center, BorderLayout.CENTER);
 
-        // ── 底部：格式化 / 清空 按钮 ──
+        // ── 底部：格式化 / 保存 / 清空 按钮 ──
+        // Round 4：在「格式化」与「清空」之间插入「保存」按钮。用户明确反对发送即保存，
+        // 改为显式触发：点击后把当前 body 持久化到当前接口（收藏视图按 (folderId, apiKey)，
+        // 全量视图按 apiKey），确保切换页面不丢。状态栏给出「● 已保存」反馈。
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatJson());
+        JButton saveBtn = iconButton("保存", AllIcons.Actions.Commit, e -> saveCurrentRequestBody());
+        saveBtn.setToolTipText("把当前请求体保存到当前接口（切换页面后自动恢复）");
         JButton clrBtn = iconButton("清空", AllIcons.Actions.GC, e -> bodyEditor.setText(""));
         btnPanel.add(fmtBtn);
+        btnPanel.add(saveBtn);
         btnPanel.add(clrBtn);
         panel.add(btnPanel, BorderLayout.SOUTH);
 
@@ -1948,37 +2036,7 @@ public class ApiDebuggerPanel extends JPanel {
         String body = bodyEditor.getText();
         String requestBody = (body != null && !body.isBlank()) ? body : null;
 
-        // v2.2：发送即保存。当前接口在收藏视图下（currentFolderId != null），
-        // 把当前参数/请求头/请求体持久化到该文件夹，便于下次切换回自动恢复。
-        // 全量视图（currentFolderId == null）下走"按接口"维度保存（同一接口不论进哪个文件夹都能恢复）。
-        if (currentApi != null) {
-            String apiKey = currentApi.uniqueKey();
-            try {
-                if (currentFolderId != null) {
-                    StarredFolderService svc = StarredFolderService.getInstance(project);
-                    svc.setParams(currentFolderId, apiKey, collectAllParameterPairs());
-                    svc.setHeaders(currentFolderId, apiKey, headers);
-                    svc.setBody(currentFolderId, apiKey, requestBody);
-                } else {
-                    RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
-                    Map<String, Map<String, String>> allParams = settings.loadApiRequestParams();
-                    Map<String, String> allPairs = collectAllParameterPairs();
-                    if (allPairs.isEmpty()) allParams.remove(apiKey);
-                    else allParams.put(apiKey, allPairs);
-                    settings.saveApiRequestParams(allParams);
-                    Map<String, Map<String, String>> allHeaders = settings.loadApiRequestHeaders();
-                    if (headers == null || headers.isEmpty()) allHeaders.remove(apiKey);
-                    else allHeaders.put(apiKey, new LinkedHashMap<>(headers));
-                    settings.saveApiRequestHeaders(allHeaders);
-                    Map<String, String> allBodies = settings.loadApiRequestBodies();
-                    if (requestBody == null || requestBody.isBlank()) allBodies.remove(apiKey);
-                    else allBodies.put(apiKey, requestBody);
-                    settings.saveApiRequestBodies(allBodies);
-                }
-            } catch (Exception ex) {
-                LOG.warn("[发送即保存] 写入失败: apiKey=" + apiKey, ex);
-            }
-        }
+        // Round 4：取消「发送即保存」（用户明确反悔）。持久化只在显式保存按钮触发时进行。
 
         // v3: 获取body格式和环境
         final String finalBodyFormat = resolveSelectedBodyFormat();
@@ -3903,8 +3961,17 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel content = new JPanel(new BorderLayout(0, 8));
         content.setBorder(JBUI.Borders.empty(10));
         JBLabel summary = new JBLabel("<html><b>" + escapeHtml(h.getMethod()) + "</b> "
-                + escapeHtml(h.getUrl()) + " · " + h.getStatusCode() + " · "
-                + h.getDurationMs() + " ms</html>");
+                + escapeHtml(h.getUrl()) + " · <b>" + h.getStatusCode() + "</b> · "
+                + h.getDurationMs() + " ms · "
+                + (h.getResponseBody() == null ? 0 : h.getResponseBody().length()) + " B</html>");
+        // 状态码着色：2xx 绿、3xx 蓝、4xx/5xx 红
+        if (h.getStatusCode() >= 200 && h.getStatusCode() < 300) {
+            summary.setForeground(new JBColor(0x2E7D32, 0x66BB6A));
+        } else if (h.getStatusCode() >= 400) {
+            summary.setForeground(new JBColor(0xC62828, 0xEF5350));
+        } else if (h.getStatusCode() >= 300) {
+            summary.setForeground(new JBColor(0x1565C0, 0x42A5F5));
+        }
         content.add(summary, BorderLayout.NORTH);
 
         JTabbedPane details = new JTabbedPane();
@@ -3912,6 +3979,12 @@ public class ApiDebuggerPanel extends JPanel {
         details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
         details.addTab("请求体", createHistoryTextPane(
                 h.getRequestBody() == null || h.getRequestBody().isBlank() ? "（无请求体）" : h.getRequestBody()));
+        // Round 4：补「响应」tab —— 显示当时那次的完整响应 body，按状态码着色头部摘要。
+        String responseBody = h.getResponseBody() == null ? "" : h.getResponseBody();
+        if (responseBody.isBlank()) responseBody = "（无响应记录）";
+        details.addTab("响应", createHistoryTextPane(responseBody));
+        // 默认打开「响应」tab，因为用户的诉求就是看历史响应
+        details.setSelectedIndex(3);
         content.add(details, BorderLayout.CENTER);
 
         JButton close = iconButton("关闭", AllIcons.Actions.Close, e -> dialog.dispose());
