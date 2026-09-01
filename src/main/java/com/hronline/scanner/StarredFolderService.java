@@ -457,6 +457,41 @@ public final class StarredFolderService {
         settings().saveFolderApiParams(all);
     }
 
+    // ==================== v2.2 文件夹内请求头/请求体 ====================
+
+    /** 加载文件夹内接口的请求头（key=folderId\napiKey -> Map<headerName,value>） */
+    @Nullable
+    public Map<String, String> getHeaders(String folderId, String apiKey) {
+        return settings().loadFolderApiHeaders().get(pk(folderId, apiKey));
+    }
+
+    /**
+     * 保存文件夹内接口的请求头。
+     * <p>{@code headers} 为 null/空 时清掉该条目（避免空 map 占空间）。</p>
+     */
+    public void setHeaders(String folderId, String apiKey, Map<String, String> headers) {
+        Map<String, Map<String, String>> all = settings().loadFolderApiHeaders();
+        String k = pk(folderId, apiKey);
+        if (headers == null || headers.isEmpty()) all.remove(k);
+        else all.put(k, headers);
+        settings().saveFolderApiHeaders(all);
+    }
+
+    /** 加载文件夹内接口的请求体字符串 */
+    @Nullable
+    public String getBody(String folderId, String apiKey) {
+        return settings().loadFolderApiBodies().get(pk(folderId, apiKey));
+    }
+
+    /** 保存文件夹内接口的请求体（null/空 时清掉条目） */
+    public void setBody(String folderId, String apiKey, String body) {
+        Map<String, String> all = settings().loadFolderApiBodies();
+        String k = pk(folderId, apiKey);
+        if (body == null || body.isBlank()) all.remove(k);
+        else all.put(k, body);
+        settings().saveFolderApiBodies(all);
+    }
+
     // ==================== 测试状态 ====================
 
     @NotNull
@@ -563,6 +598,11 @@ public final class StarredFolderService {
         if (params.remove(k) != null) settings().saveFolderApiParams(params);
         Map<String, FolderApiStatus> status = settings().loadFolderApiStatus();
         if (status.remove(k) != null) settings().saveFolderApiStatus(status);
+        // v2.2 同时清掉 headers / bodies
+        Map<String, Map<String, String>> headers = settings().loadFolderApiHeaders();
+        if (headers.remove(k) != null) settings().saveFolderApiHeaders(headers);
+        Map<String, String> bodies = settings().loadFolderApiBodies();
+        if (bodies.remove(k) != null) settings().saveFolderApiBodies(bodies);
     }
 
     private void removeParamsAndStatusForFolder(String folderId) {
@@ -573,6 +613,13 @@ public final class StarredFolderService {
         Map<String, FolderApiStatus> status = settings().loadFolderApiStatus();
         status.keySet().removeIf(k -> k.startsWith(prefix));
         settings().saveFolderApiStatus(status);
+        // v2.2 headers / bodies 同步清理
+        Map<String, Map<String, String>> headers = settings().loadFolderApiHeaders();
+        headers.keySet().removeIf(k -> k.startsWith(prefix));
+        settings().saveFolderApiHeaders(headers);
+        Map<String, String> bodies = settings().loadFolderApiBodies();
+        bodies.keySet().removeIf(k -> k.startsWith(prefix));
+        settings().saveFolderApiBodies(bodies);
     }
 
     private void removeAllParamsAndStatusForApi(String apiKey) {
@@ -583,6 +630,13 @@ public final class StarredFolderService {
         Map<String, FolderApiStatus> status = settings().loadFolderApiStatus();
         status.keySet().removeIf(k -> k.endsWith(suffix));
         settings().saveFolderApiStatus(status);
+        // v2.2 headers / bodies 同步清理
+        Map<String, Map<String, String>> headers = settings().loadFolderApiHeaders();
+        headers.keySet().removeIf(k -> k.endsWith(suffix));
+        settings().saveFolderApiHeaders(headers);
+        Map<String, String> bodies = settings().loadFolderApiBodies();
+        bodies.keySet().removeIf(k -> k.endsWith(suffix));
+        settings().saveFolderApiBodies(bodies);
     }
 
     private Map<String, Map<String, String>> migrateParams(String fromId, String toId, String apiKey) {

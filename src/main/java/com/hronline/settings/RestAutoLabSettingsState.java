@@ -69,6 +69,16 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public String starredFoldersJson = "";
         /** 文件夹内接口测试参数 JSON（key=folderId\napiKey -> Map<paramName,value>） */
         public String folderApiParamsJson = "";
+        /** v2.2 文件夹内接口请求头 JSON（key=folderId\napiKey -> Map<headerName,value>） */
+        public String folderApiHeadersJson = "";
+        /** v2.2 文件夹内接口请求体 JSON（key=folderId\napiKey -> body 字符串） */
+        public String folderApiBodiesJson = "";
+        /** 全量接口视图下保存的请求参数（key=apiKey -> Map<paramName,value>） */
+        public String apiRequestParamsJson = "";
+        /** 全量接口视图下保存的请求头（key=apiKey -> Map<headerName,value>） */
+        public String apiRequestHeadersJson = "";
+        /** 全量接口视图下保存的请求体（key=apiKey -> body 字符串） */
+        public String apiRequestBodiesJson = "";
         /** 文件夹内接口测试状态 JSON（key=folderId\napiKey -> FolderApiStatus） */
         public String folderApiStatusJson = "";
         /** 接口级前置脚本（key=apiKey -> script） */
@@ -285,6 +295,94 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
     /** 保存文件夹内接口测试参数 */
     public void saveFolderApiParams(Map<String, Map<String, String>> params) {
         myState.folderApiParamsJson = gson.toJson(params);
+    }
+
+    /** v2.2：加载文件夹内接口请求头（key=folderId\napiKey -> Map<headerName,value>） */
+    public Map<String, Map<String, String>> loadFolderApiHeaders() {
+        if (myState.folderApiHeadersJson == null || myState.folderApiHeadersJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, Map<String, String>>>(){}.getType();
+            Map<String, Map<String, String>> m = gson.fromJson(myState.folderApiHeadersJson, t);
+            return m != null ? m : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** v2.2：保存文件夹内接口请求头 */
+    public void saveFolderApiHeaders(Map<String, Map<String, String>> headers) {
+        myState.folderApiHeadersJson = gson.toJson(headers);
+    }
+
+    /** v2.2：加载文件夹内接口请求体（key=folderId\napiKey -> body 字符串） */
+    public Map<String, String> loadFolderApiBodies() {
+        if (myState.folderApiBodiesJson == null || myState.folderApiBodiesJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, String>>(){}.getType();
+            Map<String, String> m = gson.fromJson(myState.folderApiBodiesJson, t);
+            return m != null ? m : new LinkedHashMap<>();
+        } catch (Exception e) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** v2.2：保存文件夹内接口请求体 */
+    public void saveFolderApiBodies(Map<String, String> bodies) {
+        myState.folderApiBodiesJson = gson.toJson(bodies);
+    }
+
+    /** 加载全量接口视图下保存的请求参数。 */
+    public Map<String, Map<String, String>> loadApiRequestParams() {
+        return loadNestedStringMap(myState.apiRequestParamsJson);
+    }
+
+    /** 保存全量接口视图下的请求参数。 */
+    public void saveApiRequestParams(Map<String, Map<String, String>> params) {
+        myState.apiRequestParamsJson = gson.toJson(params == null ? Collections.emptyMap() : params);
+    }
+
+    /** 加载全量接口视图下保存的请求头。 */
+    public Map<String, Map<String, String>> loadApiRequestHeaders() {
+        return loadNestedStringMap(myState.apiRequestHeadersJson);
+    }
+
+    /** 保存全量接口视图下的请求头。 */
+    public void saveApiRequestHeaders(Map<String, Map<String, String>> headers) {
+        myState.apiRequestHeadersJson = gson.toJson(headers == null ? Collections.emptyMap() : headers);
+    }
+
+    /** 加载全量接口视图下保存的请求体。 */
+    public Map<String, String> loadApiRequestBodies() {
+        if (myState.apiRequestBodiesJson == null || myState.apiRequestBodiesJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, String>>(){}.getType();
+            Map<String, String> value = gson.fromJson(myState.apiRequestBodiesJson, t);
+            return value != null ? value : new LinkedHashMap<>();
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** 保存全量接口视图下的请求体。 */
+    public void saveApiRequestBodies(Map<String, String> bodies) {
+        myState.apiRequestBodiesJson = gson.toJson(bodies == null ? Collections.emptyMap() : bodies);
+    }
+
+    private Map<String, Map<String, String>> loadNestedStringMap(String json) {
+        if (json == null || json.isBlank()) return new LinkedHashMap<>();
+        try {
+            Type t = new TypeToken<Map<String, Map<String, String>>>(){}.getType();
+            Map<String, Map<String, String>> value = gson.fromJson(json, t);
+            return value != null ? value : new LinkedHashMap<>();
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
     }
 
     /** 加载文件夹内接口测试状态（key=folderId\napiKey -> FolderApiStatus） */
@@ -549,6 +647,17 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             saveFolderApiStatus(status);
             count++;
         }
+        // v2.2 headers / bodies 复合 key 改写
+        Map<String, Map<String, String>> headers = loadFolderApiHeaders();
+        if (remapCompoundKeysInPlace(headers, remap, "\n")) {
+            saveFolderApiHeaders(headers);
+            count++;
+        }
+        Map<String, String> bodies = loadFolderApiBodies();
+        if (remapCompoundKeysInPlace(bodies, remap, "\n")) {
+            saveFolderApiBodies(bodies);
+            count++;
+        }
         // preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes
         // 都是按 apiKey 直接索引
         Map<String, String> preScripts = loadPreRequestScripts();
@@ -596,7 +705,7 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
      * 范围：</p>
      * <ul>
      *   <li>{@code starredApis} Set — 同步收藏状态</li>
-     *   <li>{@code folderApiParams} / {@code folderApiStatus} — 复合 key (folderId\napiKey) 只清 suffix 失效项</li>
+     *   <li>{@code folderApiParams} / {@code folderApiStatus} / {@code folderApiHeaders} / {@code folderApiBodies} — 复合 key (folderId\napiKey) 只清 suffix 失效项</li>
      *   <li>{@code preRequestScripts} / {@code apiVariableOverrides} — 直接 key</li>
      *   <li>{@code apiCallCounts} / {@code apiLastCallTimes} — 直接 key</li>
      *   <li>{@code lastScanApiSignatures} — 用于变更检测，孤儿签名会导致后续"伪新增"</li>
@@ -632,6 +741,32 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
             else removed++;
         }
         if (keptParams.size() != params.size()) saveFolderApiParams(keptParams);
+
+        // v2.2 folderApiHeaders 同 params 结构
+        Map<String, Map<String, String>> headers = loadFolderApiHeaders();
+        Map<String, Map<String, String>> keptHeaders = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, String>> e : headers.entrySet()) {
+            String k = e.getKey();
+            int idx = k.lastIndexOf('\n');
+            if (idx < 0) { keptHeaders.put(k, e.getValue()); continue; }
+            String suffix = k.substring(idx + 1);
+            if (alive.contains(suffix)) keptHeaders.put(k, e.getValue());
+            else removed++;
+        }
+        if (keptHeaders.size() != headers.size()) saveFolderApiHeaders(keptHeaders);
+
+        // v2.2 folderApiBodies 同上结构（key=folderId\napiKey -> body string）
+        Map<String, String> bodies = loadFolderApiBodies();
+        Map<String, String> keptBodies = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : bodies.entrySet()) {
+            String k = e.getKey();
+            int idx = k.lastIndexOf('\n');
+            if (idx < 0) { keptBodies.put(k, e.getValue()); continue; }
+            String suffix = k.substring(idx + 1);
+            if (alive.contains(suffix)) keptBodies.put(k, e.getValue());
+            else removed++;
+        }
+        if (keptBodies.size() != bodies.size()) saveFolderApiBodies(keptBodies);
 
         Map<String, FolderApiStatus> status = loadFolderApiStatus();
         Map<String, FolderApiStatus> keptStatus = new LinkedHashMap<>();
