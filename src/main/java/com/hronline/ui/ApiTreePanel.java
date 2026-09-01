@@ -190,21 +190,6 @@ public class ApiTreePanel extends JPanel {
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
-                // Round 5：单击收藏接口 → 触发该接口所在文件单文件重扫，把最新定义即时刷新到调试面板。
-                // 单文件扫描比全量 scanProjectApisAsync 轻量得多（<100ms），适合作为「刷新接口信息」语义。
-                // ScanListener 会自动驱动树刷新，无需手动 rebuild。
-                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)
-                        && FILTER_STARRED.equals(currentFilter)) {
-                    StarredApiNode single = getSelectedStarredApiNode();
-                    if (single != null && single.api != null) {
-                        String filePath = single.api.getSourceFilePath();
-                        if (filePath != null && !filePath.isBlank()) {
-                            ApiScannerService.getInstance(project).scanSelectedSourcesAsync(
-                                    java.util.Collections.singletonList(filePath));
-                        }
-                    }
-                    return;
-                }
                 if (e.getClickCount() == 2) {
                     if (FILTER_STARRED.equals(currentFilter)) {
                         StarredApiNode n = getSelectedStarredApiNode();
