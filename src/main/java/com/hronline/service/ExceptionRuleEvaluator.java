@@ -61,11 +61,24 @@ public final class ExceptionRuleEvaluator {
             if (val == null || val.isJsonNull()) {
                 return Result.failed("响应缺少字段 [" + fname + "]");
             }
+            // 一伦优化 R7 完善：响应字段值类型不止字符串——
+            //   number → 保留原始字面量（getAsNumber().toString()）
+            //   boolean → 转 "true" / "false"
+            //   string → 原样
+            //   object/array → 退化为 toString（基本不会进白名单）
             String actual;
-            try {
-                actual = val.getAsString();
-            } catch (Exception ex) {
-                // 非字符串 / 嵌套对象时，退化为 toString（更宽容）
+            if (val.isJsonPrimitive()) {
+                com.google.gson.JsonPrimitive p = val.getAsJsonPrimitive();
+                if (p.isString()) {
+                    actual = p.getAsString();
+                } else if (p.isBoolean()) {
+                    actual = String.valueOf(p.getAsBoolean());
+                } else if (p.isNumber()) {
+                    actual = p.getAsNumber().toString();
+                } else {
+                    actual = p.getAsString();
+                }
+            } else {
                 actual = val.toString();
             }
             List<String> expected = r.getExpectedValues();
