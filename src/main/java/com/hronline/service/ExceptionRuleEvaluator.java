@@ -56,7 +56,7 @@ public final class ExceptionRuleEvaluator {
             switch (r.getType()) {
                 case HTTP_STATUS: {
                     String actual = String.valueOf(statusCode);
-                    if (!containsIgnoreCase(expected, actual)) {
+                    if (!contains(expected, actual)) {
                         return Result.failed("HTTP 状态码 [" + actual + "] 不在白名单 " + expected + " 中");
                     }
                     break;
@@ -68,20 +68,11 @@ public final class ExceptionRuleEvaluator {
                         return Result.failed("接口响应不是 JSON 对象，规则 [字段=" + fname + "] 无法校验");
                     }
                     com.google.gson.JsonElement val = parsed.getAsJsonObject().get(fname);
-                    if (val == null || val.isJsonNull()) {
+                    String actual = extractActualValue(val, fname);
+                    if (actual == null) {
                         return Result.failed("响应缺少字段 [" + fname + "]");
                     }
-                    String actual;
-                    if (val.isJsonPrimitive()) {
-                        com.google.gson.JsonPrimitive p = val.getAsJsonPrimitive();
-                        if (p.isString()) actual = p.getAsString();
-                        else if (p.isBoolean()) actual = String.valueOf(p.getAsBoolean());
-                        else if (p.isNumber()) actual = p.getAsNumber().toString();
-                        else actual = p.getAsString();
-                    } else {
-                        actual = val.toString();
-                    }
-                    if (!containsIgnoreCase(expected, actual)) {
+                    if (!contains(expected, actual)) {
                         return Result.failed("字段 [" + fname + "]=" + actual + " 不在白名单 " + expected + " 中");
                     }
                     break;
@@ -91,7 +82,30 @@ public final class ExceptionRuleEvaluator {
         return Result.passed();
     }
 
-    private static boolean containsIgnoreCase(List<String> list, String key) {
+    /**
+     * 一伦优化 R7：从 JsonElement 提取判定用的字符串字面量。
+     * <ul>
+     *   <li>missing / null → 返回 null（调用方当作「字段缺失」）</li>
+     *   <li>string → 原样</li>
+     *   <li>boolean → "true" / "false"</li>
+     *   <li>number → 数字字面量字符串</li>
+     *   <li>其他（object/array） → toString()</li>
+     * </ul>
+     * 拆出来是为了让单测能覆盖关键取值路径。
+     */
+    static String extractActualValue(com.google.gson.JsonElement val, String fieldName) {
+        if (val == null || val.isJsonNull()) return null;
+        if (val.isJsonPrimitive()) {
+            com.google.gson.JsonPrimitive p = val.getAsJsonPrimitive();
+            if (p.isString()) return p.getAsString();
+            if (p.isBoolean()) return String.valueOf(p.getAsBoolean());
+            if (p.isNumber()) return p.getAsNumber().toString();
+            return p.getAsString();
+        }
+        return val.toString();
+    }
+
+    private static boolean contains(List<String> list, String key) {
         if (list == null) return false;
         for (String s : list) {
             if (s == null) continue;

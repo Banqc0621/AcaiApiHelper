@@ -84,4 +84,31 @@ class ExceptionRuleEvaluatorTest {
         in.clear();
         assertEquals(1, r.getExpectedValues().size(), "setter 也应拷贝");
     }
+
+    // ---------- R7 完善：evaluator 内部取值 / 匹配逻辑 ----------
+
+    @Test
+    void extractActualValue_handlesAllPrimitiveTypes() {
+        // string
+        assertEquals("ok", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("\"ok\""), "k"));
+        // boolean
+        assertEquals("true", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("true"), "k"));
+        assertEquals("false", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("false"), "k"));
+        // number（保留原始字面量）
+        assertEquals("200", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("200"), "k"));
+        assertEquals("0", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("0"), "k"));
+        // null → null（表示字段缺失）
+        assertNull(ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("null"), "k"));
+        // 缺失 → null
+        assertNull(ExceptionRuleEvaluator.extractActualValue(null, "k"));
+        // object → toString（不进白名单基本算异常）
+        assertEquals("{\"a\":1}", ExceptionRuleEvaluator.extractActualValue(
+                com.google.gson.JsonParser.parseString("{\"a\":1}"), "k"));
+    }
 }
