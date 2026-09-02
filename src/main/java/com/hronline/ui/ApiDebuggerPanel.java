@@ -4494,23 +4494,20 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * Round 7：打开「异常自定义」对话框 —— 编辑当前接口的字段规则。
-     * <p>调用方：左侧"…"弹层 → 异常自定义。读取 currentApi 和最近一次响应 body
-     * （用于「自动扫描」填充字段候选）。</p>
+     * Round 7（重做）：打开「异常自定义」—— 用户明确要求入口放在「设置 UI」里。
+     * <p>这里直接跳到 {@link #openEnvAndDataManageDialog()} 并自动选中「异常自定义」Tab，
+     * 避免再造一个独立弹窗导致用户在两处都能改同一份配置。</p>
+     * <p>保留本方法名是为了兼容老入口（如有调用方），内部统一收敛到设置弹窗。</p>
      */
     public void openExceptionRulesDialog() {
-        try {
-            String refBody = lastResult == null ? null : lastResult.getResponseBody();
-            ExceptionRulesDialog dlg = new ExceptionRulesDialog(project, currentApi, refBody);
-            dlg.show();
-        } catch (Throwable t) {
-            com.intellij.openapi.diagnostic.Logger.getInstance(ApiDebuggerPanel.class)
-                    .error("[RestAutoLab] ExceptionRulesDialog 打开失败", t);
-            Messages.showErrorDialog(project,
-                    "异常自定义对话框打开失败：" + t.getClass().getSimpleName() + "\n" + t.getMessage(),
-                    "打开失败");
-        }
+        // 一伦优化 R7：入口收敛到设置弹窗；不直接弹 ExceptionRulesDialog。
+        // UI 中定位 Tab 由 EnvAndDataManageDialog 的 tab 顺序决定（环境 → 前置脚本 → AI 配置 → 异常自定义 → 数据）。
+        pendingExceptionRulesFocus = true;
+        openEnvAndDataManageDialog();
     }
+
+    /** 一伦优化 R7：标记下次打开设置弹窗时自动切到「异常自定义」Tab。 */
+    private boolean pendingExceptionRulesFocus = false;
 
     /**
      * 一伦优化 R4：「环境 & 数据」统一入口。
@@ -4575,6 +4572,23 @@ public class ApiDebuggerPanel extends JPanel {
             // commit() 内部已做校验（失败弹错），即便失败也已执行 onAfterSaved=null 的逻辑
             aiPanel.commit();
         });
+
+        // 一伦优化 R7（重做）：在「AI 配置」右侧新增「异常自定义」Tab。
+        // 用户原话：设置页面里 AI 配置按钮右侧要有异常自定义按钮，配置接口业务异常规则。
+        // 设计：复用 ExceptionRulesDialog 的可重用 ExceptionRulesPanel（拆 dialog 仅为复用），
+        // 保存交给 dialog 的 OK / 应用 按钮统一触发。
+        String refBody = lastResult == null ? null : lastResult.getResponseBody();
+        ExceptionRulesDialog.ExceptionRulesPanel exceptionRulesPanel =
+                new ExceptionRulesDialog.ExceptionRulesPanel(project, currentApi, refBody);
+        dialog.addTab("异常自定义", AllIcons.Actions.IntentionBulb, exceptionRulesPanel,
+                "为当前接口配置字段级业务异常规则（HTTP 通过后，body 字段不在白名单 = 异常）");
+        dialog.addOnCommit(exceptionRulesPanel::commit);
+
+        // 一伦优化 R7（重做）：从弹窗菜单点「异常自定义」时，落到该 Tab 上而非默认「环境」。
+        if (pendingExceptionRulesFocus) {
+            pendingExceptionRulesFocus = false;
+            dialog.selectTabByTitle("异常自定义");
+        }
 
         dialog.show();
         // 一伦优化 v23：弹窗已关闭，解除引用避免后续误通知

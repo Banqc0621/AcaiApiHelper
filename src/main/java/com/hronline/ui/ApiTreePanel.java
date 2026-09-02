@@ -725,18 +725,9 @@ public class ApiTreePanel extends JPanel {
         });
         menu.add(envData);
 
-        // Round 7：在「环境 & 数据」右侧追加「异常自定义」—— 配置当前接口的字段级业务异常规则。
-        // 与「环境 & 数据」并列、且只有调试面板存在时可点（没选接口也能打开，里面会提示）。
-        JMenuItem exceptionRules = new JMenuItem("异常自定义", AllIcons.Actions.IntentionBulb);
-        exceptionRules.setToolTipText("为当前接口配置字段级业务异常规则（HTTP 200 但 body 字段不在白名单 = 异常）");
-        exceptionRules.addActionListener(e -> {
-            if (debuggerPanel == null) {
-                Messages.showErrorDialog(project, "调试面板尚未初始化，请重新打开 RestAutoLab 工具窗口。", "无法打开异常自定义");
-                return;
-            }
-            debuggerPanel.openExceptionRulesDialog();
-        });
-        menu.add(exceptionRules);
+        // Round 7（重做）：移除「异常自定义」独立菜单项 —— 用户要求入口放在设置 UI 的 Tab 上。
+        // 弹窗菜单只剩「环境 & 数据」一个入口；点开后会自动跳到「异常自定义」Tab。
+        // （old code 见 git：JMenuItem exceptionRules = new JMenuItem("异常自定义", ...); menu.add(exceptionRules);）
 
         menu.show(anchor, 0, anchor.getHeight());
     }

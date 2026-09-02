@@ -85,6 +85,22 @@ public class EnvAndDataManageDialog extends DialogWrapper {
     }
 
     /**
+     * 一伦优化 R7：根据标题选中 Tab。
+     * <p>供 {@code ApiDebuggerPanel.openExceptionRulesDialog()} 等入口调，
+     * 让用户跳到「环境 & 数据」弹窗时直接落到目标 Tab。</p>
+     * @return 是否找到并切到该 Tab（找不到返回 false，保持原选中）
+     */
+    public boolean selectTabByTitle(@NotNull String title) {
+        for (int i = 0; i < tabbedPane.getTabCount(); i++) {
+            if (title.equals(tabbedPane.getTitleAt(i))) {
+                tabbedPane.setSelectedIndex(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * 一伦优化 v23：暴露内嵌的 EnvironmentManagerDialog 引用，
      * 主面板用它安装实时联动回调（左侧字段改 → 右侧 envCombo 立即刷新）。
      */
