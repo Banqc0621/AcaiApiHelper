@@ -376,23 +376,23 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         myState.apiRequestBodiesJson = gson.toJson(bodies == null ? Collections.emptyMap() : bodies);
     }
 
-    /** Round 7：加载异常自定义规则（key=apiKey -> List<ExceptionRule>）。 */
-    public Map<String, List<ExceptionRule>> loadExceptionRules() {
+    /** Round 7（重构）：加载全局异常自定义规则（所有接口共享）。 */
+    public List<ExceptionRule> loadExceptionRules() {
         if (myState.exceptionRulesJson == null || myState.exceptionRulesJson.isBlank()) {
-            return new LinkedHashMap<>();
+            return new ArrayList<>();
         }
         try {
-            Type t = new TypeToken<Map<String, List<ExceptionRule>>>(){}.getType();
-            Map<String, List<ExceptionRule>> v = gson.fromJson(myState.exceptionRulesJson, t);
-            return v != null ? v : new LinkedHashMap<>();
+            Type t = new TypeToken<List<ExceptionRule>>(){}.getType();
+            List<ExceptionRule> v = gson.fromJson(myState.exceptionRulesJson, t);
+            return v != null ? v : new ArrayList<>();
         } catch (Exception ignored) {
-            return new LinkedHashMap<>();
+            return new ArrayList<>();
         }
     }
 
-    /** Round 7：保存异常自定义规则。 */
-    public void saveExceptionRules(Map<String, List<ExceptionRule>> rules) {
-        myState.exceptionRulesJson = gson.toJson(rules == null ? Collections.emptyMap() : rules);
+    /** Round 7（重构）：保存全局异常自定义规则。 */
+    public void saveExceptionRules(List<ExceptionRule> rules) {
+        myState.exceptionRulesJson = gson.toJson(rules == null ? Collections.emptyList() : rules);
     }
 
     private Map<String, Map<String, String>> loadNestedStringMap(String json) {

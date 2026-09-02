@@ -5,30 +5,44 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Round 7：接口异常自定义规则。
- * <p>每条规则表达"响应 JSON 第一级里 fieldName 的值在 expectedValues 白名单内 → 算正常；
- * 字段缺失或值不在白名单 → 算异常"。HTTP 状态码判定沿用原 2xx 通过的逻辑，
- * 这里只补充业务层判定（很多业务接口 HTTP 200 但 body.code != 0）。</p>
+ * Round 7（重构）：异常自定义规则（全局）。
+ * <p>每条规则表达「该值落在白名单 = 正常；不在白名单 = 异常」。规则对项目内所有接口生效，
+ * 不再挂在具体 apiKey 下。判定细节见 {@link com.hronline.service.ExceptionRuleEvaluator}。</p>
  *
- * <p>数据按 {@code apiKey} 索引到 settings；为空数组 = 该接口无自定义规则，
- * 走默认 HTTP 2xx 判定。</p>
+ * <p>支持两种规则类型：
+ * <ul>
+ *   <li>{@link RuleType#HTTP_STATUS}：白名单匹配 HTTP 状态码（如 {@code [200, 201, 204]}）。
+ *       用于替代原先写死的 {@code statusCode >= 200 && < 300} 判定。</li>
+ *   <li>{@link RuleType#FIELD_VALUE}：白名单匹配响应 JSON 第一级字段值（如字段 {@code code}
+ *       的白名单 {@code [0, 200]}）。用于「HTTP 200 但 body.code != 0」这种业务层异常。</li>
+ * </ul>
  */
 public class ExceptionRule {
 
-    /** 响应 JSON 第一级字段名（如 {@code code}、{@code success}）。 */
+    public enum RuleType {
+        HTTP_STATUS,
+        FIELD_VALUE
+    }
+
+    private RuleType type = RuleType.HTTP_STATUS;
+    /** {@link RuleType#FIELD_VALUE} 时为响应 JSON 第一级字段名（如 {@code code}、{@code success}）；{@link RuleType#HTTP_STATUS} 时不使用，留空。 */
     private String fieldName = "";
-    /** 该字段被认定为"正常"的值集合；空集视同"任何值都接受"（仅作字段存在性检查）。 */
+    /** "正常" 值白名单。HTTP_STATUS 时为状态码字面量（如 "200"），FIELD_VALUE 时为字段值字面量（如 "0"）。 */
     private List<String> expectedValues = new ArrayList<>();
-    /** 用户开关；false 时这条规则不参与判定（不写测试结果）。 */
+    /** 用户开关；false 时这条规则不参与判定。 */
     private boolean enabled = true;
 
     public ExceptionRule() {}
 
-    public ExceptionRule(String fieldName, List<String> expectedValues, boolean enabled) {
+    public ExceptionRule(RuleType type, String fieldName, List<String> expectedValues, boolean enabled) {
+        this.type = type == null ? RuleType.HTTP_STATUS : type;
         this.fieldName = fieldName == null ? "" : fieldName;
         this.expectedValues = expectedValues == null ? new ArrayList<>() : new ArrayList<>(expectedValues);
         this.enabled = enabled;
     }
+
+    public RuleType getType() { return type; }
+    public void setType(RuleType type) { this.type = type == null ? RuleType.HTTP_STATUS : type; }
 
     public String getFieldName() { return fieldName; }
     public void setFieldName(String fieldName) { this.fieldName = fieldName == null ? "" : fieldName; }
@@ -47,17 +61,21 @@ public class ExceptionRule {
         if (!(o instanceof ExceptionRule)) return false;
         ExceptionRule that = (ExceptionRule) o;
         return enabled == that.enabled
+                && type == that.type
                 && Objects.equals(fieldName, that.fieldName)
                 && Objects.equals(expectedValues, that.expectedValues);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(fieldName, expectedValues, enabled);
+        return Objects.hash(type, fieldName, expectedValues, enabled);
     }
 
     @Override
     public String toString() {
-        return "ExceptionRule{field=" + fieldName + ", expected=" + expectedValues + ", enabled=" + enabled + "}";
+        if (type == RuleType.HTTP_STATUS) {
+            return "ExceptionRule{HTTP_STATUS, expected=" + expectedValues + ", enabled=" + enabled + "}";
+        }
+        return "ExceptionRule{FIELD_VALUE field=" + fieldName + ", expected=" + expectedValues + ", enabled=" + enabled + "}";
     }
 }

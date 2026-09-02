@@ -1,6 +1,5 @@
 package com.hronline.ui;
 
-import com.hronline.model.ApiDefinition;
 import com.hronline.model.ExceptionRule;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.project.Project;
@@ -20,10 +19,9 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Round 7（重做）：异常自定义面板。
+ * Round 7（重构）：异常自定义面板。
  * <p>同时支持：
  * <ul>
  *   <li>作为「环境 & 数据」弹窗里的 Tab 嵌入（只渲染表格 + 工具栏；保存由 dialog 的 OK 按钮统一触发，
@@ -31,18 +29,21 @@ import java.util.Map;
  *   <li>作为独立 JDialog 弹出（保留 OK / Cancel 按钮）</li>
  * </ul>
  *
- * <p>针对当前 API 编辑「响应 JSON 字段 → 期望值白名单」规则集；HTTP 状态码仍按 2xx 判定，
- * 本规则只补业务层。判定细节见 {@link com.hronline.service.ExceptionRuleEvaluator}。</p>
+ * <p><b>全局规则</b>：本面板配置的是项目级异常判定规则，对项目内所有接口生效。规则分为两类：
+ * <ul>
+ *   <li>HTTP 状态码白名单：自定义"哪些 HTTP 状态码算正常"（叠加在接口默认 2xx 之上）</li>
+ *   <li>JSON 字段值白名单：响应 JSON 第一级字段值在白名单 = 正常（如字段 {@code code} 白名单 {@code 0,200}）</li>
+ * </ul>
+ * 判定细节见 {@link com.hronline.service.ExceptionRuleEvaluator}。</p>
  */
 public class ExceptionRulesDialog extends DialogWrapper {
 
     private final ExceptionRulesPanel panel;
 
-    public ExceptionRulesDialog(@NotNull Project project, @Nullable ApiDefinition api,
-                                 @Nullable String referenceResponseBody) {
+    public ExceptionRulesDialog(@NotNull Project project) {
         super(project);
-        this.panel = new ExceptionRulesPanel(project, api, referenceResponseBody);
-        setTitle("异常自定义 · " + (api == null ? "未选择接口" : api.displayLabel()));
+        this.panel = new ExceptionRulesPanel(project);
+        setTitle("异常自定义 · 全局规则");
         init();
     }
 
@@ -63,37 +64,40 @@ public class ExceptionRulesDialog extends DialogWrapper {
     }
 
     /**
-     * Round 7：异常自定义面板组件 —— 可独立嵌入到任意 Dialog / JTabbedPane。
-     * 顶部「自动扫描」按钮（依赖最近一次响应）+ 中部规则表格 + 底部状态提示。
+     * Round 7（重构）：异常自定义面板组件 —— 可独立嵌入到任意 Dialog / JTabbedPane。
+     * 顶部「新增规则 / 保存规则」按钮 + 中部规则表格 + 底部状态提示。
+     * 规则对项目内所有接口生效，不挂具体接口。
      */
     public static final class ExceptionRulesPanel extends JPanel {
 
         private final Project project;
-        private final ApiDefinition api;
-        private final String referenceResponseBody;
 
-        private final DefaultTableModel tableModel = new DefaultTableModel(
-                new Object[]{"字段名", "期望值（多值逗号分隔）", "启用", "操作"}, 0) {
+        private static final String[] HEADERS = {"类型", "字段名（仅 FIELD_VALUE）", "期望值（逗号分隔 = 白名单）", "启用", "操作"};
+        private static final int COL_TYPE = 0;
+        private static final int COL_FIELD = 1;
+        private static final int COL_EXPECTED = 2;
+        private static final int COL_ENABLED = 3;
+        private static final int COL_ACTION = 4;
+
+        private final DefaultTableModel tableModel = new DefaultTableModel(HEADERS, 0) {
             @Override public Class<?> getColumnClass(int columnIndex) {
-                return columnIndex == 2 ? Boolean.class : Object.class;
+                if (columnIndex == COL_ENABLED) return Boolean.class;
+                if (columnIndex == COL_TYPE) return ExceptionRule.RuleType.class;
+                return Object.class;
             }
             @Override public boolean isCellEditable(int row, int column) {
-                // 操作列（第 3 列）由 renderer/mouseListener 处理，不允许直接编辑文本
-                return column == 0 || column == 1 || column == 2;
+                // 操作列由 mouseListener 处理；其余可编辑
+                return column != COL_ACTION;
             }
         };
         private final JBTable table = new JBTable(tableModel);
         private final JLabel statusLabel = new JLabel(" ");
-        private JButton scanBtn;
         private JButton addBtn;
         private JButton saveBtn;
 
-        public ExceptionRulesPanel(@NotNull Project project, @Nullable ApiDefinition api,
-                                    @Nullable String referenceResponseBody) {
+        public ExceptionRulesPanel(@NotNull Project project) {
             super(new BorderLayout(0, 6));
             this.project = project;
-            this.api = api;
-            this.referenceResponseBody = referenceResponseBody;
             setBorder(JBUI.Borders.empty(8));
             add(buildHeader(), BorderLayout.NORTH);
             add(buildCenter(), BorderLayout.CENTER);
@@ -104,11 +108,11 @@ public class ExceptionRulesDialog extends DialogWrapper {
         }
 
         private JComponent buildHeader() {
-            JLabel header = new JLabel(api == null
-                    ? "<html><b>请先在左侧选择接口</b>，再编辑异常规则</html>"
-                    : "<html>接口：<b>" + escapeHtml(api.displayLabel()) + "</b><br>"
-                    + "判定流程：HTTP 状态码通过 → 跑本表规则（字段缺失或值不在白名单 = 异常）<br>"
-                    + "提示：响应 JSON 顶层字段名要写对（如 <code>code</code>），期望值用英文逗号分隔多值，留空 = 仅检查存在。</html>");
+            JLabel header = new JLabel("<html>"
+                    + "<b>异常自定义规则（全局，对所有接口生效）</b><br>"
+                    + "判定流程：HTTP 通过 → 跑本表规则；任一不通过 = 异常<br>"
+                    + "<b>HTTP 状态码</b>：在白名单里 = 正常；<b>字段值</b>：响应 JSON 顶层字段值在白名单 = 正常（留空 = 不限）。"
+                    + "</html>");
             header.setBorder(JBUI.Borders.empty(0, 0, 6, 0));
             return header;
         }
@@ -116,28 +120,23 @@ public class ExceptionRulesDialog extends DialogWrapper {
         private JComponent buildCenter() {
             JPanel center = new JPanel(new BorderLayout(0, 4));
             JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-            scanBtn = new JButton("自动扫描");
-            scanBtn.setToolTipText(referenceResponseBody == null || referenceResponseBody.isBlank()
-                    ? "需要先发起一次请求以拿到响应" : "把响应 JSON 第一级字段全部加为规则候选");
-            scanBtn.addActionListener(e -> autoScanFromResponse());
             addBtn = new JButton("新增规则");
-            addBtn.addActionListener(e -> tableModel.addRow(new Object[]{"", "", Boolean.TRUE, "删除"}));
+            addBtn.addActionListener(e -> tableModel.addRow(new Object[]{
+                    ExceptionRule.RuleType.HTTP_STATUS, "", "", Boolean.TRUE, "删除"}));
             saveBtn = new JButton("保存规则");
             saveBtn.setToolTipText("立即把当前表格写回项目设置（不依赖弹窗 OK 按钮）");
             saveBtn.addActionListener(e -> commit());
-            btnBar.add(scanBtn);
             btnBar.add(addBtn);
             btnBar.add(saveBtn);
             center.add(btnBar, BorderLayout.NORTH);
 
             JScrollPane scroll = new JScrollPane(table);
-            scroll.setPreferredSize(JBUI.size(620, 240));
+            scroll.setPreferredSize(JBUI.size(680, 260));
             center.add(scroll, BorderLayout.CENTER);
             return center;
         }
 
         private JComponent buildStatusBar() {
-            // 醒目的状态条：粗体 + 内边距 + 背景色 + 加边框，作为视觉锚点
             statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 12f));
             statusLabel.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
@@ -149,53 +148,39 @@ public class ExceptionRulesDialog extends DialogWrapper {
         }
 
         private void applyEnabledState() {
-            if (api == null) {
-                // 全禁用 + 醒目引导，避免用户在没选 API 的状态下乱点
-                table.setEnabled(false);
-                table.setBackground(JBColor.PanelBackground);
-                if (scanBtn != null) scanBtn.setEnabled(false);
-                if (addBtn != null) addBtn.setEnabled(false);
-                if (saveBtn != null) saveBtn.setEnabled(false);
-                statusLabel.setText("● 未选择接口：所有编辑操作已禁用，请先在左侧接口列表中选中一个 API。");
-                statusLabel.setForeground(JBColor.RED);
-            } else {
-                table.setEnabled(true);
-                if (scanBtn != null) {
-                    scanBtn.setEnabled(referenceResponseBody != null && !referenceResponseBody.isBlank());
-                }
-                if (addBtn != null) addBtn.setEnabled(true);
-                if (saveBtn != null) saveBtn.setEnabled(true);
-                statusLabel.setForeground(JBColor.BLUE);
-                if (statusLabel.getText() == null || statusLabel.getText().isBlank()
-                        || statusLabel.getText().startsWith("● 未选择接口")) {
-                    statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条规则，编辑后请点「保存规则」");
-                }
-            }
+            table.setEnabled(true);
+            if (addBtn != null) addBtn.setEnabled(true);
+            if (saveBtn != null) saveBtn.setEnabled(true);
+            statusLabel.setForeground(JBColor.BLUE);
+            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则，编辑后请点「保存规则」");
         }
 
         private void configureTable() {
             table.setRowHeight(28);
-            table.getColumnModel().getColumn(0).setPreferredWidth(140);
-            table.getColumnModel().getColumn(1).setPreferredWidth(260);
-            table.getColumnModel().getColumn(2).setPreferredWidth(60);
-            TableColumn action = table.getColumnModel().getColumn(3);
-            action.setPreferredWidth(80);
+            table.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(110);
+            table.getColumnModel().getColumn(COL_FIELD).setPreferredWidth(140);
+            table.getColumnModel().getColumn(COL_EXPECTED).setPreferredWidth(280);
+            table.getColumnModel().getColumn(COL_ENABLED).setPreferredWidth(60);
 
-            // 删除列：renderer 渲染成按钮样式；点击由 mouseListener 直接响应，不走编辑器
-            // 避免旧实现"必须先进入编辑模式再点一次才生效"的卡顿问题
+            // 类型列：JComboBox 直接编辑
+            JComboBox<ExceptionRule.RuleType> typeCombo = new JComboBox<>(ExceptionRule.RuleType.values());
+            table.getColumnModel().getColumn(COL_TYPE).setCellEditor(new DefaultCellEditor(typeCombo));
+
+            // 操作列：renderer 渲染为按钮样式；点击由 mouseListener 直接响应
+            TableColumn action = table.getColumnModel().getColumn(COL_ACTION);
+            action.setPreferredWidth(80);
             JButton deleteProto = new JButton();
             deleteProto.setMargin(JBUI.insets(0, 6, 0, 6));
             deleteProto.setOpaque(true);
             deleteProto.setBorder(UIManager.getBorder("Button.border"));
             action.setCellRenderer(new DefaultTableCellRenderer() {
-                @Override public Component getTableCellRendererComponent(JTable tbl, Object value, boolean isSelected, boolean hasFocus, int row, int col) {
+                @Override public Component getTableCellRendererComponent(JTable tbl, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                     deleteProto.setText("删除");
                     deleteProto.setBackground(isSelected ? tbl.getSelectionBackground() : tbl.getBackground());
                     deleteProto.setForeground(isSelected ? tbl.getSelectionForeground() : JBColor.RED);
                     return deleteProto;
                 }
             });
-            // 禁用单元格编辑（点击直接由 mouseListener 接管）
             action.setCellEditor(null);
 
             // 鼠标点击删除列直接删行（不依赖编辑模式）
@@ -205,7 +190,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
                     Point p = e.getPoint();
                     int row = table.rowAtPoint(p);
                     int col = table.columnAtPoint(p);
-                    if (row < 0 || col != 3) return;
+                    if (row < 0 || col != COL_ACTION) return;
                     int modelRow = table.convertRowIndexToModel(row);
                     if (modelRow >= 0 && modelRow < tableModel.getRowCount()) {
                         tableModel.removeRow(modelRow);
@@ -217,12 +202,11 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
         private void loadRules() {
             tableModel.setRowCount(0);
-            if (api == null) return;
-            Map<String, List<ExceptionRule>> all = RestAutoLabSettingsState.getInstance(project).loadExceptionRules();
-            List<ExceptionRule> rules = all.get(api.uniqueKey());
+            List<ExceptionRule> rules = RestAutoLabSettingsState.getInstance(project).loadExceptionRules();
             if (rules == null) return;
             for (ExceptionRule r : rules) {
                 tableModel.addRow(new Object[]{
+                        r.getType(),
                         r.getFieldName(),
                         String.join(",", r.getExpectedValues()),
                         r.isEnabled(),
@@ -231,68 +215,35 @@ public class ExceptionRulesDialog extends DialogWrapper {
             }
         }
 
-        /** 自动扫描响应 JSON 第一级字段，把每个字段作为一条新规则追加。已存在的跳过。 */
-        private void autoScanFromResponse() {
-            if (api == null || referenceResponseBody == null || referenceResponseBody.isBlank()) return;
-            com.google.gson.JsonElement parsed;
-            try {
-                parsed = com.google.gson.JsonParser.parseString(referenceResponseBody);
-            } catch (Exception ex) {
-                statusLabel.setText("● 自动扫描失败：响应不是合法 JSON");
-                return;
-            }
-            if (parsed == null || !parsed.isJsonObject()) {
-                statusLabel.setText("● 自动扫描失败：响应不是 JSON 对象");
-                return;
-            }
-            int added = 0;
-            for (Map.Entry<String, com.google.gson.JsonElement> e : parsed.getAsJsonObject().entrySet()) {
-                String key = e.getKey();
-                if (e.getValue() == null || e.getValue().isJsonObject() || e.getValue().isJsonArray()) continue;
-                boolean exists = false;
-                for (int i = 0; i < tableModel.getRowCount(); i++) {
-                    if (key.equals(tableModel.getValueAt(i, 0))) { exists = true; break; }
-                }
-                if (exists) continue;
-                tableModel.addRow(new Object[]{key, "", Boolean.TRUE, "删除"});
-                added++;
-            }
-            statusLabel.setText("● 自动扫描完成，新增 " + added + " 条规则");
-        }
-
         /** 收集当前表格行 → List<ExceptionRule>，写回 settings。 */
         public void commit() {
-            if (api == null) return;
-            Map<String, List<ExceptionRule>> all = RestAutoLabSettingsState.getInstance(project).loadExceptionRules();
             List<ExceptionRule> rules = new ArrayList<>();
             for (int i = 0; i < tableModel.getRowCount(); i++) {
-                Object f = tableModel.getValueAt(i, 0);
-                Object e = tableModel.getValueAt(i, 1);
-                Object en = tableModel.getValueAt(i, 2);
-                String fname = f == null ? "" : f.toString().trim();
-                if (fname.isEmpty()) continue;
+                Object typeObj = tableModel.getValueAt(i, COL_TYPE);
+                Object fObj = tableModel.getValueAt(i, COL_FIELD);
+                Object eObj = tableModel.getValueAt(i, COL_EXPECTED);
+                Object enObj = tableModel.getValueAt(i, COL_ENABLED);
+
+                ExceptionRule.RuleType type = typeObj instanceof ExceptionRule.RuleType
+                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_STATUS;
+                String fname = fObj == null ? "" : fObj.toString().trim();
                 List<String> values = new ArrayList<>();
-                if (e != null) {
-                    for (String v : e.toString().split(",")) {
+                if (eObj != null) {
+                    for (String v : eObj.toString().split(",")) {
                         String t = v.trim();
                         if (!t.isEmpty()) values.add(t);
                     }
                 }
-                rules.add(new ExceptionRule(fname, values, Boolean.TRUE.equals(en)));
+                // HTTP_STATUS 不需要字段名；FIELD_VALUE 必须有字段名，否则跳过
+                if (type == ExceptionRule.RuleType.FIELD_VALUE && fname.isEmpty()) continue;
+                rules.add(new ExceptionRule(type, fname, values, Boolean.TRUE.equals(enObj)));
             }
-            if (rules.isEmpty()) all.remove(api.uniqueKey());
-            else all.put(api.uniqueKey(), rules);
-            RestAutoLabSettingsState.getInstance(project).saveExceptionRules(all);
+            RestAutoLabSettingsState.getInstance(project).saveExceptionRules(rules);
             statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● ✓ 已保存 " + rules.size() + " 条规则到项目设置（" + java.time.LocalTime.now().withNano(0) + "）");
+            statusLabel.setText("● ✓ 已保存 " + rules.size() + " 条全局规则到项目设置（" + java.time.LocalTime.now().withNano(0) + "）");
         }
 
-        /** 给 ApiDebuggerPanel 在打开 dialog 前拿到响应 body 用。 */
+        /** 给 ApiDebuggerPanel 在打开 dialog 前拿到状态文本用。 */
         public String getCurrentStatus() { return statusLabel.getText(); }
-    }
-
-    private static String escapeHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 }

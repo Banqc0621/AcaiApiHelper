@@ -4573,15 +4573,12 @@ public class ApiDebuggerPanel extends JPanel {
             aiPanel.commit();
         });
 
-        // 一伦优化 R7（重做）：在「AI 配置」右侧新增「异常自定义」Tab。
-        // 用户原话：设置页面里 AI 配置按钮右侧要有异常自定义按钮，配置接口业务异常规则。
-        // 设计：复用 ExceptionRulesDialog 的可重用 ExceptionRulesPanel（拆 dialog 仅为复用），
-        // 保存交给 dialog 的 OK / 应用 按钮统一触发。
-        String refBody = lastResult == null ? null : lastResult.getResponseBody();
+        // 一伦优化 R7（重构）：异常自定义规则升级为全局规则（HTTP 状态码白名单 + JSON 字段白名单），
+        // 改用只接收 project 的轻量构造，移除对当前接口/响应体的依赖。
         ExceptionRulesDialog.ExceptionRulesPanel exceptionRulesPanel =
-                new ExceptionRulesDialog.ExceptionRulesPanel(project, currentApi, refBody);
+                new ExceptionRulesDialog.ExceptionRulesPanel(project);
         dialog.addTab("异常自定义", AllIcons.Actions.IntentionBulb, exceptionRulesPanel,
-                "为当前接口配置字段级业务异常规则（HTTP 通过后，body 字段不在白名单 = 异常）");
+                "配置全局异常规则：HTTP 状态码白名单 + JSON 字段白名单，对项目内所有接口生效");
         dialog.addOnCommit(exceptionRulesPanel::commit);
 
         // 一伦优化 R7（重做）：从弹窗菜单点「异常自定义」时，落到该 Tab 上而非默认「环境」。

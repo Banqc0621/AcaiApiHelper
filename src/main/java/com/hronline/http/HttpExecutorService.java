@@ -185,10 +185,10 @@ public final class HttpExecutorService {
                 // 默认：使用接口的预期状态码判定
                 passed = api.isStatusCodeExpected(response.statusCode());
             }
-            // Round 7：HTTP 通过后再跑异常自定义规则判定（字段缺失 / 字段值不在白名单）
-            if (passed && api != null) {
+            // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP 状态码白名单 / JSON 字段白名单）
+            if (passed) {
                 ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluate(
-                        project, api, result.getResponseBody());
+                        project, response.statusCode(), result.getResponseBody());
                 if (!er.isPassed()) {
                     passed = false;
                     result.setErrorMessage(er.reason());
