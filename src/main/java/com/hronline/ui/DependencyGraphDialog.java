@@ -164,10 +164,11 @@ public class DependencyGraphDialog extends DialogWrapper {
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setRowHeight(42);
         table.setIntercellSpacing(new Dimension(JBUI.scale(8), JBUI.scale(4)));
-        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(190));
+        // 上游/下游接口列放大到 280 容纳完整 URL（如 `GET /admin/box/blindBoxList`）
+        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(280));
         table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(310));
-        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(190));
-        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(280));
+        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(280));
+        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(260));
         for (int i = 0; i < 4; i++) {
             table.getColumnModel().getColumn(i).setCellRenderer(new WrappingCellRenderer());
         }
@@ -521,19 +522,31 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * 为接口生成短显示名，并保证同一窗口内每个 uniqueKey 都能反向解析。
-     * <p>正常情况只显示接口名称；名称冲突时先补充 HTTP 方法，若方法仍相同再追加
-     * 序号。这样既不回退到完整 URL，又不会因为两个同名同方法接口而把映射写到错误节点。</p>
+     * 接口全路径显示标签：{@code METHOD /path/{id}}。
+     * <p>用于「依赖设置」弹框的上游/下拉接口、接口顺序等区域，让用户能直接看到接口的完整 URL，
+     * 不必再回查接口名后猜是哪个同名方法。method 缺失时退化为 {@code API}，
+     * URL 缺失时退化为 {@code METHOD (未命名)}。</p>
+     */
+    static String fullApiLabel(ApiDefinition api) {
+        if (api == null) return "";
+        String method = api.getHttpMethod() == null || api.getHttpMethod().isBlank()
+                ? "API" : api.getHttpMethod().trim().toUpperCase(Locale.ROOT);
+        String url = api.getUrl() == null ? "" : api.getUrl().trim();
+        int query = url.indexOf('?');
+        if (query >= 0) url = url.substring(0, query);
+        while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        if (url.isBlank()) return method + " (未命名)";
+        return method + " " + url;
+    }
+
+    /**
+     * 为接口生成全路径显示名，并保证同一窗口内每个 uniqueKey 都能反向解析。
+     * <p>默认显示 {@code METHOD /path/{id}}；全路径撞名（同 method 同 url 但 uniqueKey 不同 —
+     * 例如多文件扫描到的同名接口）时追加 {@code (#2) / (#3)} 序号，仍然唯一可反查。</p>
      */
     static Map<String, String> buildDisplayLabels(List<ApiDefinition> apis) {
         Map<String, String> result = new LinkedHashMap<>();
         if (apis == null || apis.isEmpty()) return result;
-
-        Map<String, Integer> shortNameCounts = new HashMap<>();
-        for (ApiDefinition api : apis) {
-            if (api == null || api.uniqueKey() == null || api.uniqueKey().isBlank()) continue;
-            shortNameCounts.merge(shortApiLabel(api), 1, Integer::sum);
-        }
 
         Set<String> usedLabels = new HashSet<>();
         Map<String, Integer> nextSuffixByLabel = new HashMap<>();
@@ -542,19 +555,12 @@ public class DependencyGraphDialog extends DialogWrapper {
             // 同一 uniqueKey 在扫描结果中偶尔会重复；表格只能映射到一个稳定节点，保留首次出现项。
             if (result.containsKey(api.uniqueKey())) continue;
 
-            String shortName = shortApiLabel(api);
-            String label = shortName;
-            if (shortNameCounts.getOrDefault(shortName, 0) > 1) {
-                String method = api.getHttpMethod() == null || api.getHttpMethod().isBlank()
-                        ? "API" : api.getHttpMethod().trim().toUpperCase(Locale.ROOT);
-                label = "[" + method + "] " + shortName;
-            }
-
+            String label = fullApiLabel(api);
             if (usedLabels.contains(label)) {
                 int suffix = nextSuffixByLabel.getOrDefault(label, 2);
                 String candidate;
                 do {
-                    candidate = label + " (" + suffix++ + ")";
+                    candidate = label + " (#" + suffix++ + ")";
                 } while (usedLabels.contains(candidate));
                 nextSuffixByLabel.put(label, suffix);
                 label = candidate;

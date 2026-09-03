@@ -58,7 +58,9 @@ class DependencyGraphDialogTest {
     }
 
     @Test
-    void duplicateShortNamesRemainReverseResolvableWithoutShowingFullPaths() {
+    void duplicateFullPathsDisambiguateWithSuffixAndShowCompleteUrl() {
+        // 收藏夹里三个同名接口（name 都是 "list"），但 URL 各不相同；
+        // labelByKey 现在直接走 fullApiLabel，用户在「依赖设置」里看到完整 URL + 必要时的 #2/#3 序号。
         ApiDefinition first = api("GET", "/admin/one/list", "list");
         ApiDefinition second = api("GET", "/admin/two/list", "list");
         ApiDefinition third = api("POST", "/admin/three/list", "list");
@@ -66,10 +68,55 @@ class DependencyGraphDialogTest {
         Map<String, String> labels = DependencyGraphDialog.buildDisplayLabels(
                 List.of(first, second, third));
 
-        assertEquals("[GET] list", labels.get(first.uniqueKey()));
-        assertEquals("[GET] list (2)", labels.get(second.uniqueKey()));
-        assertEquals("[POST] list", labels.get(third.uniqueKey()));
-        assertTrue(labels.values().stream().noneMatch(label -> label.contains("/admin/")));
+        assertEquals("GET /admin/one/list", labels.get(first.uniqueKey()));
+        // second 跟 third URL 不同（路径段 one/two/three），不会撞名 → 各自独立
+        assertEquals("GET /admin/two/list", labels.get(second.uniqueKey()));
+        assertEquals("POST /admin/three/list", labels.get(third.uniqueKey()));
+        // 全 URL 必须都包含路径
+        assertTrue(labels.values().stream().allMatch(label -> label.contains("/admin/")));
+    }
+
+    @Test
+    void buildDisplayLabels_dedupesByUniqueKey() {
+        // ApiDefinition.uniqueKey() = METHOD + URL；同 method+url 不同 name 视为同一接口。
+        // buildDisplayLabels 必须只保留首次出现的实例，后面的同名接口被去重。
+        // 这也保证 fullApiLabel 撞名分支不会误触发（撞 fullApiLabel ≡ 撞 uniqueKey）。
+        ApiDefinition first = api("GET", "/admin/list", "listA");
+        ApiDefinition dup = api("GET", "/admin/list", "listB");  // 视为同 uniqueKey
+        ApiDefinition second = api("POST", "/admin/list", "createList");
+
+        Map<String, String> labels = DependencyGraphDialog.buildDisplayLabels(
+                List.of(first, dup, second));
+
+        assertEquals(2, labels.size(), "dup 被 uniqueKey 去重");
+        assertEquals("GET /admin/list", labels.get(first.uniqueKey()));
+        assertEquals("POST /admin/list", labels.get(second.uniqueKey()));
+        assertTrue(labels.values().stream().noneMatch(label -> label.contains("(#")),
+                "撞 uniqueKey 的接口已被去重，不会进入 #2/#3 后缀分支");
+    }
+
+    @Test
+    void fullApiLabel_includesMethodAndStripsQueryAndTrailingSlash() {
+        assertEquals("GET /api/users/{id}",
+                DependencyGraphDialog.fullApiLabel(api("GET", "/api/users/{id}", "getUser")));
+        assertEquals("POST /api/orders",
+                DependencyGraphDialog.fullApiLabel(api("POST", "/api/orders/", "createOrder")));
+        assertEquals("DELETE /api/users/{id}",
+                DependencyGraphDialog.fullApiLabel(api("DELETE", "/api/users/{id}?active=true", "delUser")));
+        // method 缺失时退化为 API
+        ApiDefinition noMethod = api("", "/api/users", "");
+        assertEquals("API /api/users", DependencyGraphDialog.fullApiLabel(noMethod));
+        // url 缺失时退化为「METHOD (未命名)」
+        assertEquals("GET (未命名)", DependencyGraphDialog.fullApiLabel(api("GET", "", "")));
+    }
+
+    @Test
+    void fullApiLabel_uniquenessHoldsForDistinctApis() {
+        // 三个不同接口的 fullApiLabel 各不相同，可作为 labelByKey 的 value 唯一反查
+        String a = DependencyGraphDialog.fullApiLabel(api("GET", "/api/users", "listUsers"));
+        String b = DependencyGraphDialog.fullApiLabel(api("POST", "/api/users", "createUser"));
+        String c = DependencyGraphDialog.fullApiLabel(api("GET", "/api/users/{id}", "getUser"));
+        assertEquals(3, java.util.stream.Stream.of(a, b, c).distinct().count());
     }
 
     @Test
