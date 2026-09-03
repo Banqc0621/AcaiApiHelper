@@ -14,6 +14,7 @@ import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellEditor;
 import javax.swing.table.TableCellRenderer;
 import java.awt.*;
 import java.awt.event.MouseEvent;
@@ -280,32 +281,101 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * 将编辑后的表格内容同步回 dependencies 列表
+     * 将编辑后的表格内容同步回 dependencies 列表。
      */
     private void syncFromTable() {
         // DialogWrapper 的 OK 动作可能在表格编辑器仍处于激活状态时触发；
-        // 先提交当前编辑，确保用户最后输入的映射值也会持久化。
-        stopCellEditing();
-        // 重建 dependencies from table
+        // 必须先把当前正在编辑的单元格值写入 model，否则 dialog dispose 后
+        // tableModel 里读到的会是旧值（用户最后输入的响应字段/目标参数会丢）。
+        flushActiveCellEditor();
+
+        List<String[]> rows = new ArrayList<>(tableModel.getRowCount());
+        for (int r = 0; r < tableModel.getRowCount(); r++) {
+            rows.add(new String[]{
+                    cellText(r, 0), cellText(r, 1), cellText(r, 2), cellText(r, 3)
+            });
+        }
+        this.dependencies = rebuildFromRows(this.dependencies, rows, this.labelByKey);
+    }
+
+    /**
+     * 主动把当前激活的 cellEditor 值写回 model。比 {@link #stopCellEditing()}
+     * 更可靠——后者依赖 AbstractCellEditor 的标准 editingStopped 回调，
+     * 但 DefaultCellEditor + JComboBox 在某些焦点路径下不会触发 setValueAt。
+     */
+    private void flushActiveCellEditor() {
+        if (table == null) return;
+        if (!table.isEditing()) {
+            stopCellEditing();
+            return;
+        }
+        TableCellEditor editor = table.getCellEditor();
+        if (editor == null) {
+            stopCellEditing();
+            return;
+        }
+        try {
+            Object value = editor.getCellEditorValue();
+            int row = table.getEditingRow();
+            int column = table.getEditingColumn();
+            if (row >= 0 && column >= 0 && value != null) {
+                tableModel.setValueAt(value, row, column);
+            }
+        } catch (Exception ignored) {
+            // 兜底：即使编辑器读失败，stopCellEditing 仍尝试关闭激活态
+        }
+        try {
+            editor.stopCellEditing();
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * 把表格行重建为 ApiDependency 列表。抽出来的纯函数，单测可直接覆盖。
+     * <p>输入行格式：每行 [producerLabel, sourcePath, consumerLabel, targetParam]，
+     * 对应表头「上游接口 | 响应字段 | 下游接口 | 目标参数」。
+     * {@code labelByKey} 是 uniqueKey → 短显示名的映射，用于反向解析。</p>
+     *
+     * <p>规则：
+     * <ul>
+     *   <li>{@code (无依赖)} 占位行跳过</li>
+     *   <li>producer/consumer label 必须在 labelByKey 里反向解析，否则跳过</li>
+     *   <li>producer == consumer 跳过（自环）</li>
+     *   <li>两个字段都填 → 加入 mapping；同一对接口允许多个 mapping，自动去重</li>
+     *   <li>两个字段都空 + 是原 dependencies 里已有 → 保留这条顺序边</li>
+     *   <li>字段半填（只有一个非空）→ 跳过，视为未完成</li>
+     * </ul>
+     */
+    static List<ApiDependency> rebuildFromRows(List<ApiDependency> original,
+                                               List<String[]> rows,
+                                               Map<String, String> labelByKey) {
+        if (rows == null) rows = Collections.emptyList();
+        Map<String, String> labelByKeySnapshot = labelByKey == null
+                ? Collections.emptyMap() : labelByKey;
+
         Map<String, ApiDependency> byKey = new LinkedHashMap<>();
         Set<String> originalKeys = new HashSet<>();
         Map<String, String> originalDetectionTypes = new HashMap<>();
-        for (ApiDependency dep : dependencies) {
-            if (dep == null || dep.getProducerKey() == null || dep.getConsumerKey() == null) continue;
-            String key = dep.getProducerKey() + "->" + dep.getConsumerKey();
-            originalKeys.add(key);
-            originalDetectionTypes.put(key, dep.getDetectionType());
+        if (original != null) {
+            for (ApiDependency dep : original) {
+                if (dep == null || dep.getProducerKey() == null || dep.getConsumerKey() == null) continue;
+                String key = dep.getProducerKey() + "->" + dep.getConsumerKey();
+                originalKeys.add(key);
+                originalDetectionTypes.put(key, dep.getDetectionType());
+            }
         }
-        for (int r = 0; r < tableModel.getRowCount(); r++) {
-            String producerLabel = cellText(r, 0);
-            String sourcePath = cellText(r, 1);
-            String consumerLabel = cellText(r, 2);
-            String targetParam = cellText(r, 3);
+
+        for (String[] row : rows) {
+            if (row == null || row.length < 4) continue;
+            String producerLabel = row[0] == null ? "" : row[0].trim();
+            String sourcePath = row[1] == null ? "" : row[1].trim();
+            String consumerLabel = row[2] == null ? "" : row[2].trim();
+            String targetParam = row[3] == null ? "" : row[3].trim();
 
             if ("(无依赖)".equals(producerLabel)) continue;
 
-            String producerKey = findKeyByLabel(producerLabel);
-            String consumerKey = findKeyByLabel(consumerLabel);
+            String producerKey = findKeyByLabelInMap(labelByKeySnapshot, producerLabel);
+            String consumerKey = findKeyByLabelInMap(labelByKeySnapshot, consumerLabel);
             if (producerKey == null || consumerKey == null) continue;
             if (producerKey.equals(consumerKey)) continue;
 
@@ -331,7 +401,16 @@ public class DependencyGraphDialog extends DialogWrapper {
                 dep.getMappings().add(new ApiDependency.ValueMapping(sourcePath, targetParam));
             }
         }
-        this.dependencies = new ArrayList<>(byKey.values());
+        return new ArrayList<>(byKey.values());
+    }
+
+    /** 静态版反向解析，避免 dialog 单例在多线程测试里泄漏。 */
+    private static String findKeyByLabelInMap(Map<String, String> labelByKey, String label) {
+        if (label == null || label.isBlank() || labelByKey == null || labelByKey.isEmpty()) return null;
+        for (Map.Entry<String, String> e : labelByKey.entrySet()) {
+            if (label.equals(e.getValue())) return e.getKey();
+        }
+        return null;
     }
 
     private String cellText(int row, int column) {
