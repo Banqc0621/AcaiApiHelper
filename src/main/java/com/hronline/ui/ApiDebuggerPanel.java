@@ -41,6 +41,7 @@ import org.jetbrains.annotations.NotNull;
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellEditor;
 import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.text.JTextComponent;
@@ -797,14 +798,22 @@ public class ApiDebuggerPanel extends JPanel {
      * 收藏视图（currentFolderId != null）→ 按 (folderId, apiKey) 存，
      * 全量视图（folderId == null）→ 按 apiKey 存，保证切换页面后参数、请求头、请求体都能恢复。
      *
-     * <p>保存按钮位于“请求体”页，保存的是当前编辑中的整套请求配置，而不是只保存
-     * body 文本。这样取消“发起请求即保存”后，用户仍可在发起请求前一次性提交所有编辑。</p>
+     * <p>保存按钮位于"请求体"页，保存的是当前编辑中的整套请求配置，而不是只保存
+     * body 文本。这样取消"发起请求即保存"后，用户仍可在发起请求前一次性提交所有编辑。</p>
+     *
+     * <p>主动 flush 参数表 / 请求头表的 cellEditor：用户在「参数」Tab 编辑某行后切到
+     * 「请求体」Tab 直接点保存，cellEditor 持有的最新值不会自动写回 model，
+     * {@link #collectAllParameterPairs()} / {@link #collectHeaderValues()}
+     * 会读到编辑前的旧值（典型 bug：「回显后改值再保存」—— 保存的是回显的旧值，不是改后的）。</p>
      */
     private void saveCurrentRequestBody() {
         if (currentApi == null) {
             statusLabel.setText("● 请先选择一个 API 接口");
             return;
         }
+        // 先把正在编辑的 cell 提交到 model（参数表 + 请求头表都要 flush）
+        flushTableCellEditor(paramTable);
+        flushTableCellEditor(headerTable);
         String body = bodyEditor.getText();
         String normalized = (body != null && !body.isBlank()) ? body : null;
         String apiKey = currentApi.uniqueKey();
@@ -2020,6 +2029,46 @@ public class ApiDebuggerPanel extends JPanel {
     /** 实例入口：把已保存的参数值合并到当前 {@link #paramTableModel}。 */
     private void applySavedParameterValues(Map<String, String> saved) {
         mergeSavedParameterValues(paramTableModel, saved);
+    }
+
+    /**
+     * 把指定 JTable 当前正在编辑的单元格值强制写回 model。
+     * <p>复用 DependencyGraphDialog 的同款修复（2026-09-03）：用户编辑某行后切到其他 Tab
+     * 直接点保存按钮，DefaultCellEditor 的 editingStopped 回调不会触发，
+     * model 里读到的是编辑前的旧值。本方法绕过 cellEditor 自身的时序，
+     * 直接 {@code editor.getCellEditorValue()} 拿最新值 + {@code model.setValueAt} 写回。</p>
+     */
+    static void flushTableCellEditor(JTable table) {
+        if (table == null) return;
+        if (!table.isEditing()) {
+            // 不在编辑中也要补一次 stopCellEditing，确保编辑结束但未 dispose 的清理路径走完
+            TableCellEditor idleEditor = table.getCellEditor();
+            if (idleEditor != null) {
+                try { idleEditor.stopCellEditing(); } catch (Exception ignored) {}
+            }
+            return;
+        }
+        TableCellEditor editor = table.getCellEditor();
+        if (editor == null) return;
+        int row = table.getEditingRow();
+        int column = table.getEditingColumn();
+        DefaultTableModel model = (DefaultTableModel) table.getModel();
+        forceCommitCellEditor(editor, row, column, model);
+    }
+
+    /**
+     * 核心防御逻辑：从 editor 拿当前值 → 写回 model → 调 stopCellEditing。
+     * 抽成 static 是为了脱离 JTable / GUI 容器写单测。
+     */
+    static void forceCommitCellEditor(TableCellEditor editor, int row, int column, DefaultTableModel model) {
+        if (editor == null) return;
+        try {
+            Object value = editor.getCellEditorValue();
+            if (row >= 0 && column >= 0 && value != null && model != null) {
+                model.setValueAt(value, row, column);
+            }
+        } catch (Exception ignored) {}
+        try { editor.stopCellEditing(); } catch (Exception ignored) {}
     }
 
     /** 把已保存的请求头覆盖到当前表格，不存在的自定义头追加到末尾。 */

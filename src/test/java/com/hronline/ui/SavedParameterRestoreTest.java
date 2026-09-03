@@ -2,11 +2,17 @@ package com.hronline.ui;
 
 import org.junit.jupiter.api.Test;
 
+import javax.swing.DefaultCellEditor;
+import javax.swing.JFrame;
+import javax.swing.JTextField;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellEditor;
+import java.awt.BorderLayout;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * 回归测试：「回显 → 保存 → 切走再切回来」链路里，恢复阶段必须把保存的数据带回来。
@@ -159,5 +165,60 @@ class SavedParameterRestoreTest {
         // 回显字段以新行追加，不是被覆盖丢失
         assertEquals("foo", nameOf(defaultModel, 2));
         assertEquals("bar", valueOf(defaultModel, 2));
+    }
+
+    // ---------- forceCommitCellEditor（保存按钮的 cellEditor flush 防御） ----------
+
+    @Test
+    void forceCommitCellEditor_writesEditorValueBackToModel() {
+        // 模拟用户在 cellEditor（JTextField）里编辑了某行，但没按 Enter 就直接点保存按钮。
+        // DefaultCellEditor.editingStopped 不会触发，model 里仍是旧值。
+        // forceCommitCellEditor 必须主动把编辑器的当前值写回 model。
+        JTextField field = new JTextField("oldValue");
+        DefaultCellEditor editor = new DefaultCellEditor(field);
+        field.setText("newValue"); // 用户在 cellEditor 里改了 text
+
+        DefaultTableModel model = newModel();
+        addRow(model, "pageSize", "Integer", "QUERY", "oldValue", "否", "");
+
+        ApiDebuggerPanel.forceCommitCellEditor(editor, 0, 3, model);
+
+        // 模型拿到了最新值（不是 oldValue）
+        assertEquals("newValue", valueOf(model, 0));
+        // 编辑器当前值也确认是 newValue（说明确实是写入 editor 当前值而非 model 旧值）
+        assertEquals("newValue", field.getText());
+    }
+
+    @Test
+    void forceCommitCellEditor_nullEditorIsNoOp() {
+        // null 兜底：依赖 dialog 被 dispose 时偶发调用，不抛异常
+        DefaultTableModel model = newModel();
+        addRow(model, "x", "String", "QUERY", "1", "否", "");
+        ApiDebuggerPanel.forceCommitCellEditor(null, 0, 3, model);
+        assertEquals("1", valueOf(model, 0));
+    }
+
+    @Test
+    void forceCommitCellEditor_invalidCoordinatesIsNoOp() {
+        // row/column 为负时不能写回 model（防止 stopCellEditing 路径里 editingRow=-1 误写）
+        JTextField field = new JTextField("value");
+        DefaultCellEditor editor = new DefaultCellEditor(field);
+        DefaultTableModel model = newModel();
+        addRow(model, "x", "String", "QUERY", "1", "否", "");
+
+        ApiDebuggerPanel.forceCommitCellEditor(editor, -1, 3, model);
+        ApiDebuggerPanel.forceCommitCellEditor(editor, 0, -1, model);
+
+        // 行没被改
+        assertEquals("1", valueOf(model, 0));
+    }
+
+    @Test
+    void flushTableCellEditor_nullTableIsNoOp() {
+        // JTable 实例入口：null 安全
+        ApiDebuggerPanel.flushTableCellEditor(null);
+        // 不抛异常即可 — 走完一行即视为通过
+        Object sentinel = new Object();
+        assertNotNull(sentinel);
     }
 }
