@@ -22,7 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Round 7（重构）：异常自定义面板。
+ * Round 7（重构）+ 一伦优化 #67：异常自定义面板。
  * <p>同时支持：
  * <ul>
  *   <li>作为「环境 & 数据」弹窗里的 Tab 嵌入（只渲染表格 + 工具栏；保存由 dialog 的 OK 按钮统一触发，
@@ -30,10 +30,10 @@ import java.util.List;
  *   <li>作为独立 JDialog 弹出（保留 OK / Cancel 按钮）</li>
  * </ul>
  *
- * <p><b>全局规则</b>：本面板配置的是项目级异常判定规则，对项目内所有接口生效。规则分为两类：
+ * <p><b>全局规则</b>：本面板配置的是项目级异常判定规则，对项目内所有接口生效。规则分为两类（语义相反）：
  * <ul>
- *   <li>HTTP 状态码白名单：自定义"哪些 HTTP 状态码算正常"（叠加在接口默认 2xx 之上）</li>
- *   <li>JSON 字段值白名单：响应 JSON 第一级字段值在白名单 = 正常（如字段 {@code code} 白名单 {@code 0,200}）</li>
+ *   <li>HTTP_VALUE（白名单）：自定义"哪些 HTTP 状态码算正常"；不在白名单 = 异常</li>
+ *   <li>FIELD_VALUE（黑名单）：响应 JSON 第一级字段值命中黑名单 = 异常（不在黑名单 = 正常）</li>
  * </ul>
  * 判定细节见 {@link com.hronline.service.ExceptionRuleEvaluator}。</p>
  */
@@ -72,7 +72,8 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
         private final Project project;
 
-        private static final String[] HEADERS = {"类型", "字段名（仅 FIELD_VALUE）", "期望值（逗号分隔 = 白名单）", "启用", "操作"};
+        private static final String[] HEADERS = {
+            "类型", "字段名（仅 FIELD_VALUE）", "取值（逗号分隔：HTTP_VALUE=白名单 / FIELD_VALUE=黑名单）", "启用", "操作"};
         private static final int COL_TYPE = 0;
         private static final int COL_FIELD = 1;
         private static final int COL_EXPECTED = 2;
@@ -111,7 +112,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
             JLabel header = new JLabel("<html>"
                     + "<b>异常自定义规则（全局，对所有接口生效）</b><br>"
                     + "判定流程：HTTP 通过 → 跑本表规则；任一不通过 = 异常<br>"
-                    + "<b>HTTP 状态码</b>：在白名单里 = 正常；<b>字段值</b>：响应 JSON 顶层字段值在白名单 = 正常（留空 = 不限）。"
+                    + "<b>HTTP_VALUE</b>：白名单，状态码命中 = 正常；<b>FIELD_VALUE</b>：黑名单，响应 JSON 顶层字段值命中 = 异常（留空 = 不限）。"
                     + "</html>");
             header.setBorder(JBUI.Borders.empty(0, 0, 6, 0));
             return header;
@@ -124,12 +125,12 @@ public class ExceptionRulesDialog extends DialogWrapper {
             addBtn.addActionListener(e -> {
                 if (!validateRules()) return;
                 tableModel.addRow(new Object[]{
-                        ExceptionRule.RuleType.HTTP_STATUS, "", "200", Boolean.TRUE, "删除"});
+                        ExceptionRule.RuleType.HTTP_VALUE, "", "200", Boolean.TRUE, "删除"});
                 int row = tableModel.getRowCount() - 1;
                 table.setRowSelectionInterval(row, row);
                 table.scrollRectToVisible(table.getCellRect(row, 0, true));
                 statusLabel.setForeground(JBColor.BLUE);
-                statusLabel.setText("● 已新增规则，请填写白名单后点击「保存规则」");
+                statusLabel.setText("● 已新增规则，HTTP_VALUE 默认白名单 [200]，请按需修改后点击「保存规则」");
             });
             saveBtn = new JButton("保存规则");
             saveBtn.setToolTipText("立即把当前表格写回项目设置（不依赖弹窗 OK 按钮）");
@@ -235,25 +236,25 @@ public class ExceptionRulesDialog extends DialogWrapper {
             for (int i = 0; i < tableModel.getRowCount(); i++) {
                 Object typeObj = tableModel.getValueAt(i, COL_TYPE);
                 ExceptionRule.RuleType type = typeObj instanceof ExceptionRule.RuleType
-                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_STATUS;
+                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_VALUE;
                 String field = String.valueOf(tableModel.getValueAt(i, COL_FIELD) == null
                         ? "" : tableModel.getValueAt(i, COL_FIELD)).trim();
                 String expected = String.valueOf(tableModel.getValueAt(i, COL_EXPECTED) == null
                         ? "" : tableModel.getValueAt(i, COL_EXPECTED)).trim();
                 if (expected.isBlank()) {
-                    showValidationError(i, "请填写期望值白名单（多个值用逗号分隔）");
+                    showValidationError(i, "请填写取值（多个值用逗号分隔）");
                     return false;
                 }
                 List<String> values = splitExpectedValues(expected);
                 if (values.isEmpty()) {
-                    showValidationError(i, "期望值白名单不能只包含逗号或空格");
+                    showValidationError(i, "取值列表不能只包含逗号或空格");
                     return false;
                 }
                 if (type == ExceptionRule.RuleType.FIELD_VALUE && field.isBlank()) {
                     showValidationError(i, "FIELD_VALUE 规则必须填写字段名，例如 code");
                     return false;
                 }
-                if (type == ExceptionRule.RuleType.HTTP_STATUS) {
+                if (type == ExceptionRule.RuleType.HTTP_VALUE) {
                     for (String value : values) {
                         try {
                             int code = Integer.parseInt(value);
@@ -304,7 +305,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
                 Object enObj = tableModel.getValueAt(i, COL_ENABLED);
 
                 ExceptionRule.RuleType type = typeObj instanceof ExceptionRule.RuleType
-                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_STATUS;
+                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_VALUE;
                 String fname = fObj == null ? "" : fObj.toString().trim();
                 List<String> values = splitExpectedValues(eObj == null ? "" : eObj.toString());
                 rules.add(new ExceptionRule(type, fname, values, Boolean.TRUE.equals(enObj)));

@@ -9,13 +9,13 @@ import org.jetbrains.annotations.Nullable;
 import java.util.List;
 
 /**
- * Round 7（重构）：异常自定义规则判定器。
- * <p>规则对项目内所有接口生效，支持两种类型：
+ * Round 7（重构）+ 一伦优化 #67：异常自定义规则判定器。
+ * <p>规则对项目内所有接口生效，两种类型语义相反：
  * <ul>
- *   <li>{@link ExceptionRule.RuleType#HTTP_STATUS}：HTTP 状态码落在白名单 = 正常。
- *       用于替代原先写死的 {@code 2xx} 判定之外的「自定义正常状态码」。</li>
- *   <li>{@link ExceptionRule.RuleType#FIELD_VALUE}：响应 JSON 第一级字段值在白名单 = 正常。
- *       用于「HTTP 200 但 body.code != 0」这类业务层异常。</li>
+ *   <li>{@link ExceptionRule.RuleType#HTTP_VALUE}：HTTP 状态码白名单 —— 落在白名单 = 正常，
+ *       不在白名单 = 异常。</li>
+ *   <li>{@link ExceptionRule.RuleType#FIELD_VALUE}：JSON 字段值黑名单 —— 出现在黑名单 = 异常，
+ *       不在黑名单 = 正常。</li>
  * </ul>
  * 任意一条启用的规则不通过 → 整体判 FAILED，携带第一条失败原因到 message。
  * </p>
@@ -28,7 +28,7 @@ public final class ExceptionRuleEvaluator {
      * 对当前请求跑全局异常规则判定。
      *
      * @param project      当前 project（用于拿到 settings 实例）
-     * @param statusCode   HTTP 响应状态码（{@code HTTP_STATUS} 规则会用）
+     * @param statusCode   HTTP 响应状态码（{@code HTTP_VALUE} 规则会用）
      * @param responseBody 响应 body（{@code FIELD_VALUE} 规则会用，可为 null）
      * @return {@link Result#isPassed()} == true 表示规则全部通过；
      *         否则 {@link Result#reason()} 给出第一条失败原因（用于测试结果 message）。
@@ -59,10 +59,11 @@ public final class ExceptionRuleEvaluator {
         for (ExceptionRule r : rules) {
             if (r == null || !r.isEnabled()) continue;
             List<String> expected = r.getExpectedValues();
-            if (expected == null || expected.isEmpty()) continue; // 空白名单 = 该条不限制，跳过
+            if (expected == null || expected.isEmpty()) continue; // 空集合 = 该条不限制，跳过
 
             switch (r.getType()) {
-                case HTTP_STATUS: {
+                case HTTP_VALUE: {
+                    // 白名单语义：值在白名单 = 正常；不在白名单 = 异常
                     String actual = String.valueOf(statusCode);
                     if (!contains(expected, actual)) {
                         return Result.failed("HTTP 状态码 [" + actual + "] 不在白名单 " + expected + " 中");
@@ -70,6 +71,7 @@ public final class ExceptionRuleEvaluator {
                     break;
                 }
                 case FIELD_VALUE: {
+                    // 黑名单语义（#67）：值在黑名单 = 异常；不在黑名单 = 正常
                     String fname = r.getFieldName();
                     if (fname == null || fname.isBlank()) continue;
                     if (parsed == null || !parsed.isJsonObject()) {
@@ -78,10 +80,11 @@ public final class ExceptionRuleEvaluator {
                     com.google.gson.JsonElement val = parsed.getAsJsonObject().get(fname);
                     String actual = extractActualValue(val, fname);
                     if (actual == null) {
-                        return Result.failed("响应缺少字段 [" + fname + "]");
+                        // 字段缺失 = 不在黑名单 = 通过（黑名单语义下缺失值不算命中）
+                        break;
                     }
-                    if (!contains(expected, actual)) {
-                        return Result.failed("字段 [" + fname + "]=" + actual + " 不在白名单 " + expected + " 中");
+                    if (contains(expected, actual)) {
+                        return Result.failed("字段 [" + fname + "]=" + actual + " 命中黑名单 " + expected);
                     }
                     break;
                 }
