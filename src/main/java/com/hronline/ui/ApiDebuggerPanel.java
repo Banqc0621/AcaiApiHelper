@@ -4082,6 +4082,8 @@ public class ApiDebuggerPanel extends JPanel {
         historyList.setCellRenderer(new HistoryCellRenderer());
         historyList.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_HINT));
         historyList.setFixedCellHeight(26);
+        // 一伦优化 #68：多选（Diff 对比要支持 N 条）
+        historyList.setSelectionMode(javax.swing.ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
 
         historyTitleLabel = new JBLabel();
         UiStyle.hint(historyTitleLabel);
@@ -4089,17 +4091,9 @@ public class ApiDebuggerPanel extends JPanel {
         panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        JButton resendBtn = iconButton("重新发送", AllIcons.Actions.Execute, e -> resendHistory());
-        JButton viewBtn = iconButton("查看请求", AllIcons.Actions.Edit, e -> viewHistoryDetails());
+        // 一伦优化 #68：移除「重新发送 / 删除 / 查看请求」显式按钮——
+        // 「重新发送 / 删除」改到右键菜单，「查看请求」双击历史记录已能触发。
         JButton diffBtn = iconButton("Diff对比", AllIcons.Actions.Diff, e -> diffSelectedHistory());
-        JButton delBtn = iconButton("删除", AllIcons.General.Remove, e -> {
-            RequestHistory selected = historyList.getSelectedValue();
-            if (selected != null) {
-                removeHistoryEntry(selected);
-                persistHistory();
-                refreshHistoryList();
-            }
-        });
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
             if (currentApi == null) {
                 requestHistory.clear();
@@ -4112,12 +4106,13 @@ public class ApiDebuggerPanel extends JPanel {
             refreshHistoryList();
             clearDisplayedResponse();
         });
-        btnPanel.add(resendBtn);
-        btnPanel.add(viewBtn);
         btnPanel.add(diffBtn);
-        btnPanel.add(delBtn);
         btnPanel.add(clearBtn);
         panel.add(btnPanel, BorderLayout.SOUTH);
+
+        // 一伦优化 #68：右键菜单——「重新发送 / 删除」；
+        // 双击历史记录查看请求详情保留不变；删除支持多选批量。
+        installHistoryContextMenu();
 
         // 双击查看请求详情（请求头、入参和请求体）；重新发送保留为显式按钮，避免误触。
         historyList.addMouseListener(new java.awt.event.MouseAdapter() {
@@ -4131,6 +4126,69 @@ public class ApiDebuggerPanel extends JPanel {
 
         refreshHistoryList();
         return panel;
+    }
+
+    /**
+     * 一伦优化 #68：给历史列表挂右键菜单。
+     * <ul>
+     *   <li>「重新发送」—— 仅在选中 1 条时启用（重发需要明确是哪条）</li>
+     *   <li>「删除」—— 选中 ≥1 条时启用；批量删除后统一刷新</li>
+     * </ul>
+     * 单条右键直接走菜单项；多选右键时菜单项作用于所有选中行。
+     */
+    private void installHistoryContextMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem resendItem = new JMenuItem("重新发送", AllIcons.Actions.Execute);
+        resendItem.addActionListener(e -> resendHistory());
+        JMenuItem deleteItem = new JMenuItem("删除", AllIcons.General.Remove);
+        deleteItem.addActionListener(e -> deleteSelectedHistoryEntries());
+        menu.add(resendItem);
+        menu.add(deleteItem);
+
+        // 鼠标右键按下时弹出菜单；点中空白处不弹（避免无选中状态也能操作）
+        historyList.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mousePressed(java.awt.event.MouseEvent e) {
+                if (!SwingUtilities.isRightMouseButton(e)) return;
+                maybeShowHistoryMenu(e);
+            }
+            @Override
+            public void mouseReleased(java.awt.event.MouseEvent e) {
+                if (!SwingUtilities.isRightMouseButton(e)) return;
+                maybeShowHistoryMenu(e);
+            }
+            private void maybeShowHistoryMenu(java.awt.event.MouseEvent e) {
+                int row = historyList.locationToIndex(e.getPoint());
+                if (row < 0) return;  // 空白处右键不弹
+                // 多选时右键点中已选行保留选区；点中未选行则切换为只选该行
+                if (!historyList.isSelectedIndex(row)) {
+                    historyList.setSelectedIndex(row);
+                }
+                int selectedCount = historyList.getSelectedIndices().length;
+                resendItem.setEnabled(selectedCount == 1);
+                String label = selectedCount > 1 ? "删除选中 " + selectedCount + " 条" : "删除";
+                deleteItem.setText(label);
+                menu.show(historyList, e.getX(), e.getY());
+            }
+        });
+        historyList.setComponentPopupMenu(menu);
+    }
+
+    /**
+     * 一伦优化 #68：删除所有选中的历史记录；单条 / 多条统一入口。
+     * <p>空选区直接 no-op；删除后一次 persist + refresh，避免多次 IO。</p>
+     */
+    private void deleteSelectedHistoryEntries() {
+        int[] indices = historyList.getSelectedIndices();
+        if (indices == null || indices.length == 0) return;
+        // 按 index 倒序删除，避免每次 remove 触发整表 index 重排导致错位
+        java.util.Arrays.sort(indices);
+        for (int i = indices.length - 1; i >= 0; i--) {
+            RequestHistory h = historyListModel.get(indices[i]);
+            if (h != null) removeHistoryEntry(h);
+        }
+        persistHistory();
+        refreshHistoryList();
     }
 
     /** 当前接口对应的历史记录；未选择接口时保留全量历史。 */
@@ -4406,24 +4464,34 @@ public class ApiDebuggerPanel extends JPanel {
         });
     }
 
+    /**
+     * 一伦优化 #68：支持 N 条（≥2）历史记录响应 Diff 对比。
+     * <p>选中 2 条 → 两两对比；选中 ≥3 条 → 用第 1 条作为基准，其他每条依次 diff。
+     * 这样「同一接口连发多次」可以一眼看出每次响应的字段差异。</p>
+     */
     private void diffSelectedHistory() {
         int[] indices = historyList.getSelectedIndices();
-        if (indices.length != 2) {
-            Messages.showInfoMessage(project, "请选择2条历史记录进行对比（按住Ctrl多选）", "提示");
+        if (indices.length < 2) {
+            Messages.showInfoMessage(project,
+                    "请选择 2 条或更多历史记录进行对比（按住 Ctrl 多选）", "提示");
             return;
         }
-        RequestHistory h1 = historyListModel.get(indices[0]);
-        RequestHistory h2 = historyListModel.get(indices[1]);
+        RequestHistory base = historyListModel.get(indices[0]);
+        StringBuilder html = new StringBuilder();
+        html.append("<h3>响应对比</h3>");
+        html.append("<p><b>基准:</b> [").append(base.getMethod()).append("] ")
+                .append(base.getStatusCode()).append(" ").append(base.getUrl()).append("</p><hr>");
+        // 两两对比：基准 vs 其余每一条
+        for (int i = 1; i < indices.length; i++) {
+            RequestHistory other = historyListModel.get(indices[i]);
+            List<SimpleDiff.DiffLine> diffs = SimpleDiff.diff(base.getResponseBody(), other.getResponseBody());
+            html.append("<h4>").append(i).append("、对比 [").append(other.getMethod())
+                    .append("] ").append(other.getStatusCode()).append(" ").append(other.getUrl()).append("</h4>");
+            html.append(SimpleDiff.toHtml(diffs));
+            html.append("<hr>");
+        }
 
-        List<SimpleDiff.DiffLine> diffs = SimpleDiff.diff(h1.getResponseBody(), h2.getResponseBody());
-        String html = SimpleDiff.toHtml(diffs);
-
-        // Show diff in a simple dialog with JEditorPane
-        JEditorPane editorPane = new JEditorPane("text/html",
-                "<h3>响应对比</h3>"
-                        + "<p><b>请求1:</b> [" + h1.getMethod() + "] " + h1.getStatusCode() + " " + h1.getUrl() + "</p>"
-                        + "<p><b>请求2:</b> [" + h2.getMethod() + "] " + h2.getStatusCode() + " " + h2.getUrl() + "</p>"
-                        + "<hr>" + html);
+        JEditorPane editorPane = new JEditorPane("text/html", html.toString());
         editorPane.setEditable(false);
         editorPane.setCaretPosition(0);
         JScrollPane scroll = new JBScrollPane(editorPane);
