@@ -850,6 +850,72 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
+     * 一伦优化 #66：「保存参数」按钮的回调 —— 仅持久化参数表，不动 headers/body。
+     * <p>与 {@link #saveCurrentRequestBody()} 的区别：后者同时保存三件套（参数/headers/body），
+     * 这里是只保存参数表，调用方通常是参数 Tab 的 [保存参数] 图标按钮。两次 flush
+     * （参数表 + 请求头表）保证用户在编辑请求头时直接点保存也能拿到最新值。</p>
+     */
+    private void saveCurrentParameters() {
+        if (currentApi == null) {
+            statusLabel.setText("● 请先选择一个 API 接口");
+            return;
+        }
+        // 用户切到「参数」Tab 编辑某行，再回到顶部点 [保存参数] 时，cellEditor 的
+        // editingStopped 不一定已经触发；flush 防御与 #64 同款。
+        flushTableCellEditor(paramTable);
+        flushTableCellEditor(headerTable);
+        Map<String, String> params = collectAllParameterRows(true);
+        String apiKey = currentApi.uniqueKey();
+        try {
+            if (currentFolderId != null) {
+                StarredFolderService svc = StarredFolderService.getInstance(project);
+                svc.setParams(currentFolderId, apiKey, params);
+            } else {
+                RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+                Map<String, Map<String, String>> allParams = settings.loadApiRequestParams();
+                if (params.isEmpty()) allParams.remove(apiKey);
+                else allParams.put(apiKey, new LinkedHashMap<>(params));
+                settings.saveApiRequestParams(allParams);
+            }
+            int total = countVisibleParameterRows();
+            statusLabel.setText("● 已保存参数: " + currentApi.displayLabel() + "（共 " + total + " 行）");
+        } catch (Exception ex) {
+            LOG.warn("[保存参数] 写入失败: apiKey=" + apiKey, ex);
+            statusLabel.setText("● 保存参数失败: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * 收集参数表里所有有 name 的行（不按 HTTP method 过滤，因为保存是全量快照）。
+     * <p>{@code includeBlank=true} 时连空 value 也保留 —— 用户可能主动清空某行后保存，
+     * 恢复时应保留空值，不被默认值「救活」。</p>
+     */
+    static Map<String, String> collectAllParameterRows(DefaultTableModel model, boolean includeBlank) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (model == null) return values;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object nameObj = model.getValueAt(i, 0);
+            Object valueObj = model.getValueAt(i, 3);
+            if (!(nameObj instanceof String)) continue;
+            String n = (String) nameObj;
+            if (n.isBlank()) continue;
+            String v = valueObj instanceof String ? (String) valueObj : "";
+            if (includeBlank || !v.isBlank()) values.put(n, v);
+        }
+        return values;
+    }
+
+    /** 实例入口：参数表全量快照。 */
+    private Map<String, String> collectAllParameterRows(boolean includeBlank) {
+        return collectAllParameterRows(paramTableModel, includeBlank);
+    }
+
+    /** 统计参数表里所有可见行数（status 用）。 */
+    private int countVisibleParameterRows() {
+        return paramTableModel == null ? 0 : paramTableModel.getRowCount();
+    }
+
+    /**
      * Round 4：分割线视觉强化。默认 divider 过窄且颜色接近背景，难以定位和拖动。
      * 加宽到 8px（扩大命中区），按 splitter 方向使用左右/上下光标，并在悬停时
      * 提升对比度。响应式分割线本身才接收鼠标事件，避免只悬停在父容器时才反馈。
@@ -987,14 +1053,17 @@ public class ApiDebuggerPanel extends JPanel {
         // 挂在 +/− 右侧，动作与表格在同一行、视线不用上下跳
         JButton clearValuesBtn = compactIconButton(AllIcons.Actions.GC, "清空所有参数的值",
                 e -> clearParameterValues());
-        JButton filterAllBtn = compactIconButton(AllIcons.Actions.ShowAsTree, "显示所有参数",
-                e -> filterParamsByLocation(null));
+        // 一伦优化 #66：参数 Tab 行动行「显示所有参数」按钮改为「保存参数」——
+        // 「显示所有参数」会重新加载默认参数 + saved 合并，把用户在 UI 上未保存的修改冲掉，
+        // 体感像「保存的数据不生效」。改成「保存参数」显式触发持久化，切走再回来显示用户上次保存的版本。
+        JButton saveParamsBtn = compactIconButton(AllIcons.Actions.Commit, "保存参数",
+                e -> saveCurrentParameters());
         JPanel actionBar = createTabActionBar(
                 "添加自定义参数",
                 "删除选中的参数",
                 e -> addCustomParameter(),
                 e -> removeSelectedParameter(),
-                clearValuesBtn, filterAllBtn);
+                clearValuesBtn, saveParamsBtn);
         actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         northContainer.add(actionBar);
 
@@ -1804,79 +1873,85 @@ public class ApiDebuggerPanel extends JPanel {
         suppressParameterUndo = true;
         paramTableModel.setRowCount(0);
 
-        // 添加路径参数
-        for (ApiParameter param : api.pathParameters()) {
-            paramTableModel.addRow(new Object[]{
-                    param.getName(),
-                    param.getType(),
-                    "PATH",
-                    param.generateDefaultValue(),
-                    param.isRequired() ? "是" : "否",
-                    param.getDescription()
-            });
+        // 先读 saved，决定走哪条分支（替换 vs 默认）。
+        // 一伦优化 #66：用户点过「保存参数」后，期望切走再回来显示的就是保存那一刻的快照，
+        // 而不是「默认参数被默认值洗一遍 + saved 覆盖」的混合体。所以 saved 非空时直接走
+        // replace 路径，跳过默认参数构造；saved 为空（首次打开 / 从未保存）才走默认构造。
+        Map<String, String> savedParams = null;
+        try {
+            savedParams = (folderId != null)
+                    ? StarredFolderService.getInstance(project).getParams(folderId, api.uniqueKey())
+                    : RestAutoLabSettingsState.getInstance(project)
+                            .loadApiRequestParams().get(api.uniqueKey());
+        } catch (Exception ignored) {
+            // 读取实时参数失败时退化为默认参数
         }
-
-        // 添加查询参数
-        for (ApiParameter param : api.queryParameters()) {
-            paramTableModel.addRow(new Object[]{
-                    param.getName(),
-                    param.getType(),
-                    "QUERY",
-                    param.generateDefaultValue(),
-                    param.isRequired() ? "是" : "否",
-                    param.getDescription()
-            });
-        }
-
-        // 添加请求头参数
-        for (ApiParameter param : api.headerParameters()) {
-            paramTableModel.addRow(new Object[]{
-                    param.getName(),
-                    param.getType(),
-                    "HEADER",
-                    param.generateDefaultValue(),
-                    param.isRequired() ? "是" : "否",
-                    param.getDescription()
-            });
-        }
-
-        // 添加请求体参数（文件参数占位，等用户在附件面板选择）
-        // 修复提单「参数解析有问题」：复杂对象（DTO）不再压成一行（值是一整坨 JSON 字符串），
-        // 而是展开为点号路径行（request.appId 等），每个字段的类型/默认值/注释一目了然。
-        for (ApiParameter param : api.bodyParameters()) {
-            if (param.isFile()) {
+        if (savedParams != null && !savedParams.isEmpty()) {
+            // 替换路径：用 saved 完全重建参数表（默认值仅作为 type/position 元数据来源）
+            replaceParametersWithSaved(paramTableModel, api.getParameters(), savedParams);
+        } else {
+            // 默认路径：按 API 定义展开 path/query/header/body，所有参数（文件占位、复杂对象展开）
+            for (ApiParameter param : api.pathParameters()) {
                 paramTableModel.addRow(new Object[]{
                         param.getName(),
                         param.getType(),
-                        "FILE",
-                        "请在右侧'文件参数'区选择本地文件",
-                        param.isRequired() ? "是" : "否",
-                        param.getDescription()
-                });
-            } else if (param.isComplexType()) {
-                addFlattenedBodyRows(param.getName(), param, 0);
-            } else {
-                paramTableModel.addRow(new Object[]{
-                        param.getName(),
-                        param.getType(),
-                        "BODY",
+                        "PATH",
                         param.generateDefaultValue(),
                         param.isRequired() ? "是" : "否",
                         param.getDescription()
                 });
             }
-        }
 
-        // 覆盖该接口最近一次保存的参数（收藏视图 / 全量视图分别取各自的实时快照）。
-        // 找不到默认参数对应的 key 时（例如回显新增字段），追加一行而不是丢弃。
-        try {
-            Map<String, String> saved = (folderId != null)
-                    ? StarredFolderService.getInstance(project).getParams(folderId, api.uniqueKey())
-                    : RestAutoLabSettingsState.getInstance(project)
-                            .loadApiRequestParams().get(api.uniqueKey());
-            applySavedParameterValues(saved);
-        } catch (Exception ignored) {
-            // 读取实时参数失败时退化为默认参数，不阻断加载
+            // 添加查询参数
+            for (ApiParameter param : api.queryParameters()) {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "QUERY",
+                        param.generateDefaultValue(),
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            }
+
+            // 添加请求头参数
+            for (ApiParameter param : api.headerParameters()) {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "HEADER",
+                        param.generateDefaultValue(),
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            }
+
+            // 添加请求体参数（文件参数占位，等用户在附件面板选择）
+            // 修复提单「参数解析有问题」：复杂对象（DTO）不再压成一行（值是一整坨 JSON 字符串），
+            // 而是展开为点号路径行（request.appId 等），每个字段的类型/默认值/注释一目了然。
+            for (ApiParameter param : api.bodyParameters()) {
+                if (param.isFile()) {
+                    paramTableModel.addRow(new Object[]{
+                            param.getName(),
+                            param.getType(),
+                            "FILE",
+                            "请在右侧'文件参数'区选择本地文件",
+                            param.isRequired() ? "是" : "否",
+                            param.getDescription()
+                    });
+                } else if (param.isComplexType()) {
+                    addFlattenedBodyRows(param.getName(), param, 0);
+                } else {
+                    paramTableModel.addRow(new Object[]{
+                            param.getName(),
+                            param.getType(),
+                            "BODY",
+                            param.generateDefaultValue(),
+                            param.isRequired() ? "是" : "否",
+                            param.getDescription()
+                    });
+                }
+            }
         }
         parameterUndoSnapshot = captureParameterSnapshot();
         parameterUndoManager.discardAllEdits();
@@ -2026,9 +2101,73 @@ public class ApiDebuggerPanel extends JPanel {
         }
     }
 
-    /** 实例入口：把已保存的参数值合并到当前 {@link #paramTableModel}。 */
-    private void applySavedParameterValues(Map<String, String> saved) {
-        mergeSavedParameterValues(paramTableModel, saved);
+    /**
+     * 一伦优化 #66：用保存的快照完全重建参数表（不走 merge 路径）。
+     * <p>与 {@link #mergeSavedParameterValues} 的语义区别：</p>
+     * <ul>
+     *   <li>merge：保留默认参数所有行，saved value 覆盖同名行的 value 列，
+     *       saved 独有的 key 追加为新行 —— 默认参数始终在场。</li>
+     *   <li>replace：清空 model，仅按 saved 顺序重建行；默认参数里没出现在 saved
+     *       的字段完全消失。</li>
+     * </ul>
+     * <p>用户场景：「保存参数」后切走再回来，期望看到的是保存那一刻的完整快照，
+     * 而不是「默认参数被默认值洗一遍 + saved 覆盖」的混合体。这正是用户 9/3 反馈的
+     * 「切换后显示上次保存数据」语义。</p>
+     * <ul>
+     *   <li>默认值元数据（type/required/description）来自 API 默认参数；</li>
+     *   <li>position 优先取默认值对应 {@link ParameterLocation}，否则回落到 BODY；</li>
+     *   <li>不在默认参数里的 saved key（回显字段）走 String/BODY/否/恢复（保存中新增）。</li>
+     * </ul>
+     */
+    static void replaceParametersWithSaved(DefaultTableModel model,
+                                           List<ApiParameter> defaults,
+                                           Map<String, String> saved) {
+        if (model == null || saved == null || saved.isEmpty()) return;
+        // 按 name 索引默认值，便于回查 type/position/required/description
+        Map<String, ApiParameter> defaultByName = new HashMap<>();
+        if (defaults != null) {
+            for (ApiParameter p : defaults) {
+                if (p != null && p.getName() != null && !p.getName().isBlank()) {
+                    defaultByName.put(p.getName(), p);
+                }
+            }
+        }
+        model.setRowCount(0);  // 清空默认参数行，完全按 saved 重建
+        for (Map.Entry<String, String> entry : saved.entrySet()) {
+            String name = entry.getKey();
+            String value = entry.getValue() != null ? entry.getValue() : "";
+            ApiParameter def = defaultByName.get(name);
+            if (def != null) {
+                model.addRow(new Object[]{
+                        def.getName(),
+                        def.getType(),
+                        positionLabel(def),
+                        value,
+                        def.isRequired() ? "是" : "否",
+                        def.getDescription()
+                });
+            } else {
+                model.addRow(new Object[]{
+                        name, "String", "BODY",
+                        value, "否", "恢复（保存中新增）"
+                });
+            }
+        }
+    }
+
+    /** 把 {@link ParameterLocation} 翻译成参数表里的中文标签（无 FILE 项：FILE 走 ATTACHMENT 行）。 */
+    private static String positionLabel(ApiParameter def) {
+        ParameterLocation loc = def.getLocation();
+        if (loc == null) return "BODY";
+        switch (loc) {
+            case PATH:   return "PATH";
+            case QUERY:  return "QUERY";
+            case HEADER: return "HEADER";
+            case COOKIE: return "COOKIE";
+            case FORM:   return "FORM";
+            case BODY:
+            default:     return "BODY";
+        }
     }
 
     /**
@@ -2106,6 +2245,10 @@ public class ApiDebuggerPanel extends JPanel {
         }
 
         Map<String, String> params = collectParameterValues();
+        // 一伦优化 #68：按 HTTP method 过滤参数行 —— POST/PUT/PATCH 只取 BODY/FILE 行，其他 method 只取 path/query/header。
+        // 抽到 PreRequestProcessor.apply 之前，避免前置脚本看到无关行干扰用户预期。
+        boolean bodyOnly = isBodyMethod(currentApi.getHttpMethod());
+        params = filterParamsByMethod(paramTableModel, bodyOnly, false);
         Map<String, String> headers = collectHeaderValues();
         String body = bodyEditor.getText();
         String requestBody = (body != null && !body.isBlank()) ? body : null;
@@ -2327,17 +2470,51 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private Map<String, String> collectParameterValues() {
+        return filterParamsByMethod(paramTableModel, false, true);
+    }
+
+    /**
+     * 按 HTTP method 过滤参数行后收集 name → value：
+     * <ul>
+     *   <li>{@code bodyOnly=true}（POST/PUT/PATCH）→ 只保留位置 = BODY 或 FILE 的行</li>
+     *   <li>{@code bodyOnly=false}（GET/DELETE/HEAD 等）→ 只保留位置 != BODY 且 != FILE 的行（path/query/header）</li>
+     * </ul>
+     * 抽成 static + 接受 model 是为了便于单测（不依赖 IntelliJ Platform / Project）。
+     *
+     * @param includeBlank 是否包含空 value 行（保存/快照用 true，发请求用 false）
+     */
+    static Map<String, String> filterParamsByMethod(DefaultTableModel model, boolean bodyOnly, boolean includeBlank) {
         Map<String, String> values = new LinkedHashMap<>();
-        for (int i = 0; i < paramTableModel.getRowCount(); i++) {
-            Object name = paramTableModel.getValueAt(i, 0);
-            Object value = paramTableModel.getValueAt(i, 3);
-            if (name instanceof String && value instanceof String) {
+        if (model == null) return values;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object positionObj = model.getValueAt(i, 2);
+            String position = positionObj instanceof String ? (String) positionObj : "";
+            // BODY + FILE 都归类为 body 侧（FILE multipart 也走 body）
+            boolean isBodySide = "BODY".equalsIgnoreCase(position) || "FILE".equalsIgnoreCase(position);
+            if (bodyOnly ? !isBodySide : isBodySide) continue;
+            Object name = model.getValueAt(i, 0);
+            Object value = model.getValueAt(i, 3);
+            if (name instanceof String) {
                 String n = (String) name;
-                String v = (String) value;
-                if (!v.isBlank()) values.put(n, v);
+                if (n.isBlank()) continue;
+                String v = value instanceof String ? (String) value : "";
+                if (includeBlank || !v.isBlank()) values.put(n, v);
             }
         }
         return values;
+    }
+
+    /**
+     * 判断 HTTP method 是否需要带请求体（决定参数过滤方向）。
+     * <ul>
+     *   <li>true → bodyOnly=true：只取 BODY/FILE 行</li>
+     *   <li>false → bodyOnly=false：只取非 BODY/FILE 行（path/query/header）</li>
+     * </ul>
+     */
+    static boolean isBodyMethod(String method) {
+        if (method == null) return false;
+        String m = method.trim().toUpperCase(Locale.ROOT);
+        return m.equals("POST") || m.equals("PUT") || m.equals("PATCH");
     }
 
     /** 收集参数表全部行（含空值），用于收藏模式下回写各文件夹的实时参数快照。 */
