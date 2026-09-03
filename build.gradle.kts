@@ -123,4 +123,29 @@ tasks {
         // 产物名与插件展示名保持一致：RestAutoLab-1.0.0.zip（默认取 rootProject.name 会是小写 restautolab）
         archiveBaseName.set("RestAutoLab")
     }
+
+    /**
+     * 打包后自动上传压缩包到飞书 base 表格（优化提单）。
+     * <p>脚本位于 {@code scripts/upload_plugin_to_feishu_base.py}，依赖 lark-cli 已登录并具备：
+     * {@code base:record:read / base:record:write / base:field:write / base:file:write / drive:file:upload}。
+     * 首次跑前请运行 {@code lark-cli auth login --scope "..."} 完成授权；缺 scope 时脚本会 fail-fast
+     * 提示去授权，不影响 buildPlugin 本身的产物。</p>
+     * <p>关闭自动上传：传 {@code -PfeishuUploadPlugin=false} 或环境变量
+     * {@code FEISHU_UPLOAD_PLUGIN=false}（脚本内部检查）。</p>
+     */
+    val uploadToFeishuBase by registering(Exec::class) {
+        group = "publishing"
+        description = "把 build/distributions/*.zip 上传到飞书 base 表格「优化提单」的最新版本包行"
+
+        // 极简配置：所有 enable 检查 / zip 存在检查都下放到 Python 脚本里，
+        // 避免闭包引用被 Configuration Cache 拒绝（"cannot serialize Gradle script object references"）。
+        commandLine = listOf("python3", "scripts/upload_plugin_to_feishu_base.py")
+        // 失败不抛异常，避免阻塞打包；脚本自身按 exit code 区分跳过/失败
+        isIgnoreExitValue = true
+    }
+
+    // 打包成功后自动跑上传（fail-fast 不阻塞）
+    buildPlugin {
+        finalizedBy(uploadToFeishuBase)
+    }
 }
