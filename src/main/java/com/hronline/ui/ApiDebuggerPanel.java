@@ -1858,39 +1858,16 @@ public class ApiDebuggerPanel extends JPanel {
             }
         }
 
-        // 收藏模式下：覆盖该文件夹下此接口的实时参数（与其它文件夹互不干扰）
-        if (folderId != null) {
-            try {
-                Map<String, String> saved = StarredFolderService.getInstance(project)
-                        .getParams(folderId, api.uniqueKey());
-                if (saved != null && !saved.isEmpty()) {
-                    for (int i = 0; i < paramTableModel.getRowCount(); i++) {
-                        Object name = paramTableModel.getValueAt(i, 0);
-                        if (name instanceof String && saved.containsKey(name)) {
-                            paramTableModel.setValueAt(saved.get(name), i, 3);
-                        }
-                    }
-                }
-            } catch (Exception ignore) {
-                // 读取实时参数失败时退化为默认参数，不阻断加载
-            }
-        }
-        // 全量视图同样保存用户最近一次提交的参数，切换接口后自动恢复。
-        if (folderId == null) {
-            try {
-                Map<String, String> saved = RestAutoLabSettingsState.getInstance(project)
-                        .loadApiRequestParams().get(api.uniqueKey());
-                if (saved != null && !saved.isEmpty()) {
-                    for (int i = 0; i < paramTableModel.getRowCount(); i++) {
-                        Object name = paramTableModel.getValueAt(i, 0);
-                        if (name instanceof String && saved.containsKey(name)) {
-                            paramTableModel.setValueAt(saved.get(name), i, 3);
-                        }
-                    }
-                }
-            } catch (Exception ignored) {
-                // 旧版本没有该字段时继续使用接口默认参数
-            }
+        // 覆盖该接口最近一次保存的参数（收藏视图 / 全量视图分别取各自的实时快照）。
+        // 找不到默认参数对应的 key 时（例如回显新增字段），追加一行而不是丢弃。
+        try {
+            Map<String, String> saved = (folderId != null)
+                    ? StarredFolderService.getInstance(project).getParams(folderId, api.uniqueKey())
+                    : RestAutoLabSettingsState.getInstance(project)
+                            .loadApiRequestParams().get(api.uniqueKey());
+            applySavedParameterValues(saved);
+        } catch (Exception ignored) {
+            // 读取实时参数失败时退化为默认参数，不阻断加载
         }
         parameterUndoSnapshot = captureParameterSnapshot();
         parameterUndoManager.discardAllEdits();
@@ -2010,15 +1987,39 @@ public class ApiDebuggerPanel extends JPanel {
         api.getHeaders().forEach(this::addHeaderIfAbsent);
     }
 
-    /** 把已保存的参数值覆盖到当前参数表（只覆盖仍存在的字段）。 */
-    private void applySavedParameterValues(Map<String, String> saved) {
-        if (saved == null || saved.isEmpty()) return;
-        for (int i = 0; i < paramTableModel.getRowCount(); i++) {
-            Object name = paramTableModel.getValueAt(i, 0);
-            if (name instanceof String key && saved.containsKey(key)) {
-                paramTableModel.setValueAt(saved.get(key), i, 3);
+    /**
+     * 把已保存的参数值合并到当前参数表（{@link ApiDebuggerPanel#paramTableModel}）。
+     * <ul>
+     *   <li>按 name 匹配默认参数行 → 覆盖 value 列</li>
+     *   <li>默认参数里没有该 key（典型：回显新增的字段）→ 在表尾追加一行
+     *       （类型 String / 位置 BODY / 必填 否 / 描述「恢复（保存中新增）」），
+     *       保证切走再切回来时回显数据不会凭空消失</li>
+     * </ul>
+     * <p>抽成 static 是为了脱离 IntelliJ Platform 容器写单测。</p>
+     */
+    static void mergeSavedParameterValues(DefaultTableModel model, Map<String, String> saved) {
+        if (model == null || saved == null || saved.isEmpty()) return;
+        Map<String, Integer> rowIndexByName = new HashMap<>();
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object name = model.getValueAt(i, 0);
+            if (name instanceof String) rowIndexByName.put((String) name, i);
+        }
+        for (Map.Entry<String, String> entry : saved.entrySet()) {
+            Integer idx = rowIndexByName.get(entry.getKey());
+            if (idx != null) {
+                model.setValueAt(entry.getValue(), idx, 3);
+            } else {
+                model.addRow(new Object[]{
+                        entry.getKey(), "String", "BODY",
+                        entry.getValue(), "否", "恢复（保存中新增）"
+                });
             }
         }
+    }
+
+    /** 实例入口：把已保存的参数值合并到当前 {@link #paramTableModel}。 */
+    private void applySavedParameterValues(Map<String, String> saved) {
+        mergeSavedParameterValues(paramTableModel, saved);
     }
 
     /** 把已保存的请求头覆盖到当前表格，不存在的自定义头追加到末尾。 */
