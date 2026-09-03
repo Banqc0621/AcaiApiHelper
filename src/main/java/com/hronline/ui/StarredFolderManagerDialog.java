@@ -446,7 +446,7 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                     TestResult tr = httpService.executeRequest(api, baseUrl, params);
                     status.setPassed(tr.getStatus() == TestStatus.PASSED);
                     status.setStatusCode(tr.getStatusCode());
-                    status.setMessage(status.isPassed() ? "通过" : ("未通过 HTTP " + tr.getStatusCode()));
+                    status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));
                 } catch (Exception ex) {
                     status.setPassed(false);
                     status.setStatusCode(-1);
@@ -471,6 +471,13 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                         finalType);
             });
         });
+    }
+
+    /** 优先保留异常规则/断言的具体失败原因，便于收藏树定位业务异常。 */
+    private String failureMessage(TestResult result) {
+        if (result != null && result.getErrorMessage() != null
+                && !result.getErrorMessage().isBlank()) return result.getErrorMessage();
+        return "未通过 HTTP " + (result == null ? "-" : result.getStatusCode());
     }
 
     // ==================== 取消警示 ====================

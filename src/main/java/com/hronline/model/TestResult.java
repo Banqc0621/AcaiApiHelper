@@ -138,7 +138,8 @@ public class TestResult {
     public String summary() {
         return switch (status) {
             case PASSED -> "✓ " + statusCode + " (" + durationMs + "ms)";
-            case FAILED -> "✗ " + statusCode + " (" + durationMs + "ms)";
+            case FAILED -> "✗ " + statusCode + " (" + durationMs + "ms)"
+                    + (errorMessage == null || errorMessage.isBlank() ? "" : " · " + errorMessage);
             case ERROR -> "⚠ " + errorMessage;
             case PENDING -> "○ 未执行";
             case RUNNING -> "◌ 执行中...";

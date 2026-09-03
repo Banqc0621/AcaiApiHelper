@@ -2,6 +2,7 @@ package com.hronline.settings;
 
 import com.hronline.model.Environment;
 import com.hronline.model.FolderApiStatus;
+import com.hronline.chain.ApiDependency;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -339,5 +340,52 @@ class RestAutoLabSettingsStateEnvironmentsTest {
         // null / 空 aliveKeys 必须为 no-op，不抛异常
         assertEquals(0, state.dropStaleApiKeys(null));
         assertEquals(0, state.dropStaleApiKeys(java.util.Collections.emptySet()));
+    }
+
+    @Test
+    void starredFolderDependenciesRoundTripPreservesOrderAndMultipleMappings() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        ApiDependency edge = new ApiDependency("GET|/users", "GET|/orders", "FOLDER_ORDER");
+        edge.getMappings().add(new ApiDependency.ValueMapping("data.userId", "userId"));
+        edge.getMappings().add(new ApiDependency.ValueMapping("data.tenantId", "tenantId"));
+        ApiDependency second = new ApiDependency("GET|/orders", "GET|/summary", "FOLDER_ORDER");
+        state.saveStarredFolderDependencies(Map.of("folder-1", List.of(edge, second)));
+
+        RestAutoLabSettingsState restored = new RestAutoLabSettingsState();
+        restored.loadState(state.getState());
+        List<ApiDependency> deps = restored.loadStarredFolderDependencies().get("folder-1");
+        assertEquals(2, deps.size());
+        assertEquals("GET|/users", deps.get(0).getProducerKey());
+        assertEquals("GET|/orders", deps.get(0).getConsumerKey());
+        assertEquals(2, deps.get(0).getMappings().size(), "同一对接口的多字段映射必须保留");
+        assertEquals("data.tenantId", deps.get(0).getMappings().get(1).getSourcePath());
+        assertTrue(deps.get(1).getMappings().isEmpty(), "无映射顺序边也必须保留");
+    }
+
+    @Test
+    void explicitlyClearedFolderDependenciesRemainClearedAfterReload() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        state.saveStarredFolderDependencies(Map.of("folder-1", List.of()));
+        RestAutoLabSettingsState restored = new RestAutoLabSettingsState();
+        restored.loadState(state.getState());
+        assertTrue(restored.loadStarredFolderDependencies().containsKey("folder-1"));
+        assertTrue(restored.loadStarredFolderDependencies().get("folder-1").isEmpty());
+    }
+
+    @Test
+    void remapApiKeysUpdatesSavedDependencyEndpoints() {
+        RestAutoLabSettingsState state = new RestAutoLabSettingsState();
+        ApiDependency edge = new ApiDependency("GET|/old", "POST|/consumer", "FOLDER_ORDER");
+        edge.getMappings().add(new ApiDependency.ValueMapping("id", "id"));
+        state.saveStarredFolderDependencies(Map.of("folder-1", List.of(edge)));
+
+        int changed = state.remapApiKeys(Map.of(
+                "GET|/old", "GET|/new",
+                "POST|/consumer", "POST|/consumer-v2"));
+        assertTrue(changed > 0);
+        ApiDependency reloaded = state.loadStarredFolderDependencies().get("folder-1").get(0);
+        assertEquals("GET|/new", reloaded.getProducerKey());
+        assertEquals("POST|/consumer-v2", reloaded.getConsumerKey());
+        assertEquals("id", reloaded.getMappings().get(0).getSourcePath());
     }
 }

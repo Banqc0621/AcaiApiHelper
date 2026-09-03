@@ -22,7 +22,7 @@ public class ApiDependency {
     private String consumerKey;
     /** 值映射列表：上游响应字段路径 -> 下游参数名 */
     private List<ValueMapping> mappings = new ArrayList<>();
-    /** 检测方式："CRUD" / "PATH_MATCH" / "BODY_MATCH" / "MANUAL" */
+    /** 检测方式："CRUD" / "PATH_MATCH" / "BODY_MATCH" / "FOLDER_ORDER" / "MANUAL" */
     private String detectionType = "";
 
     /**

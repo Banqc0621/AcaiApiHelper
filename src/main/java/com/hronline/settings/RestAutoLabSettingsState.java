@@ -5,6 +5,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
 import com.hronline.model.*;
+import com.hronline.chain.ApiDependency;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.State;
 import com.intellij.openapi.components.Storage;
@@ -81,6 +82,8 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         public String apiRequestBodiesJson = "";
         /** Round 7：异常自定义规则（key=apiKey -> List<ExceptionRule>） */
         public String exceptionRulesJson = "";
+        /** 收藏文件夹依赖设置（key=folderId -> 有序依赖关系列表）。 */
+        public String starredFolderDependenciesJson = "";
         /** 文件夹内接口测试状态 JSON（key=folderId\napiKey -> FolderApiStatus） */
         public String folderApiStatusJson = "";
         /** 接口级前置脚本（key=apiKey -> script） */
@@ -395,6 +398,26 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         myState.exceptionRulesJson = gson.toJson(rules == null ? Collections.emptyList() : rules);
     }
 
+    /** 加载收藏文件夹依赖设置。旧版本没有该字段时返回空映射。 */
+    public Map<String, List<ApiDependency>> loadStarredFolderDependencies() {
+        if (myState.starredFolderDependenciesJson == null || myState.starredFolderDependenciesJson.isBlank()) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Type t = new TypeToken<Map<String, List<ApiDependency>>>(){}.getType();
+            Map<String, List<ApiDependency>> value = gson.fromJson(myState.starredFolderDependenciesJson, t);
+            return value != null ? value : new LinkedHashMap<>();
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** 保存收藏文件夹依赖设置。 */
+    public void saveStarredFolderDependencies(Map<String, List<ApiDependency>> dependencies) {
+        myState.starredFolderDependenciesJson = gson.toJson(
+                dependencies == null ? Collections.emptyMap() : dependencies);
+    }
+
     private Map<String, Map<String, String>> loadNestedStringMap(String json) {
         if (json == null || json.isBlank()) return new LinkedHashMap<>();
         try {
@@ -636,7 +659,8 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
      * <p>用户修改 @RequestMapping 路径后，旧 uniqueKey（HTTP_METHOD + URL）失效：
      * starredApis Set / folderApiParamsJson / folderApiStatusJson / folderApiHeadersJson
      * / folderApiBodiesJson / apiRequestParamsJson / apiRequestHeadersJson / apiRequestBodiesJson
-     * / preRequestScriptsJson / apiVariableOverridesJson / apiCallCounts / apiLastCallTimes
+     * / starredFolderDependenciesJson / preRequestScriptsJson / apiVariableOverridesJson
+     * / apiCallCounts / apiLastCallTimes
      * / lastScanApiSignatures
      * 全部按旧 key 索引，会被「看似新增 + 旧 key 丢失」双重夹击变成孤儿。</p>
      * <p>本方法在每次扫描完成后由 {@code ApiScannerService} 调用，按
@@ -695,6 +719,13 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         Map<String, String> requestBodies = loadApiRequestBodies();
         if (remapMapKeysInPlace(requestBodies, remap)) {
             saveApiRequestBodies(requestBodies);
+            count++;
+        }
+        // 收藏文件夹依赖边按 producer/consumer uniqueKey 索引；接口路径变更时同步迁移，
+        // 避免已保存的依赖链在下一次打开依赖设置时指向旧接口。
+        Map<String, List<ApiDependency>> folderDependencies = loadStarredFolderDependencies();
+        if (remapDependenciesInPlace(folderDependencies, remap)) {
+            saveStarredFolderDependencies(folderDependencies);
             count++;
         }
         // preRequestScripts / apiVariableOverrides / apiCallCounts / apiLastCallTimes
@@ -888,6 +919,24 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         }
         myState.lastScanApiSignatures = keptSigs;
 
+        // 收藏文件夹依赖边也按接口 key 引用；接口被删除或不再扫描时清理失效边，
+        // 避免依赖设置页面出现无法解析的上游/下游节点。
+        Map<String, List<ApiDependency>> folderDependencies = loadStarredFolderDependencies();
+        int dependencyCountBefore = 0;
+        int dependencyCountAfter = 0;
+        for (List<ApiDependency> deps : folderDependencies.values()) {
+            if (deps == null) continue;
+            dependencyCountBefore += deps.size();
+            deps.removeIf(dep -> dep == null
+                    || !alive.contains(dep.getProducerKey())
+                    || !alive.contains(dep.getConsumerKey()));
+            dependencyCountAfter += deps.size();
+        }
+        if (dependencyCountAfter != dependencyCountBefore) {
+            saveStarredFolderDependencies(folderDependencies);
+            removed += dependencyCountBefore - dependencyCountAfter;
+        }
+
         return removed;
     }
 
@@ -942,6 +991,32 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         if (changed) {
             map.clear();
             map.putAll(remapped);
+        }
+        return changed;
+    }
+
+    /** 对收藏文件夹依赖边的 producer/consumer key 做重映射。 */
+    private boolean remapDependenciesInPlace(Map<String, List<ApiDependency>> all,
+                                             Map<String, String> remap) {
+        boolean changed = false;
+        if (all == null || all.isEmpty() || remap == null || remap.isEmpty()) return false;
+        for (List<ApiDependency> deps : all.values()) {
+            if (deps == null) continue;
+            for (ApiDependency dep : deps) {
+                if (dep == null) continue;
+                String producer = dep.getProducerKey();
+                String consumer = dep.getConsumerKey();
+                String mappedProducer = remap.get(producer);
+                String mappedConsumer = remap.get(consumer);
+                if (mappedProducer != null && !mappedProducer.equals(producer)) {
+                    dep.setProducerKey(mappedProducer);
+                    changed = true;
+                }
+                if (mappedConsumer != null && !mappedConsumer.equals(consumer)) {
+                    dep.setConsumerKey(mappedConsumer);
+                    changed = true;
+                }
+            }
         }
         return changed;
     }

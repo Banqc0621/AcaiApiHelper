@@ -803,6 +803,16 @@ public class ApiTreePanel extends JPanel {
         return null;
     }
 
+    /**
+     * 重新读取收藏接口测试状态并刷新树。调试面板完成单接口测试后调用，
+     * 让异常自定义规则导致的失败立即在收藏列表中显示红色告警。
+     */
+    public void refreshStarredView() {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        refreshStarredApiIndex();
+        buildStarredTree();
+    }
+
     /** 设置「收藏」按钮回调：点击后由外层切换到收藏 Tab */
     public void setOnShowStarred(Runnable onShowStarred) {
         // 保留空方法以兼容潜在的外部调用，但收藏已改为内嵌视图切换，不再使用此回调
@@ -1533,7 +1543,7 @@ public class ApiTreePanel extends JPanel {
                 group.addSeparator();
                 group.add(starredAction("AI 生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
-                group.add(starredAction("依赖链批量测试", AllIcons.Actions.Execute, this::starredChainBatchTest));
+                group.add(starredAction("依赖设置", AllIcons.General.Settings, this::openStarredDependencySettings));
                 group.addSeparator();
                 addStarredFolderExportActions(group, f);
                 group.addSeparator();
@@ -2045,7 +2055,7 @@ public class ApiTreePanel extends JPanel {
                     TestResult tr = httpService.executeRequest(api, baseUrl, params);
                     status.setPassed(tr.getStatus() == TestStatus.PASSED);
                     status.setStatusCode(tr.getStatusCode());
-                    status.setMessage(status.isPassed() ? "通过" : ("未通过 HTTP " + tr.getStatusCode()));
+                    status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));
                 } catch (Exception ex) {
                     status.setPassed(false);
                     status.setStatusCode(-1);
@@ -2099,7 +2109,7 @@ public class ApiTreePanel extends JPanel {
                     TestResult tr = httpService.executeRequest(api, baseUrl, params);
                     status.setPassed(tr.getStatus() == TestStatus.PASSED);
                     status.setStatusCode(tr.getStatusCode());
-                    status.setMessage(status.isPassed() ? "通过" : ("未通过 HTTP " + tr.getStatusCode()));
+                    status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));
                 } catch (Exception ex) {
                     status.setPassed(false);
                     status.setStatusCode(-1);
@@ -2119,6 +2129,15 @@ public class ApiTreePanel extends JPanel {
                 statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
             });
         });
+    }
+
+    /** 优先展示断言/异常规则给出的具体原因，HTTP 状态码仅作为兜底。 */
+    private String failureMessage(TestResult result) {
+        if (result != null && result.getErrorMessage() != null
+                && !result.getErrorMessage().isBlank()) {
+            return result.getErrorMessage();
+        }
+        return "未通过 HTTP " + (result == null ? "-" : result.getStatusCode());
     }
 
     /** 批量移动：把多选 API 一次性移到目标文件夹。 */
@@ -2399,6 +2418,52 @@ public class ApiTreePanel extends JPanel {
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed + " · 跳过 " + skipped);
             });
         });
+    }
+
+    /**
+     * 打开收藏文件夹的依赖设置。首次打开时按文件夹接口顺序生成相邻依赖边，
+     * 后续打开则恢复用户已保存的配置；“保存”由对话框 OK 完成，不会自动执行请求。
+     */
+    private void openStarredDependencySettings() {
+        StarredFolder folder = getSelectedStarredFolder();
+        if (folder == null) {
+            Messages.showWarningDialog(project, "请先选中一个文件夹", "依赖设置");
+            return;
+        }
+
+        List<ApiDefinition> orderedApis = orderedApisForDependencySettings(folder);
+        if (orderedApis.size() < 2) {
+            Messages.showInfoMessage(project, "该文件夹至少需要 2 个接口才能配置依赖", "依赖设置");
+            return;
+        }
+
+        List<ApiDependency> dependencies = folderService.getDependencies(folder.getId());
+        if (!folderService.hasDependencies(folder.getId())) {
+            dependencies = DependencyGraphDialog.createSequentialDependencies(orderedApis);
+        }
+
+        DependencyGraphDialog dialog = new DependencyGraphDialog(
+                project, orderedApis, dependencies, "依赖设置 · " + folder.getName());
+        if (!dialog.showAndGet()) return;
+        List<ApiDependency> saved = dialog.getDependencies();
+        folderService.saveDependencies(folder.getId(), saved);
+        statsLabel.setText("● 已保存「" + folder.getName() + "」依赖设置："
+                + saved.size() + " 条依赖边，支持多字段映射");
+    }
+
+    /**
+     * 按收藏夹树中的稳定顺序收集接口。子文件夹紧随父文件夹，接口按各自 apiKeys 顺序；
+     * 同一接口出现在多个子文件夹时仅在依赖配置中保留第一次出现的位置。
+     */
+    private List<ApiDefinition> orderedApisForDependencySettings(StarredFolder folder) {
+        refreshStarredApiIndex();
+        List<ApiDefinition> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (FolderApiTarget target : collectSubtreeTargets(folder)) {
+            if (target.api == null || !seen.add(target.api.uniqueKey())) continue;
+            result.add(target.api);
+        }
+        return result;
     }
 
     /**

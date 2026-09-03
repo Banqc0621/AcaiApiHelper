@@ -186,7 +186,7 @@ public final class HttpExecutorService {
                 passed = api.isStatusCodeExpected(response.statusCode());
             }
             // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP 状态码白名单 / JSON 字段白名单）
-            if (passed) {
+            if (passed && project != null) {
                 ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluate(
                         project, response.statusCode(), result.getResponseBody());
                 if (!er.isPassed()) {
@@ -439,11 +439,29 @@ public final class HttpExecutorService {
         Map<String, Object> jsonMap = new LinkedHashMap<>();
         for (ApiParameter param : bodyParams) {
             String value = paramValues.get(param.getName());
-            if (value != null) {
+            if (param.isComplexType()) {
+                // 复杂 BODY 参数在调试面板中会展开为 request.child.field 形式；
+                // 依赖链映射也允许把上游值注入到同样的嵌套路径。先构造整棵默认对象，
+                // 再覆盖点号路径，避免映射值只写进 params 却从未进入实际请求体。
+                Object complexValue = value == null
+                        ? parseComplexBodyValue(param.generateDefaultValue())
+                        : parseComplexBodyValue(resolveEnvVars(value, environment));
+                Map<String, Object> objectValue = asMutableObject(complexValue);
+                if (objectValue == null && hasNestedOverrides(param, paramValues)) {
+                    objectValue = new LinkedHashMap<>();
+                }
+                if (objectValue != null) {
+                    applyNestedOverrides(param, objectValue, paramValues, environment);
+                    jsonMap.put(param.getName(), objectValue);
+                } else if (value != null) {
+                    jsonMap.put(param.getName(), parseValueByType(
+                            resolveEnvVars(value, environment), param.getType()));
+                } else {
+                    jsonMap.put(param.getName(), complexValue);
+                }
+            } else if (value != null) {
                 value = resolveEnvVars(value, environment);
                 jsonMap.put(param.getName(), parseValueByType(value, param.getType()));
-            } else if (param.isComplexType()) {
-                jsonMap.put(param.getName(), gson.fromJson(param.generateDefaultValue(), Object.class));
             } else {
                 jsonMap.put(param.getName(), parseValueByType(param.generateDefaultValue(), param.getType()));
             }
@@ -455,6 +473,98 @@ public final class HttpExecutorService {
         }
 
         return gson.toJson(jsonMap);
+    }
+
+    /** 解析复杂请求体默认值；非法 JSON 时返回原始字符串，交由调用方决定是否回退为空对象。 */
+    private Object parseComplexBodyValue(String value) {
+        if (value == null || value.isBlank()) return new LinkedHashMap<String, Object>();
+        try {
+            return gson.fromJson(value, Object.class);
+        } catch (Exception ignored) {
+            return value;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> asMutableObject(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        return null;
+    }
+
+    /** 判断复杂参数是否存在至少一个点号路径覆盖值。 */
+    private boolean hasNestedOverrides(ApiParameter root, Map<String, String> paramValues) {
+        if (root == null || paramValues == null || root.getName() == null) return false;
+        return paramValues.keySet().stream().anyMatch(k -> nestedPathForKey(root, k) != null);
+    }
+
+    /** 把 request.child.field=value 写入复杂 JSON 对象；未知字段也允许手工输入并创建。 */
+    private void applyNestedOverrides(ApiParameter root, Map<String, Object> target,
+                                      Map<String, String> paramValues, Environment environment) {
+        if (root == null || target == null || paramValues == null || root.getName() == null) return;
+        for (Map.Entry<String, String> entry : paramValues.entrySet()) {
+            String key = entry.getKey();
+            String path = nestedPathForKey(root, key);
+            if (path == null) continue;
+            path = path.trim();
+            if (path.isBlank()) continue;
+
+            String[] segments = path.split("\\.");
+            Map<String, Object> current = target;
+            for (int i = 0; i < segments.length - 1; i++) {
+                String segment = segments[i].trim();
+                if (segment.isBlank()) continue;
+                Object child = current.get(segment);
+                Map<String, Object> childMap = asMutableObject(child);
+                if (childMap == null) {
+                    childMap = new LinkedHashMap<>();
+                    current.put(segment, childMap);
+                }
+                current = childMap;
+            }
+            String leaf = segments[segments.length - 1].trim();
+            if (leaf.isBlank()) continue;
+            String raw = entry.getValue() == null ? "" : resolveEnvVars(entry.getValue(), environment);
+            ApiParameter mappedParameter = findNestedParameter(root, segments);
+            current.put(leaf, parseValueByType(raw,
+                    mappedParameter == null ? null : mappedParameter.getType()));
+        }
+    }
+
+    /**
+     * 将参数键转换成复杂对象内部路径。优先接受 UI 展示的 root.child 形式，
+     * 同时兼容用户手动输入不带 root 前缀的 child 路径（如 id 或 profile.name）。
+     */
+    private String nestedPathForKey(ApiParameter root, String key) {
+        if (root == null || key == null || key.isBlank() || root.getName() == null) return null;
+        String trimmed = key.trim();
+        String prefix = root.getName().trim() + ".";
+        if (trimmed.startsWith(prefix) && trimmed.length() > prefix.length()) {
+            return trimmed.substring(prefix.length());
+        }
+        String[] segments = trimmed.split("\\.");
+        return findNestedParameter(root, segments) == null ? null : trimmed;
+    }
+
+    /** 按 rootName.childName... 路径查找字段定义，用于保留数字/布尔类型。 */
+    private ApiParameter findNestedParameter(ApiParameter root, String[] segments) {
+        if (root == null || segments == null || segments.length == 0) return null;
+        ApiParameter current = root;
+        for (String rawSegment : segments) {
+            String segment = rawSegment == null ? "" : rawSegment.trim();
+            if (segment.isBlank() || current.getChildren() == null) return null;
+            ApiParameter next = null;
+            for (ApiParameter child : current.getChildren()) {
+                if (child != null && Objects.equals(child.getName(), segment)) {
+                    next = child;
+                    break;
+                }
+            }
+            if (next == null) return null;
+            current = next;
+        }
+        return current;
     }
 
     /**

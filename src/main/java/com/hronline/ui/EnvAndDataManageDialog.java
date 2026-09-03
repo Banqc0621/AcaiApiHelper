@@ -12,6 +12,7 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.BooleanSupplier;
 
 /**
  * 一伦优化 #3：合并「环境管理」与「数据管理」到同一个对话框。
@@ -34,6 +35,8 @@ public class EnvAndDataManageDialog extends DialogWrapper {
     private final List<DataManagePanel.Action> apiDataActions = new ArrayList<>();
     /** 关闭时（OK 前）依次调用的回调，外部可用于保存"前置脚本&变量覆盖"等实时表单 */
     private final List<Runnable> onCommit = new ArrayList<>();
+    /** OK/应用 前执行的校验。返回 false 时保留弹窗，避免无效规则被提交后直接关闭。 */
+    private final List<BooleanSupplier> commitValidators = new ArrayList<>();
 
     private final Consumer<Runnable> onDataActionChosen = pending -> {
         this.pendingDataAction = pending;
@@ -82,6 +85,11 @@ public class EnvAndDataManageDialog extends DialogWrapper {
      */
     public void addOnCommit(Runnable r) {
         if (r != null) onCommit.add(r);
+    }
+
+    /** 注册一个保存前校验；校验失败时 OK/应用 都不会继续提交。 */
+    public void addCommitValidator(BooleanSupplier validator) {
+        if (validator != null) commitValidators.add(validator);
     }
 
     /**
@@ -139,7 +147,14 @@ public class EnvAndDataManageDialog extends DialogWrapper {
     }
 
     /** 把环境编辑 + 外部注册的 onCommit 回调（AI 配置等）统一提交，不关闭对话框。 */
-    private void commitAll() {
+    private boolean commitAll() {
+        for (BooleanSupplier validator : commitValidators) {
+            try {
+                if (!validator.getAsBoolean()) return false;
+            } catch (Exception ex) {
+                return false;
+            }
+        }
         try {
             envDialog.applyChanges();
         } catch (Exception ex) {
@@ -148,6 +163,7 @@ public class EnvAndDataManageDialog extends DialogWrapper {
         for (Runnable r : onCommit) {
             try { r.run(); } catch (Exception ex) { /* 忽略单个失败 */ }
         }
+        return true;
     }
 
     /** #63：「应用」按钮动作——保存所有改动但不退出对话框。 */
@@ -166,8 +182,7 @@ public class EnvAndDataManageDialog extends DialogWrapper {
 
     @Override
     protected void doOKAction() {
-        commitAll();
-        super.doOKAction();
+        if (commitAll()) super.doOKAction();
     }
 
     public Runnable getPendingDataAction() {

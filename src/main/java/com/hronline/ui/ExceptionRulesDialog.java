@@ -4,6 +4,7 @@ import com.hronline.model.ExceptionRule;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.JBUI;
@@ -54,8 +55,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
     @Override
     protected void doOKAction() {
-        panel.commit();
-        super.doOKAction();
+        if (panel.commitRules()) super.doOKAction();
     }
 
     /** 给 {@link EnvAndDataManageDialog} 注册 Tab 时调，弹窗 OK 按钮统一触发 commit。 */
@@ -121,11 +121,19 @@ public class ExceptionRulesDialog extends DialogWrapper {
             JPanel center = new JPanel(new BorderLayout(0, 4));
             JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
             addBtn = new JButton("新增规则");
-            addBtn.addActionListener(e -> tableModel.addRow(new Object[]{
-                    ExceptionRule.RuleType.HTTP_STATUS, "", "", Boolean.TRUE, "删除"}));
+            addBtn.addActionListener(e -> {
+                if (!validateRules()) return;
+                tableModel.addRow(new Object[]{
+                        ExceptionRule.RuleType.HTTP_STATUS, "", "200", Boolean.TRUE, "删除"});
+                int row = tableModel.getRowCount() - 1;
+                table.setRowSelectionInterval(row, row);
+                table.scrollRectToVisible(table.getCellRect(row, 0, true));
+                statusLabel.setForeground(JBColor.BLUE);
+                statusLabel.setText("● 已新增规则，请填写白名单后点击「保存规则」");
+            });
             saveBtn = new JButton("保存规则");
             saveBtn.setToolTipText("立即把当前表格写回项目设置（不依赖弹窗 OK 按钮）");
-            saveBtn.addActionListener(e -> commit());
+            saveBtn.addActionListener(e -> commitRules());
             btnBar.add(addBtn);
             btnBar.add(saveBtn);
             center.add(btnBar, BorderLayout.NORTH);
@@ -152,7 +160,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
             if (addBtn != null) addBtn.setEnabled(true);
             if (saveBtn != null) saveBtn.setEnabled(true);
             statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则，编辑后请点「保存规则」");
+            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则；新增/编辑后请点「保存规则」");
         }
 
         private void configureTable() {
@@ -215,8 +223,79 @@ public class ExceptionRulesDialog extends DialogWrapper {
             }
         }
 
+        /**
+         * 校验当前规则。新增和保存都会走同一套校验，避免空白字段、非法状态码
+         * 或 FIELD_VALUE 缺少字段名的配置写入项目设置。
+         */
+        private boolean validateRules() {
+            if (table.isEditing() && table.getCellEditor() != null
+                    && !table.getCellEditor().stopCellEditing()) {
+                return false;
+            }
+            for (int i = 0; i < tableModel.getRowCount(); i++) {
+                Object typeObj = tableModel.getValueAt(i, COL_TYPE);
+                ExceptionRule.RuleType type = typeObj instanceof ExceptionRule.RuleType
+                        ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_STATUS;
+                String field = String.valueOf(tableModel.getValueAt(i, COL_FIELD) == null
+                        ? "" : tableModel.getValueAt(i, COL_FIELD)).trim();
+                String expected = String.valueOf(tableModel.getValueAt(i, COL_EXPECTED) == null
+                        ? "" : tableModel.getValueAt(i, COL_EXPECTED)).trim();
+                if (expected.isBlank()) {
+                    showValidationError(i, "请填写期望值白名单（多个值用逗号分隔）");
+                    return false;
+                }
+                List<String> values = splitExpectedValues(expected);
+                if (values.isEmpty()) {
+                    showValidationError(i, "期望值白名单不能只包含逗号或空格");
+                    return false;
+                }
+                if (type == ExceptionRule.RuleType.FIELD_VALUE && field.isBlank()) {
+                    showValidationError(i, "FIELD_VALUE 规则必须填写字段名，例如 code");
+                    return false;
+                }
+                if (type == ExceptionRule.RuleType.HTTP_STATUS) {
+                    for (String value : values) {
+                        try {
+                            int code = Integer.parseInt(value);
+                            if (code < 100 || code > 599) {
+                                showValidationError(i, "HTTP 状态码必须是 100-599 的整数：" + value);
+                                return false;
+                            }
+                        } catch (NumberFormatException ex) {
+                            showValidationError(i, "HTTP 状态码必须是整数：" + value);
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        private List<String> splitExpectedValues(String raw) {
+            List<String> values = new ArrayList<>();
+            if (raw == null) return values;
+            for (String value : raw.split(",")) {
+                String trimmed = value.trim();
+                if (!trimmed.isEmpty()) values.add(trimmed);
+            }
+            return values;
+        }
+
+        private void showValidationError(int row, String message) {
+            if (row >= 0 && row < tableModel.getRowCount()) {
+                table.setRowSelectionInterval(row, row);
+                table.scrollRectToVisible(table.getCellRect(row, COL_EXPECTED, true));
+            }
+            statusLabel.setForeground(JBColor.RED);
+            statusLabel.setText("● 规则未保存：" + message);
+            Messages.showErrorDialog(project,
+                    "第 " + (row + 1) + " 条规则：\n" + message,
+                    "异常规则校验失败");
+        }
+
         /** 收集当前表格行 → List<ExceptionRule>，写回 settings。 */
-        public void commit() {
+        public boolean commitRules() {
+            if (!validateRules()) return false;
             List<ExceptionRule> rules = new ArrayList<>();
             for (int i = 0; i < tableModel.getRowCount(); i++) {
                 Object typeObj = tableModel.getValueAt(i, COL_TYPE);
@@ -227,21 +306,17 @@ public class ExceptionRulesDialog extends DialogWrapper {
                 ExceptionRule.RuleType type = typeObj instanceof ExceptionRule.RuleType
                         ? (ExceptionRule.RuleType) typeObj : ExceptionRule.RuleType.HTTP_STATUS;
                 String fname = fObj == null ? "" : fObj.toString().trim();
-                List<String> values = new ArrayList<>();
-                if (eObj != null) {
-                    for (String v : eObj.toString().split(",")) {
-                        String t = v.trim();
-                        if (!t.isEmpty()) values.add(t);
-                    }
-                }
-                // HTTP_STATUS 不需要字段名；FIELD_VALUE 必须有字段名，否则跳过
-                if (type == ExceptionRule.RuleType.FIELD_VALUE && fname.isEmpty()) continue;
+                List<String> values = splitExpectedValues(eObj == null ? "" : eObj.toString());
                 rules.add(new ExceptionRule(type, fname, values, Boolean.TRUE.equals(enObj)));
             }
             RestAutoLabSettingsState.getInstance(project).saveExceptionRules(rules);
             statusLabel.setForeground(JBColor.BLUE);
             statusLabel.setText("● ✓ 已保存 " + rules.size() + " 条全局规则到项目设置（" + java.time.LocalTime.now().withNano(0) + "）");
+            return true;
         }
+
+        /** 给 DialogWrapper / EnvAndDataManageDialog 的兼容入口。 */
+        public void commit() { commitRules(); }
 
         /** 给 ApiDebuggerPanel 在打开 dialog 前拿到状态文本用。 */
         public String getCurrentStatus() { return statusLabel.getText(); }

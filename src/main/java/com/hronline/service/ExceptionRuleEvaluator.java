@@ -36,6 +36,14 @@ public final class ExceptionRuleEvaluator {
     public static Result evaluate(@NotNull Project project, int statusCode, @Nullable String responseBody) {
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         List<ExceptionRule> rules = settings.loadExceptionRules();
+        return evaluateRules(rules, statusCode, responseBody);
+    }
+
+    /**
+     * 纯规则评估入口，供无 IntelliJ Project 的单测和批处理调用。
+     * 规则语义与 {@link #evaluate(Project, int, String)} 完全一致。
+     */
+    static Result evaluateRules(List<ExceptionRule> rules, int statusCode, @Nullable String responseBody) {
         if (rules == null || rules.isEmpty()) return Result.passed();
 
         // 预解析 body 一次，给 FIELD_VALUE 复用

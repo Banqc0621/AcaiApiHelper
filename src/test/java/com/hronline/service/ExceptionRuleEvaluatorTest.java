@@ -1,6 +1,9 @@
 package com.hronline.service;
 
 import com.hronline.model.ExceptionRule;
+import com.hronline.model.ApiDefinition;
+import com.hronline.model.TestResult;
+import com.hronline.model.TestStatus;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -15,9 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Round 7（重构）：异常规则判定器单测。
- * <p>验证 {@link ExceptionRule} 模型本身的语义；evaluator 内部访问
- * {@code RestAutoLabSettingsState}，需要 Project，测试环境不便构造（参考旧测试的注释），
- * 这里只验证 model 的关键不变量。</p>
+ * <p>同时覆盖规则模型、纯规则评估入口以及 HTTP 200 下的业务字段异常，
+ * 确保自定义规则失败能沿测试结果链路传递到 UI。</p>
  */
 class ExceptionRuleEvaluatorTest {
 
@@ -110,5 +112,33 @@ class ExceptionRuleEvaluatorTest {
         // object → toString（不进白名单基本算异常）
         assertEquals("{\"a\":1}", ExceptionRuleEvaluator.extractActualValue(
                 com.google.gson.JsonParser.parseString("{\"a\":1}"), "k"));
+    }
+
+    @Test
+    void businessRuleFailureRemainsFailedEvenForHttp200() {
+        TestResult result = TestResult.fromHttpCode(new ApiDefinition(), 200, "{\"code\":500}", 12);
+        result.setErrorMessage("字段 [code]=500 不在白名单 [200] 中");
+        result.setStatus(TestStatus.FAILED);
+        assertFalse(result.isPassed());
+        assertTrue(result.summary().contains("字段 [code]=500"));
+    }
+
+    @Test
+    void fieldValueRuleRejectsCode500WhenOnly200IsAllowed() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.FIELD_VALUE,
+                "code", List.of("200"), true);
+        ExceptionRuleEvaluator.Result evaluated = ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 200, "{\"code\":500}");
+        assertFalse(evaluated.isPassed());
+        assertTrue(evaluated.reason().toLowerCase().contains("code"));
+        assertTrue(evaluated.reason().contains("500"));
+    }
+
+    @Test
+    void disabledFieldValueRuleDoesNotRejectResponse() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.FIELD_VALUE,
+                "code", List.of("200"), false);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":500}").isPassed());
     }
 }

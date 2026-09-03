@@ -1986,8 +1986,10 @@ public class ApiDebuggerPanel extends JPanel {
         result.setTimestamp(history.getTimestamp());
         String historyError = history.getErrorMessage();
         result.setErrorMessage(historyError);
-        result.setStatus(historyError != null && !historyError.isBlank() && history.getStatusCode() == 0
-                ? TestStatus.ERROR
+        // 历史记录中的 errorMessage 既可能来自网络异常，也可能来自 HTTP 200
+        // 下的业务规则/断言失败；只要存在错误描述就不能仅按 HTTP 2xx 判定为通过。
+        result.setStatus(historyError != null && !historyError.isBlank()
+                ? (history.getStatusCode() == 0 ? TestStatus.ERROR : TestStatus.FAILED)
                 : history.getStatusCode() >= 200 && history.getStatusCode() < 300
                 ? TestStatus.PASSED : TestStatus.FAILED);
         return result;
@@ -2168,11 +2170,15 @@ public class ApiDebuggerPanel extends JPanel {
         int size = result.getResponseBody() == null ? 0 : result.getResponseBody().length();
 
         // v3.0：状态徽章用 UiStyle 语义色 + 圆角徽章（统一设计 token，去掉 raw hex）
-        JBColor sc = statusColor(code);
+        boolean resultPassed = result.getStatus() == TestStatus.PASSED;
+        JBColor sc = resultPassed
+                ? statusColor(code)
+                : new JBColor(new Color(0xC62828), new Color(0xEF5350));
         String scHex = String.format("#%02X%02X%02X", sc.getRGB() & 0xFF, (sc.getRGB() >> 8) & 0xFF, (sc.getRGB() >> 16) & 0xFF);
         responseStatusLabel.setText("<html><span style='background-color:" + scHex
                 + ";color:white;padding:2px 8px;border-radius:4px;font-weight:bold;'>"
-                + statusGlyph(code) + " " + code + " " + httpStatusText(code)
+                + (resultPassed ? "✓" : "✗") + " " + code + " "
+                + httpStatusText(code) + (resultPassed ? "" : " · 失败")
                 + "</span></html>");
 
         // 耗时：色码 + 数值 + 分级标签（v3.0：标签与数值用同一基色，色盲友好）
@@ -2642,7 +2648,7 @@ public class ApiDebuggerPanel extends JPanel {
                     resultJson.put("response", null);
                 }
                 
-                if (r.getStatus() == TestStatus.ERROR && !r.getErrorMessage().isEmpty()) {
+                if (r.getErrorMessage() != null && !r.getErrorMessage().isBlank()) {
                     resultJson.put("error", r.getErrorMessage());
                 }
                 
@@ -2651,7 +2657,10 @@ public class ApiDebuggerPanel extends JPanel {
                 testResultArea.setCaretPosition(0);
                 
                 String statusIcon = r.isPassed() ? "✅" : "❌";
-                statusLabel.setText(statusIcon + " 测试完成: " + currentApi.getName() + " (" + r.getStatusCode() + ", " + r.getDurationMs() + "ms)");
+                String reason = r.getErrorMessage() == null || r.getErrorMessage().isBlank()
+                        ? "" : " · " + r.getErrorMessage();
+                statusLabel.setText(statusIcon + " 测试完成: " + currentApi.getName() + " ("
+                        + r.getStatusCode() + ", " + r.getDurationMs() + "ms)" + reason);
             });
         });
     }
@@ -3986,13 +3995,17 @@ public class ApiDebuggerPanel extends JPanel {
                 + escapeHtml(h.getUrl()) + " · <b>" + h.getStatusCode() + "</b> · "
                 + h.getDurationMs() + " ms · "
                 + (h.getResponseBody() == null ? 0 : h.getResponseBody().length()) + " B</html>");
-        // 状态码着色：2xx 绿、3xx 蓝、4xx/5xx 红
-        if (h.getStatusCode() >= 200 && h.getStatusCode() < 300) {
+        // 状态码着色：业务规则失败（即使 HTTP 200）也必须按失败显示红色。
+        boolean historyPassed = (h.getErrorMessage() == null || h.getErrorMessage().isBlank())
+                && h.getStatusCode() >= 200 && h.getStatusCode() < 300;
+        if (historyPassed) {
             summary.setForeground(new JBColor(0x2E7D32, 0x66BB6A));
         } else if (h.getStatusCode() >= 400) {
             summary.setForeground(new JBColor(0xC62828, 0xEF5350));
-        } else if (h.getStatusCode() >= 300) {
+        } else if (h.getStatusCode() >= 300 && h.getStatusCode() < 400) {
             summary.setForeground(new JBColor(0x1565C0, 0x42A5F5));
+        } else {
+            summary.setForeground(new JBColor(0xC62828, 0xEF5350));
         }
         content.add(summary, BorderLayout.NORTH);
 
@@ -4052,7 +4065,9 @@ public class ApiDebuggerPanel extends JPanel {
                                                        boolean isSelected, boolean cellHasFocus) {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             if (value instanceof RequestHistory h) {
-                String color = h.getStatusCode() >= 200 && h.getStatusCode() < 300 ? "#2E7D32" : "#C62828";
+                boolean passed = (h.getErrorMessage() == null || h.getErrorMessage().isBlank())
+                        && h.getStatusCode() >= 200 && h.getStatusCode() < 300;
+                String color = passed ? "#2E7D32" : "#C62828";
                 setText(String.format("<html><span style='color:%s;font-weight:bold'>[%s]</span> %d <span style='color:#666'>(%dms)</span> %s - %s</html>",
                         color, h.getMethod(), h.getStatusCode(), h.getDurationMs(),
                         h.timeDisplay(),
@@ -4096,6 +4111,21 @@ public class ApiDebuggerPanel extends JPanel {
         if (currentApi != null && result.getApiDefinition().uniqueKey().equals(currentApi.uniqueKey())) {
             currentApi.incrementCallCount();
             RestAutoLabSettingsState.getInstance(project).recordApiCall(currentApi.uniqueKey());
+
+            // 收藏视图下，单接口发送/测试也要复用批量测试的状态持久化链路。
+            // 这样异常自定义规则（例如 body.code=500）失败时，收藏树会立即标红，
+            // 且状态在重新打开项目后仍可恢复。
+            if (currentFolderId != null) {
+                FolderApiStatus status = new FolderApiStatus();
+                status.setPassed(result.getStatus() == TestStatus.PASSED);
+                status.setStatusCode(result.getStatusCode());
+                status.setMessage(status.isPassed() ? "通过" : failureMessage(result));
+                status.setManuallyCleared(false);
+                status.setTestedAt(System.currentTimeMillis());
+                StarredFolderService.getInstance(project).setStatus(
+                        currentFolderId, currentApi.uniqueKey(), status);
+                if (treePanel != null) treePanel.refreshStarredView();
+            }
         }
 
         lastResult = result;
@@ -4104,6 +4134,15 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 更新断言结果
         updateAssertionResults(result);
+    }
+
+    /** 优先展示断言/异常规则给出的具体原因，HTTP 状态码仅作为兜底。 */
+    private String failureMessage(TestResult result) {
+        if (result != null && result.getErrorMessage() != null
+                && !result.getErrorMessage().isBlank()) {
+            return result.getErrorMessage();
+        }
+        return "未通过 HTTP " + (result == null ? "-" : result.getStatusCode());
     }
 
     private void persistHistory() {
@@ -4562,14 +4601,13 @@ public class ApiDebuggerPanel extends JPanel {
         // 一伦优化 R5：AI 配置面板无「保存」按钮 —— 保存由 dialog 的 OK 按钮统一触发。
         // 弹出嵌入 Tab 时先把 panel 构造出来，捕获引用，再注册 onCommit 回调：
         //   用户点 OK → dialog.doOKAction() → envDialog.applyChanges() + onCommit 列表 → aiPanel.commit()。
-        // 注意：commit() 失败（字段校验不通过）会 return false，但当前 DialogWrapper 不能"拒绝关闭"，
-        // 因此 AI 配置字段校验失败时仍会关闭弹窗 —— 这是与"环境&数据"合并弹窗的常见妥协；
-        // 用户可在关闭前看到「自部署模型网关地址不能为空」等弹错提示。
+        // 注意：AI 配置仍通过 onCommit 保存；异常自定义规则另行注册 commitValidator，
+        // 校验失败时会保留弹窗，避免无效规则被提交。
         AiConfigPanel aiPanel = createAiConfigPanel(null);
         dialog.addTab("AI 配置", AllIcons.Actions.Lightning, aiPanel,
                 "自部署模型网关、API Key、模型与提示词（由 OK 按钮统一保存）");
         dialog.addOnCommit(() -> {
-            // commit() 内部已做校验（失败弹错），即便失败也已执行 onAfterSaved=null 的逻辑
+            // AI 配置 commit() 内部已做校验并负责提示；异常规则由前置 validator 统一校验。
             aiPanel.commit();
         });
 
@@ -4579,7 +4617,9 @@ public class ApiDebuggerPanel extends JPanel {
                 new ExceptionRulesDialog.ExceptionRulesPanel(project);
         dialog.addTab("异常自定义", AllIcons.Actions.IntentionBulb, exceptionRulesPanel,
                 "配置全局异常规则：HTTP 状态码白名单 + JSON 字段白名单，对项目内所有接口生效");
-        dialog.addOnCommit(exceptionRulesPanel::commit);
+        // 保存前校验：规则无效时阻止“应用/确定”关闭弹窗；校验通过时 commitRules
+        // 同时完成持久化，保证从嵌入 Tab 保存与面板内“保存规则”按钮语义一致。
+        dialog.addCommitValidator(exceptionRulesPanel::commitRules);
 
         // 一伦优化 R7（重做）：从弹窗菜单点「异常自定义」时，落到该 Tab 上而非默认「环境」。
         if (pendingExceptionRulesFocus) {

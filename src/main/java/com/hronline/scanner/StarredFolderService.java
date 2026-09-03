@@ -3,6 +3,7 @@ package com.hronline.scanner;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.FolderApiStatus;
 import com.hronline.model.StarredFolder;
+import com.hronline.chain.ApiDependency;
 import com.hronline.settings.RestAutoLabSettingsState;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
@@ -49,6 +50,56 @@ public final class StarredFolderService {
     /** 加载全部文件夹（保证「未分类」在首位） */
     public List<StarredFolder> loadFolders() {
         return settings().loadStarredFolders();
+    }
+
+    /**
+     * 加载指定收藏文件夹的依赖设置。返回深拷贝，调用方可以安全编辑后再保存。
+     */
+    @NotNull
+    public List<ApiDependency> getDependencies(String folderId) {
+        if (folderId == null || folderId.isBlank()) return new ArrayList<>();
+        List<ApiDependency> stored = settings().loadStarredFolderDependencies().get(folderId);
+        return copyDependencies(stored);
+    }
+
+    /** 是否已经为文件夹保存过依赖设置（可区分“首次打开”和用户主动清空）。 */
+    public boolean hasDependencies(String folderId) {
+        if (folderId == null || folderId.isBlank()) return false;
+        return settings().loadStarredFolderDependencies().containsKey(folderId);
+    }
+
+    /**
+     * 保存指定收藏文件夹的依赖设置。
+     *
+     * <p>即使列表为空也保留该文件夹的配置键：空列表可能是用户明确删除全部
+     * 依赖后的结果，不能在下次打开时被误判为“从未设置”并重新生成顺序依赖。</p>
+     */
+    public void saveDependencies(String folderId, List<ApiDependency> dependencies) {
+        if (folderId == null || folderId.isBlank()) return;
+        Map<String, List<ApiDependency>> all = settings().loadStarredFolderDependencies();
+        List<ApiDependency> copy = copyDependencies(dependencies);
+        all.put(folderId, copy);
+        settings().saveStarredFolderDependencies(all);
+    }
+
+    private static List<ApiDependency> copyDependencies(List<ApiDependency> source) {
+        List<ApiDependency> result = new ArrayList<>();
+        if (source == null) return result;
+        for (ApiDependency dep : source) {
+            if (dep == null) continue;
+            ApiDependency copy = new ApiDependency(dep.getProducerKey(), dep.getConsumerKey(), dep.getDetectionType());
+            if (dep.getMappings() != null) {
+                for (ApiDependency.ValueMapping mapping : dep.getMappings()) {
+                    if (mapping != null) {
+                        copy.getMappings().add(new ApiDependency.ValueMapping(
+                                mapping.getSourcePath(), mapping.getTargetParam()));
+                    }
+                }
+            }
+            // 无映射的依赖边也要保留：它表达文件夹接口顺序，后续可由用户补充字段映射。
+            result.add(copy);
+        }
+        return result;
     }
 
     /** 新建顶层文件夹，返回新文件夹 id */
@@ -215,6 +266,7 @@ public final class StarredFolderService {
                     removeParamsAndStatus(folderId, apiKey);
                     settings().saveStarredFolders(folders);
                     syncStarredSet(folders);
+                    removeDependenciesForApiOutsideSubtrees(apiKey, folders);
                 }
                 return removed;
             }
@@ -251,6 +303,9 @@ public final class StarredFolderService {
         settings().saveStarredFolders(folders);
         settings().saveFolderApiParams(params);
         syncStarredSet(folders);
+        // 依赖关系按文件夹（含子文件夹）保存；只清理接口已不再属于其子树的配置，
+        // 目标文件夹已有的独立设置以及仍包含该接口的父级配置保持不变。
+        removeDependenciesForApiOutsideSubtrees(apiKey, folders);
         return true;
     }
 
@@ -310,6 +365,7 @@ public final class StarredFolderService {
             removeAllParamsAndStatusForApi(apiKey);
             settings().saveStarredFolders(folders);
             syncStarredSet(folders);
+            removeDependenciesForApiOutsideSubtrees(apiKey, folders);
         }
         return changed;
     }
@@ -670,6 +726,46 @@ public final class StarredFolderService {
         Map<String, String> bodies = settings().loadFolderApiBodies();
         bodies.keySet().removeIf(k -> k.startsWith(prefix));
         settings().saveFolderApiBodies(bodies);
+        Map<String, List<ApiDependency>> dependencies = settings().loadStarredFolderDependencies();
+        if (dependencies.remove(folderId) != null) settings().saveStarredFolderDependencies(dependencies);
+    }
+
+    /**
+     * 只清理不再包含该接口的文件夹子树配置。依赖设置可能在父文件夹上保存，
+     * 因而不能只按直接 folderId 删除；同时也不能把接口在其他文件夹中的配置误删。
+     */
+    private void removeDependenciesForApiOutsideSubtrees(String apiKey, List<StarredFolder> folders) {
+        if (apiKey == null || apiKey.isBlank() || folders == null) return;
+        Map<String, List<ApiDependency>> all = settings().loadStarredFolderDependencies();
+        if (all.isEmpty()) return;
+
+        Map<String, StarredFolder> byId = new HashMap<>();
+        for (StarredFolder folder : folders) {
+            if (folder != null && folder.getId() != null) byId.put(folder.getId(), folder);
+        }
+        boolean changed = false;
+        for (Map.Entry<String, List<ApiDependency>> entry : all.entrySet()) {
+            StarredFolder configFolder = byId.get(entry.getKey());
+            if (configFolder == null || !subtreeContainsApi(folders, configFolder.getId(), apiKey)) {
+                List<ApiDependency> deps = entry.getValue();
+                if (deps == null || deps.isEmpty()) continue;
+                int before = deps.size();
+                deps.removeIf(dep -> dep == null
+                        || apiKey.equals(dep.getProducerKey())
+                        || apiKey.equals(dep.getConsumerKey()));
+                if (deps.size() != before) changed = true;
+            }
+        }
+        if (changed) settings().saveStarredFolderDependencies(all);
+    }
+
+    private boolean subtreeContainsApi(List<StarredFolder> folders, String folderId, String apiKey) {
+        Set<String> subtreeIds = new HashSet<>(collectSubtreeIds(folders, folderId));
+        for (StarredFolder folder : folders) {
+            if (folder != null && subtreeIds.contains(folder.getId())
+                    && folder.getApiKeys().contains(apiKey)) return true;
+        }
+        return false;
     }
 
     private void removeAllParamsAndStatusForApi(String apiKey) {
