@@ -103,9 +103,11 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
     /** 收藏视图右上角的一键折叠按钮 */
     private JButton collapseAllFoldersButton;
-    // #83：原 toggle 按钮（点一下切收起/再点一下切展开）图标一变，用户就找不到
-    // "一键展开"入口了。拆成两个独立按钮 + 各自 tooltip，固定可见，零歧义。
-    private JButton expandAllFoldersButton;
+    // #83 v2：合并成一个 SplitButton（主按钮 28x28 + 紧贴的小下拉箭头 14x28，视觉上是
+    // 一个复合组件）。主按钮 = toggle 行为（按当前状态智能执行收起或展开），下拉箭头
+    // = 弹出菜单让用户强制选「一键收起 / 一键展开」。这是 IntelliJ 工具栏通用模式
+    // （Run / Save / Compare 按钮都这么做）。
+    private JButton expandCollapseDropdownButton;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
@@ -656,18 +658,43 @@ public class ApiTreePanel extends JPanel {
         // 弹性空白把收藏视图操作推到右上角。
         row.add(Box.createHorizontalGlue());
 
+        // #83 v2：SplitButton —— 主按钮 + 紧贴下拉箭头，两者无视觉间隙，视觉上是单一组件。
+        // 主按钮执行 toggle（按当前状态智能切换收起/展开），下拉箭头固定向下三角，
+        // 弹出菜单让用户强制选「收起 / 展开」。
         collapseAllFoldersButton = new JButton(AllIcons.Actions.Collapseall);
-        styleToolbarIconButton(collapseAllFoldersButton, "一键收起所有文件夹");
-        collapseAllFoldersButton.addActionListener(e -> collapseAllFolderNodes());
-        row.add(collapseAllFoldersButton);
+        // tooltip 双行同时显示两个动作，避免图标切换造成的歧义（用户 hover 就知道两个都有）
+        collapseAllFoldersButton.setToolTipText(
+                "<html>一键收起所有文件夹<br/>一键展开所有文件夹</html>");
+        collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起或展开所有文件夹");
+        styleToolbarIconButton(collapseAllFoldersButton, "一键收起所有文件夹 / 一键展开所有文件夹");
+        collapseAllFoldersButton.setPreferredSize(new Dimension(28, 28));
+        collapseAllFoldersButton.setMinimumSize(new Dimension(28, 28));
+        collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
+        collapseAllFoldersButton.addActionListener(e -> toggleAllFolderNodes());
 
-        // #83：紧跟收起按钮的"一键展开"，两者图标 + tooltip 都固定，用户
-        // 不会因为图标切换而找不到入口。
-        expandAllFoldersButton = new JButton(AllIcons.Actions.Expandall);
-        styleToolbarIconButton(expandAllFoldersButton, "一键展开所有文件夹");
-        expandAllFoldersButton.addActionListener(e -> expandAllFolderNodesFromToolbar());
-        row.add(expandAllFoldersButton);
-        // 按钮之间留 4px 呼吸，跟左侧分类按钮基线一致
+        expandCollapseDropdownButton = new JButton(new DownTriangleIcon());
+        expandCollapseDropdownButton.setToolTipText("选择收起或展开所有文件夹");
+        expandCollapseDropdownButton.getAccessibleContext().setAccessibleName("选择收起或展开所有文件夹");
+        styleToolbarIconButton(expandCollapseDropdownButton, "选择收起或展开所有文件夹");
+        // 下拉箭头按钮窄一点，紧贴主按钮
+        expandCollapseDropdownButton.setPreferredSize(new Dimension(14, 28));
+        expandCollapseDropdownButton.setMinimumSize(new Dimension(14, 28));
+        expandCollapseDropdownButton.setMaximumSize(new Dimension(14, 28));
+        expandCollapseDropdownButton.addActionListener(e ->
+                showCollapseExpandMenu(expandCollapseDropdownButton));
+
+        // 关键 —— 两个按钮 BoxLayout 紧贴放一起，setAlignmentY 都是居中，视觉上是单一组件
+        JPanel splitGroup = new JPanel();
+        splitGroup.setLayout(new BoxLayout(splitGroup, BoxLayout.X_AXIS));
+        splitGroup.setOpaque(false);
+        collapseAllFoldersButton.setAlignmentY(Component.CENTER_ALIGNMENT);
+        expandCollapseDropdownButton.setAlignmentY(Component.CENTER_ALIGNMENT);
+        splitGroup.add(collapseAllFoldersButton);
+        splitGroup.add(expandCollapseDropdownButton);
+        // SplitGroup 自身在 row 里按 left-align
+        splitGroup.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(splitGroup);
+        // 与左侧分类按钮基线之间留 4px 呼吸
         row.add(Box.createHorizontalStrut(4));
         updateExpandCollapseButtons();
 
@@ -675,19 +702,75 @@ public class ApiTreePanel extends JPanel {
     }
 
     private void updateExpandCollapseButtons() {
-        // #83：两个独立按钮只控制可见性 + enabled，图标/tooltip 不再切换
-        if (collapseAllFoldersButton == null || expandAllFoldersButton == null) return;
+        // #83 v2：SplitButton 主体只控制可见性 + enabled，主按钮图标根据「当前是否全部展开」
+        // 切换 Collapseall ↔ Expandall，hover tooltip 双行说明让用户知道两个动作都有。
+        if (collapseAllFoldersButton == null || expandCollapseDropdownButton == null) return;
         boolean starred = FILTER_STARRED.equals(currentFilter);
         boolean hasContent = starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
                 && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
         collapseAllFoldersButton.setVisible(starred);
-        expandAllFoldersButton.setVisible(starred);
+        expandCollapseDropdownButton.setVisible(starred);
         collapseAllFoldersButton.setEnabled(hasContent);
-        expandAllFoldersButton.setEnabled(hasContent);
-        if (collapseAllFoldersButton.getParent() != null) {
-            collapseAllFoldersButton.getParent().revalidate();
-            collapseAllFoldersButton.getParent().repaint();
+        expandCollapseDropdownButton.setEnabled(hasContent);
+        if (hasContent) {
+            boolean expanded = areAllFolderNodesExpanded((DefaultMutableTreeNode) treeModel.getRoot());
+            collapseAllFoldersButton.setIcon(expanded
+                    ? AllIcons.Actions.Collapseall : AllIcons.Actions.Expandall);
         }
+        Container parent = collapseAllFoldersButton.getParent();
+        if (parent != null) {
+            parent.revalidate();
+            parent.repaint();
+        }
+    }
+
+    /**
+     * #83 v2：SplitButton 下拉箭头菜单 —— 让用户可以强制选「收起」还是「展开」，
+     * 不必依赖主按钮的智能 toggle。两个菜单项用图标 + 文本，互斥可选。
+     */
+    private void showCollapseExpandMenu(JComponent anchor) {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        boolean hasContent = treeModel.getRoot() instanceof DefaultMutableTreeNode
+                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
+        if (!hasContent) return;
+
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem collapse = new JMenuItem("一键收起所有文件夹", AllIcons.Actions.Collapseall);
+        collapse.addActionListener(e -> collapseAllFolderNodes());
+        JMenuItem expand = new JMenuItem("一键展开所有文件夹", AllIcons.Actions.Expandall);
+        expand.addActionListener(e -> expandAllFolderNodesFromToolbar());
+        menu.add(collapse);
+        menu.add(expand);
+        menu.show(anchor, 0, anchor.getHeight());
+    }
+
+    /**
+     * #83 v2：自绘的小下三角箭头图标 —— 跟主按钮无视觉间隙紧贴成组。
+     * Swing 的 BasicArrowButton 在 IntelliJ LaF 下渲染不协调，自绘最稳。
+     */
+    private static final class DownTriangleIcon implements javax.swing.Icon {
+        @Override public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                // 颜色跟主按钮一致：hover/selected 状态取前景，否则用半透明灰
+                Color fg = c.isEnabled()
+                        ? (c.getForeground() != null ? c.getForeground() : UIManager.getColor("Label.foreground"))
+                        : UIManager.getColor("Label.disabledForeground");
+                if (fg == null) fg = new JBColor(new Color(0x66, 0x66, 0x66), new Color(0xAA, 0xAA, 0xAA));
+                g2.setColor(fg);
+                // 居中画一个小三角（4px 边长）
+                int cx = x + getIconWidth() / 2;
+                int cy = y + getIconHeight() / 2 - 1;
+                int[] xs = {cx - 3, cx + 3, cx};
+                int[] ys = {cy - 2, cy - 2, cy + 2};
+                g2.fillPolygon(xs, ys, 3);
+            } finally {
+                g2.dispose();
+            }
+        }
+        @Override public int getIconWidth() { return 10; }
+        @Override public int getIconHeight() { return 10; }
     }
 
     /**
@@ -1059,8 +1142,7 @@ public class ApiTreePanel extends JPanel {
         final String folderId;
         /** 渲染时使用的测试状态快照（buildStarredTree 时填充，渲染器无 project 故用字段传递） */
         FolderApiStatus status;
-        /** 是否已配置测试参数（buildStarredTree 时填充，渲染器据此显示参数标记） */
-        boolean hasParams;
+        // #85：移除 hasParams 字段（不再渲染 [参数] 标识）
         StarredApiNode(ApiDefinition api, String folderId) { this.api = api; this.folderId = folderId; }
         public String toString() { return api.getHttpMethod() + " " + api.getUrl(); }
     }
@@ -1140,8 +1222,6 @@ public class ApiTreePanel extends JPanel {
             FolderApiStatus st = folderService.getStatus(folder.getId(), apiKey);
             StarredApiNode sNode = new StarredApiNode(api, folder.getId());
             sNode.status = st;
-            Map<String, String> savedParams = folderService.getParams(folder.getId(), apiKey);
-            sNode.hasParams = savedParams != null && !savedParams.isEmpty();
             folderNode.add(new DefaultMutableTreeNode(sNode));
             counters[1]++;
             if (st.shouldHighlightRed()) counters[2]++;
@@ -1187,6 +1267,19 @@ public class ApiTreePanel extends JPanel {
             if (!areAllFolderNodesExpanded(child)) return false;
         }
         return true;
+    }
+
+    /** #83 v2：SplitButton 主按钮的 toggle 行为 —— 按当前状态决定执行收起还是展开。
+     *  下拉箭头按钮负责强制菜单，两个入口都保留：主按钮点一下智能完成，下拉箭头选具体动作。 */
+    private void toggleAllFolderNodes() {
+        if (!FILTER_STARRED.equals(currentFilter)) return;
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        if (areAllFolderNodesExpanded(root)) {
+            collapseAllFolderNodes();
+        } else {
+            expandAllFolderNodesFromToolbar();
+        }
     }
 
     /** v2.2 一键展开收藏视图中的所有文件夹（工具栏按钮入口）。
@@ -3135,11 +3228,7 @@ public class ApiTreePanel extends JPanel {
             } else if (green) {
                 text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#2E7D32").append(";font-size:10px;'>✓</span>");
             }
-            // 已配置参数标记（蓝色小标签），让用户直观看到参数已持久化
-            if (node.hasParams) {
-                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#1565C0")
-                        .append(";font-size:9px;'>[参数]</span>");
-            }
+            // #85：去掉 [参数] 小标签，只留 ✗/✓ 状态标识
             setText(text.append("</html>").toString());
             setIcon(AllIcons.Nodes.Plugin);
             if (!sel) {
@@ -3188,9 +3277,7 @@ public class ApiTreePanel extends JPanel {
                         + "</span>&nbsp;<span style='color:" + manualColor + "; font-size:11px;'>"
                         + escapeHtml(url) + " \u270b</span>";
                 if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
-                if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) {
-                    text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#2E7D32") + ";'>● 新增</span>";
-                }
+                // #85：去掉「● 新增」标识
                 if (description != null && !description.isBlank()) {
                     text += "&nbsp;<span style='color:" + manualColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
                 }
@@ -3207,9 +3294,7 @@ public class ApiTreePanel extends JPanel {
                     + "</span>&nbsp;<span style='color:" + textColor + "; font-size:11px;'>"
                     + escapeHtml(url) + "</span>";
             if (isStarred) text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#FFA000") + ";'>★</span>";
-            if (RestAutoLabConstants.CHANGE_ADDED.equals(changeMarker)) {
-                text += " <span style='color:" + (sel ? toHex(selectionForeground()) : "#2E7D32") + ";font-size:10px;'>● 新增</span>";
-            }
+            // #85：去掉「● 新增」标识
             if (description != null && !description.isBlank()) {
                 text += "&nbsp;<span style='color:" + textColor + "; font-size:10px;'><i>" + escapeHtml(description) + "</i></span>";
             }
