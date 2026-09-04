@@ -121,12 +121,14 @@ public class DependencyGraphDialog extends DialogWrapper {
         orderList.setCellRenderer(new OrderListCellRenderer());
         orderList.setFocusable(false);
         orderList.setVisibleRowCount(Math.min(4, Math.max(1, orderModel.size())));
-        orderList.setFixedCellHeight(28);
+        orderList.setFixedCellHeight(30);
         orderList.setBorder(JBUI.Borders.empty(2, 4));
+        // 主题感知底色：light = Panel.background / dark = 自动切换
         orderList.setBackground(JBColor.namedColor("Panel.background", new Color(0xFA, 0xFB, 0xFC)));
         JBScrollPane orderScroll = new JBScrollPane(orderList);
-        orderScroll.setBorder(BorderFactory.createTitledBorder("收藏夹接口顺序"));
-        orderScroll.setPreferredSize(JBUI.size(820, orderModel.isEmpty() ? 48 : 108));
+        orderScroll.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "收藏夹接口顺序"));
+        orderScroll.setPreferredSize(JBUI.size(820, orderModel.isEmpty() ? 56 : 118));
         top.add(orderScroll, BorderLayout.CENTER);
         panel.add(top, BorderLayout.NORTH);
 
@@ -524,18 +526,22 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * #80：「收藏夹接口顺序」JList 的行渲染器 —— 序号 + 方法徽章 + URL，
-     * 徽章颜色按 HTTP method 走主题色（GET 绿 / POST 蓝 / PUT 橙 / DELETE 红 / PATCH 紫），
-     * 偶数行加极淡的灰底增强可读性，长 URL 截断保留完整 tooltip。
+     * #82：「收藏夹接口顺序」JList 的行渲染器 —— 序号 + 方法徽章 + URL，
+     * 全部颜色走主题感知：徽章用 {@link RestAutoLabConstants#colorForMethod}
+     * 给的主题色（light/dark 都跟 IDE LaF 协调），URL 文字色取 list 的
+     * 前景色（选中态走 selectionForeground），不再硬编码 #222222 —— dark theme
+     * 下黑字白底就完全看不见了。
      */
     static final class OrderListCellRenderer extends JBLabel implements ListCellRenderer<ApiDefinition> {
-        // 奇偶行底色 + 选中行底色。统一走 JBColor 主题感知。
-        private static final Color EVEN_BG = new Color(0xFA, 0xFB, 0xFC);
-        private static final Color ODD_BG = new Color(0xF2, 0xF4, 0xF7);
+        // 主题感知行底色：light = 极淡蓝白 / dark = 比 panel 深一档的灰
+        private static final JBColor EVEN_BG = new JBColor(new Color(0xFA, 0xFB, 0xFC), new Color(0x2B, 0x2D, 0x30));
+        private static final JBColor ODD_BG = new JBColor(new Color(0xF2, 0xF4, 0xF7), new Color(0x31, 0x33, 0x36));
+        // 序号列的灰色：light #888 / dark 中等亮度的灰
+        private static final JBColor INDEX_FG = new JBColor(new Color(0x88, 0x88, 0x88), new Color(0x9A, 0x9A, 0x9A));
 
         OrderListCellRenderer() {
             setOpaque(true);
-            setBorder(JBUI.Borders.empty(4, 8));
+            setBorder(JBUI.Borders.empty(5, 10));
         }
 
         @Override
@@ -552,27 +558,29 @@ public class DependencyGraphDialog extends DialogWrapper {
             int query = url.indexOf('?');
             if (query >= 0) url = url.substring(0, query);
             while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
+
+            // 文字色跟 list 主题走：选中→白（蓝底），未选中→默认前景（dark/light 自动切换）
+            Color urlColor = isSelected ? list.getSelectionForeground() : list.getForeground();
+            String urlHex = String.format("#%02x%02x%02x", urlColor.getRed(), urlColor.getGreen(), urlColor.getBlue());
+            String indexHex = String.format("#%02x%02x%02x", INDEX_FG.getRed(), INDEX_FG.getGreen(), INDEX_FG.getBlue());
+
+            // 徽章：主题色背景 + 白字（所有 HTTP method 色都够深，白字都看得清）
             JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
             String methodHex = String.format("#%02x%02x%02x",
                     methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
-            // 序号 1-based，灰色窄列
-            // 徽章用等宽字体 + 加粗 + 主题色背景浅色字（白底主题色），跨主题可读
-            String bg = String.format("#%02x%02x%02x",
-                    Math.min(255, methodColor.getRed() + 60),
-                    Math.min(255, methodColor.getGreen() + 60),
-                    Math.min(255, methodColor.getBlue() + 60));
+
             setText("<html>"
-                    + "<span style='color:#888;width:18px;display:inline-block;'>" + (index + 1) + ".</span> "
+                    + "<span style='color:" + indexHex + ";width:22px;display:inline-block;'>" + (index + 1) + ".</span> "
                     + "<span style='background-color:" + methodHex
-                    + ";color:#FFFFFF;padding:1px 6px;border-radius:3px;font-weight:bold;font-size:10px;'>"
-                    + (method.isBlank() ? "API" : method)
+                    + ";color:#FFFFFF;padding:1px 7px;border-radius:3px;font-weight:bold;font-size:11px;font-family:monospace;'>"
+                    + (method.isBlank() ? "API" : escapeHtml(method))
                     + "</span> "
-                    + "<span style='color:" + (isSelected ? "#FFFFFF" : "#222222") + ";'>"
+                    + "<span style='color:" + urlHex + ";'>"
                     + escapeHtml(url)
                     + "</span>"
                     + "</html>");
             setToolTipText(method + " " + url);
-            // 选中态用主题色，偶数行浅灰，奇数行更浅
+            // 选中态用 LaF 主题色，偶数行浅灰，奇数行更浅
             if (isSelected) {
                 setBackground(list.getSelectionBackground());
                 setForeground(list.getSelectionForeground());
@@ -586,14 +594,18 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * #80：依赖表格里上游/下游接口列的自定义渲染器。沿用 JTextArea 换行（应对超长 URL），
-     * 文本前面加方法徽章，颜色跟 OrderListCellRenderer 保持一致。
+     * #82：依赖表格里上游/下游接口列的自定义渲染器。沿用 JTextArea 换行（应对超长 URL），
+     * 文本前面加方法徽章，颜色跟 OrderListCellRenderer 保持一致 —— 全部走主题感知，
+     * 选中态用 selectionForeground，未选中用 table.foreground，dark theme 下不再黑字黑底。
      * <p>value 是 {@code labelByKey.get(key)}（如 "GET /admin/foo"），需要先把 method
      * 切出来再渲染；空串 / "(无依赖)" 占位走 fallback 分支，不强行套徽章。</p>
      */
     static final class ApiColumnRenderer extends JTextArea implements TableCellRenderer {
-        private static final Color EVEN_BG = new Color(0xFA, 0xFB, 0xFC);
-        private static final Color ODD_BG = new Color(0xF2, 0xF4, 0xF7);
+        // 主题感知行底色：light 极淡蓝白 / dark 比 table 默认底色深一档，区分交替行
+        private static final JBColor EVEN_BG = new JBColor(new Color(0xFA, 0xFB, 0xFC), new Color(0x2B, 0x2D, 0x30));
+        private static final JBColor ODD_BG = new JBColor(new Color(0xF2, 0xF4, 0xF7), new Color(0x31, 0x33, 0x36));
+        // 占位灰（"无依赖"/"—"/unknown）：light 中等灰 / dark 中等亮度的灰
+        private static final JBColor PLACEHOLDER_FG = new JBColor(new Color(0x66, 0x66, 0x66), new Color(0x99, 0x99, 0x99));
 
         ApiColumnRenderer() {
             setLineWrap(true);
@@ -601,7 +613,7 @@ public class DependencyGraphDialog extends DialogWrapper {
             setOpaque(true);
             setEditable(false);
             setFocusable(false);
-            setBorder(JBUI.Borders.empty(6, 8));
+            setBorder(JBUI.Borders.empty(6, 10));
             setMargin(JBUI.insets(2, 4));
         }
 
@@ -626,27 +638,33 @@ public class DependencyGraphDialog extends DialogWrapper {
                 }
             }
 
-            JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
-            String methodHex = String.format("#%02x%02x%02x",
-                    methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
+            // 文字色：选中→白，未选中→table 主题前景（dark/light 自动适配）
+            Color urlColor = isSelected ? table.getSelectionForeground() : table.getForeground();
+            String urlHex = String.format("#%02x%02x%02x", urlColor.getRed(), urlColor.getGreen(), urlColor.getBlue());
+            String placeholderHex = String.format("#%02x%02x%02x",
+                    PLACEHOLDER_FG.getRed(), PLACEHOLDER_FG.getGreen(), PLACEHOLDER_FG.getBlue());
 
             String prefix;
             if (method.isBlank()) {
-                prefix = "<span style='color:" + (isSelected ? "#FFFFFF" : "#666666") + ";'>";
+                // 占位（空串 / "(无依赖)" / 未知接口）：灰字 + italic，让用户一眼看出"这不是真接口"
+                prefix = "<span style='color:" + (isSelected ? urlHex : placeholderHex)
+                        + ";font-style:" + (raw.isBlank() ? "italic" : "normal") + ";'>";
                 StringBuilder html = new StringBuilder("<html>").append(prefix)
                         .append(escapeHtml(raw.isBlank() ? "—" : raw))
                         .append("</span></html>");
                 setText(html.toString());
             } else {
-                String fg = isSelected ? "#FFFFFF" : "#222222";
+                JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
+                String methodHex = String.format("#%02x%02x%02x",
+                        methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
                 prefix = "<span style='background-color:" + methodHex
-                        + ";color:#FFFFFF;padding:1px 6px;border-radius:3px;font-weight:bold;font-size:10px;'>"
+                        + ";color:#FFFFFF;padding:1px 7px;border-radius:3px;font-weight:bold;font-size:11px;font-family:monospace;'>"
                         + escapeHtml(method) + "</span> "
-                        + "<span style='color:" + fg + ";'>" + escapeHtml(body) + "</span>";
+                        + "<span style='color:" + urlHex + ";'>" + escapeHtml(body) + "</span>";
                 setText("<html>" + prefix + "</html>");
             }
             setFont(table.getFont());
-            // 选中态用主题色，奇偶行交替灰底
+            // 选中态用 LaF 主题色，奇偶行交替灰底
             if (isSelected) {
                 setBackground(table.getSelectionBackground());
                 setForeground(table.getSelectionForeground());

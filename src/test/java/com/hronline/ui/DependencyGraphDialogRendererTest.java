@@ -10,6 +10,7 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.Component;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -130,5 +131,35 @@ class DependencyGraphDialogRendererTest {
                 "非 method 头的 value 直接原文显示，不强行加徽章");
         assertEquals(false, html.contains("background-color"),
                 "无 method 的占位不应该出现徽章背景色块");
+    }
+
+    /**
+     * #82：dark theme 下文字看不清的根因是 HTML 里硬编码了 #222222。
+     * 这个测试保证渲染器不再写死黑字 —— body 文字色必须从 table 的主题前景里动态取。
+     */
+    @Test
+    void apiColumnRenderer_doesNotBakeDarkOnlyTextColor() {
+        JTable table = new JTable(new DefaultTableModel(new Object[]{"col"}, 0));
+        DependencyGraphDialog.ApiColumnRenderer renderer =
+                new DependencyGraphDialog.ApiColumnRenderer();
+        String html = ((javax.swing.JTextArea) renderer.getTableCellRendererComponent(
+                table, "GET /admin/foo", false, false, 0, 0)).getText();
+        assertFalse(html.contains("#222222"),
+                "ApiColumnRenderer body 文字色不能用硬编码 #222222（dark theme 黑底黑字）");
+    }
+
+    /**
+     * #82：占位行（空 value）必须是 italic 灰字，让用户一眼看出"这不是真接口"。
+     */
+    @Test
+    void apiColumnRenderer_emptyValueIsItalicPlaceholder() {
+        JTable table = new JTable(new DefaultTableModel(new Object[]{"col"}, 0));
+        DependencyGraphDialog.ApiColumnRenderer renderer =
+                new DependencyGraphDialog.ApiColumnRenderer();
+        String html = ((javax.swing.JTextArea) renderer.getTableCellRendererComponent(
+                table, "", false, false, 0, 0)).getText();
+        assertTrue(html.contains("—"), "空 value 必须用 em-dash 占位");
+        assertTrue(html.contains("italic"),
+                "空 value 必须走 italic 样式，让用户区分于真实接口");
     }
 }

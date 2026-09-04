@@ -103,6 +103,9 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
     /** 收藏视图右上角的一键折叠按钮 */
     private JButton collapseAllFoldersButton;
+    // #83：原 toggle 按钮（点一下切收起/再点一下切展开）图标一变，用户就找不到
+    // "一键展开"入口了。拆成两个独立按钮 + 各自 tooltip，固定可见，零歧义。
+    private JButton expandAllFoldersButton;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
@@ -179,10 +182,10 @@ public class ApiTreePanel extends JPanel {
         tree.setTransferHandler(new StarredDragTransferHandler());
         tree.addTreeExpansionListener(new javax.swing.event.TreeExpansionListener() {
             @Override public void treeExpanded(javax.swing.event.TreeExpansionEvent event) {
-                updateCollapseAllFoldersButton();
+                updateExpandCollapseButtons();
             }
             @Override public void treeCollapsed(javax.swing.event.TreeExpansionEvent event) {
-                updateCollapseAllFoldersButton();
+                updateExpandCollapseButtons();
             }
         });
 
@@ -567,7 +570,7 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
-            updateCollapseAllFoldersButton();
+            updateExpandCollapseButtons();
             // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
             // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
             // 即时恢复全量列表（不必等后台重扫），然后后台异步触发一次扫描刷新缓存。
@@ -596,7 +599,7 @@ public class ApiTreePanel extends JPanel {
         });
         btnStarred.addActionListener(e -> {
             currentFilter = FILTER_STARRED;
-            updateCollapseAllFoldersButton();
+            updateExpandCollapseButtons();
             applyFilters();
             // 一伦 #67：收藏按钮单击即刷新接口信息，不再要求用户双击。
             // 触发完整扫描以同步源码中的 URL/方法变化；扫描完成后回调会再次走
@@ -611,7 +614,7 @@ public class ApiTreePanel extends JPanel {
         // 等持久化字段从旧 key 改写到新 key，完成后收藏视图会自动反映最新接口信息。
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
-            updateCollapseAllFoldersButton();
+            updateExpandCollapseButtons();
             // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
             triggerScanIfNeeded("最新");
             triggerLatestFilter();
@@ -654,38 +657,52 @@ public class ApiTreePanel extends JPanel {
         row.add(Box.createHorizontalGlue());
 
         collapseAllFoldersButton = new JButton(AllIcons.Actions.Collapseall);
-        collapseAllFoldersButton.setToolTipText("一键收起所有文件夹");
-        collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起所有文件夹");
-        collapseAllFoldersButton.setFocusPainted(false);
-        collapseAllFoldersButton.setBorderPainted(false);
-        collapseAllFoldersButton.setContentAreaFilled(false);
-        collapseAllFoldersButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        collapseAllFoldersButton.setPreferredSize(new Dimension(28, 28));
-        collapseAllFoldersButton.setMinimumSize(new Dimension(28, 28));
-        collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
-        collapseAllFoldersButton.addActionListener(e -> toggleAllFolderNodes());
+        styleToolbarIconButton(collapseAllFoldersButton, "一键收起所有文件夹");
+        collapseAllFoldersButton.addActionListener(e -> collapseAllFolderNodes());
         row.add(collapseAllFoldersButton);
-        updateCollapseAllFoldersButton();
+
+        // #83：紧跟收起按钮的"一键展开"，两者图标 + tooltip 都固定，用户
+        // 不会因为图标切换而找不到入口。
+        expandAllFoldersButton = new JButton(AllIcons.Actions.Expandall);
+        styleToolbarIconButton(expandAllFoldersButton, "一键展开所有文件夹");
+        expandAllFoldersButton.addActionListener(e -> expandAllFolderNodesFromToolbar());
+        row.add(expandAllFoldersButton);
+        // 按钮之间留 4px 呼吸，跟左侧分类按钮基线一致
+        row.add(Box.createHorizontalStrut(4));
+        updateExpandCollapseButtons();
 
         return row;
     }
 
-    private void updateCollapseAllFoldersButton() {
-        if (collapseAllFoldersButton == null) return;
+    private void updateExpandCollapseButtons() {
+        // #83：两个独立按钮只控制可见性 + enabled，图标/tooltip 不再切换
+        if (collapseAllFoldersButton == null || expandAllFoldersButton == null) return;
         boolean starred = FILTER_STARRED.equals(currentFilter);
         boolean hasContent = starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
                 && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
         collapseAllFoldersButton.setVisible(starred);
+        expandAllFoldersButton.setVisible(starred);
         collapseAllFoldersButton.setEnabled(hasContent);
-        boolean expanded = hasContent && areAllFolderNodesExpanded((DefaultMutableTreeNode) treeModel.getRoot());
-        String actionName = expanded ? "一键收起所有文件夹" : "一键展开所有文件夹";
-        collapseAllFoldersButton.setIcon(expanded ? AllIcons.Actions.Collapseall : AllIcons.Actions.Expandall);
-        collapseAllFoldersButton.setToolTipText(actionName);
-        collapseAllFoldersButton.getAccessibleContext().setAccessibleName(actionName);
+        expandAllFoldersButton.setEnabled(hasContent);
         if (collapseAllFoldersButton.getParent() != null) {
             collapseAllFoldersButton.getParent().revalidate();
             collapseAllFoldersButton.getParent().repaint();
         }
+    }
+
+    /**
+     * #83：工具栏图标按钮统一样式 —— 28x28，无填充无边框，hand cursor，tooltip + a11y name 一并设置。
+     */
+    private static void styleToolbarIconButton(JButton btn, String tooltip) {
+        btn.setToolTipText(tooltip);
+        btn.getAccessibleContext().setAccessibleName(tooltip);
+        btn.setFocusPainted(false);
+        btn.setBorderPainted(false);
+        btn.setContentAreaFilled(false);
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btn.setPreferredSize(new Dimension(28, 28));
+        btn.setMinimumSize(new Dimension(28, 28));
+        btn.setMaximumSize(new Dimension(28, 28));
     }
 
     /**
@@ -1091,7 +1108,7 @@ public class ApiTreePanel extends JPanel {
                     counters[0], counters[1],
                     counters[3] > 0 ? " · ⚠失效 " + counters[3] : "",
                     counters[2]));
-            updateCollapseAllFoldersButton();
+            updateExpandCollapseButtons();
         };
         if (ApplicationManager.getApplication().isDispatchThread()) {
             build.run();
@@ -1157,7 +1174,7 @@ public class ApiTreePanel extends JPanel {
             if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
         }
         tree.clearSelection();
-        updateCollapseAllFoldersButton();
+        updateExpandCollapseButtons();
     }
 
     /** 当前收藏树是否已经把所有有子节点的文件夹展开。 */
@@ -1170,18 +1187,6 @@ public class ApiTreePanel extends JPanel {
             if (!areAllFolderNodesExpanded(child)) return false;
         }
         return true;
-    }
-
-    /** 单一工具栏按钮在“全部展开”和“全部收起”之间切换。 */
-    private void toggleAllFolderNodes() {
-        if (!FILTER_STARRED.equals(currentFilter)) return;
-        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
-        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
-        if (areAllFolderNodesExpanded(root)) {
-            collapseAllFolderNodes();
-        } else {
-            expandAllFolderNodesFromToolbar();
-        }
     }
 
     /** v2.2 一键展开收藏视图中的所有文件夹（工具栏按钮入口）。
@@ -1201,7 +1206,7 @@ public class ApiTreePanel extends JPanel {
             if (child.getUserObject() instanceof FolderNode) expandAllFolderNodes(child);
         }
         tree.clearSelection();
-        updateCollapseAllFoldersButton();
+        updateExpandCollapseButtons();
     }
 
     private void collapseFolderNode(DefaultMutableTreeNode node) {
