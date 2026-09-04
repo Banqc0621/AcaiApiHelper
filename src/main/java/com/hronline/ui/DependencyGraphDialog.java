@@ -1,5 +1,6 @@
 package com.hronline.ui;
 
+import com.hronline.RestAutoLabConstants;
 import com.hronline.chain.ApiDependency;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.ApiParameter;
@@ -7,6 +8,7 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.table.JBTable;
@@ -108,15 +110,20 @@ public class DependencyGraphDialog extends DialogWrapper {
 
         JPanel top = new JPanel(new BorderLayout(0, 4));
         top.add(hint, BorderLayout.NORTH);
-        DefaultListModel<String> orderModel = new DefaultListModel<>();
-        for (int i = 0; i < apis.size(); i++) {
-            ApiDefinition api = apis.get(i);
-            if (api != null) orderModel.addElement((i + 1) + ". " + displayLabelForApi(api));
+        // #80：把「1. GET /admin/foo」这种纯文本 JList 换成自定义渲染 —— 每行带序号 + 方法徽章
+        // + URL，徽章用主题色（GET 绿/POST 蓝/PUT 橙/DELETE 红），交替行背景，hover 高亮。
+        // 原来是 JList<String> 默认渲染，单看一坨「METHOD URL」文字，确实不够直观。
+        DefaultListModel<ApiDefinition> orderModel = new DefaultListModel<>();
+        for (ApiDefinition api : apis) {
+            if (api != null) orderModel.addElement(api);
         }
-        JList<String> orderList = new JList<>(orderModel);
+        JList<ApiDefinition> orderList = new JList<>(orderModel);
+        orderList.setCellRenderer(new OrderListCellRenderer());
         orderList.setFocusable(false);
         orderList.setVisibleRowCount(Math.min(4, Math.max(1, orderModel.size())));
-        orderList.setBorder(JBUI.Borders.empty(2, 6));
+        orderList.setFixedCellHeight(28);
+        orderList.setBorder(JBUI.Borders.empty(2, 4));
+        orderList.setBackground(JBColor.namedColor("Panel.background", new Color(0xFA, 0xFB, 0xFC)));
         JBScrollPane orderScroll = new JBScrollPane(orderList);
         orderScroll.setBorder(BorderFactory.createTitledBorder("收藏夹接口顺序"));
         orderScroll.setPreferredSize(JBUI.size(820, orderModel.isEmpty() ? 48 : 108));
@@ -169,9 +176,12 @@ public class DependencyGraphDialog extends DialogWrapper {
         table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(310));
         table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(280));
         table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(260));
-        for (int i = 0; i < 4; i++) {
-            table.getColumnModel().getColumn(i).setCellRenderer(new WrappingCellRenderer());
-        }
+        // #80：上游/下游接口列走自定义 ApiColumnRenderer（方法徽章 + 主题色 + 交替行底），
+        // 响应字段/目标参数列保持原 WrappingCellRenderer（长文本换行）。
+        table.getColumnModel().getColumn(0).setCellRenderer(new ApiColumnRenderer());
+        table.getColumnModel().getColumn(1).setCellRenderer(new WrappingCellRenderer());
+        table.getColumnModel().getColumn(2).setCellRenderer(new ApiColumnRenderer());
+        table.getColumnModel().getColumn(3).setCellRenderer(new WrappingCellRenderer());
         table.getColumnModel().getColumn(0).setCellEditor(new ApiCellEditor());
         table.getColumnModel().getColumn(1).setCellEditor(new MappingCellEditor(true));
         table.getColumnModel().getColumn(2).setCellEditor(new ApiCellEditor());
@@ -343,7 +353,9 @@ public class DependencyGraphDialog extends DialogWrapper {
      *   <li>producer/consumer label 必须在 labelByKey 里反向解析，否则跳过</li>
      *   <li>producer == consumer 跳过（自环）</li>
      *   <li>两个字段都填 → 加入 mapping；同一对接口允许多个 mapping，自动去重</li>
-     *   <li>两个字段都空 + 是原 dependencies 里已有 → 保留这条顺序边</li>
+     *   <li>两个字段都空 → 保留顺序边；新建 producer→consumer 也允许（type 默认 MANUAL），
+     *       不再要求「必须是原 dependencies 里已有」——#  #77 修：原逻辑会让用户手动加的新行
+     *       被静默丢弃，看上去像「依赖设置保存不了」</li>
      *   <li>字段半填（只有一个非空）→ 跳过，视为未完成</li>
      * </ul>
      */
@@ -381,13 +393,17 @@ public class DependencyGraphDialog extends DialogWrapper {
             if (producerKey.equals(consumerKey)) continue;
 
             String key = producerKey + "->" + consumerKey;
-            // 空映射边保留接口顺序；新建空白行在字段尚未填写完整前不落盘。
-            if (sourcePath.isBlank() || targetParam.isBlank()) {
-                if (sourcePath.isBlank() && targetParam.isBlank() && originalKeys.contains(key)) {
-                    byKey.computeIfAbsent(key, k -> new ApiDependency(
-                            producerKey, consumerKey,
-                            originalDetectionTypes.getOrDefault(key, "MANUAL")));
-                }
+            // 半填（只有 sourcePath 或只有 targetParam）→ 跳过，视为未完成。
+            // 空映射（两个都空）+ 满映射（两个都填）→ 都允许落盘：
+            //   空映射 → 仅保留 producer→consumer 顺序边（新建也允许，type 默认 MANUAL）。
+            //   满映射 → 在对应边上追加一条 mapping。
+            if (sourcePath.isBlank() != targetParam.isBlank()) {
+                continue;
+            }
+            if (sourcePath.isBlank() && targetParam.isBlank()) {
+                byKey.computeIfAbsent(key, k -> new ApiDependency(
+                        producerKey, consumerKey,
+                        originalDetectionTypes.getOrDefault(key, "MANUAL")));
                 continue;
             }
             ApiDependency dep = byKey.computeIfAbsent(key, k -> new ApiDependency(
@@ -505,6 +521,159 @@ public class DependencyGraphDialog extends DialogWrapper {
             setToolTipText(text.trim().length() > 20 ? text : null);
             return this;
         }
+    }
+
+    /**
+     * #80：「收藏夹接口顺序」JList 的行渲染器 —— 序号 + 方法徽章 + URL，
+     * 徽章颜色按 HTTP method 走主题色（GET 绿 / POST 蓝 / PUT 橙 / DELETE 红 / PATCH 紫），
+     * 偶数行加极淡的灰底增强可读性，长 URL 截断保留完整 tooltip。
+     */
+    static final class OrderListCellRenderer extends JBLabel implements ListCellRenderer<ApiDefinition> {
+        // 奇偶行底色 + 选中行底色。统一走 JBColor 主题感知。
+        private static final Color EVEN_BG = new Color(0xFA, 0xFB, 0xFC);
+        private static final Color ODD_BG = new Color(0xF2, 0xF4, 0xF7);
+
+        OrderListCellRenderer() {
+            setOpaque(true);
+            setBorder(JBUI.Borders.empty(4, 8));
+        }
+
+        @Override
+        public Component getListCellRendererComponent(JList<? extends ApiDefinition> list, ApiDefinition api,
+                                                        int index, boolean isSelected, boolean cellHasFocus) {
+            if (api == null) {
+                setText("");
+                setBackground(isSelected ? list.getSelectionBackground() : EVEN_BG);
+                return this;
+            }
+            String method = api.getHttpMethod() == null ? "" : api.getHttpMethod().toUpperCase();
+            String url = api.getUrl() == null ? "" : api.getUrl().trim();
+            // 去掉 query 和尾部斜杠，跟 fullApiLabel 保持一致
+            int query = url.indexOf('?');
+            if (query >= 0) url = url.substring(0, query);
+            while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
+            JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
+            String methodHex = String.format("#%02x%02x%02x",
+                    methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
+            // 序号 1-based，灰色窄列
+            // 徽章用等宽字体 + 加粗 + 主题色背景浅色字（白底主题色），跨主题可读
+            String bg = String.format("#%02x%02x%02x",
+                    Math.min(255, methodColor.getRed() + 60),
+                    Math.min(255, methodColor.getGreen() + 60),
+                    Math.min(255, methodColor.getBlue() + 60));
+            setText("<html>"
+                    + "<span style='color:#888;width:18px;display:inline-block;'>" + (index + 1) + ".</span> "
+                    + "<span style='background-color:" + methodHex
+                    + ";color:#FFFFFF;padding:1px 6px;border-radius:3px;font-weight:bold;font-size:10px;'>"
+                    + (method.isBlank() ? "API" : method)
+                    + "</span> "
+                    + "<span style='color:" + (isSelected ? "#FFFFFF" : "#222222") + ";'>"
+                    + escapeHtml(url)
+                    + "</span>"
+                    + "</html>");
+            setToolTipText(method + " " + url);
+            // 选中态用主题色，偶数行浅灰，奇数行更浅
+            if (isSelected) {
+                setBackground(list.getSelectionBackground());
+                setForeground(list.getSelectionForeground());
+            } else {
+                setBackground(index % 2 == 0 ? EVEN_BG : ODD_BG);
+                setForeground(list.getForeground());
+            }
+            setFont(list.getFont());
+            return this;
+        }
+    }
+
+    /**
+     * #80：依赖表格里上游/下游接口列的自定义渲染器。沿用 JTextArea 换行（应对超长 URL），
+     * 文本前面加方法徽章，颜色跟 OrderListCellRenderer 保持一致。
+     * <p>value 是 {@code labelByKey.get(key)}（如 "GET /admin/foo"），需要先把 method
+     * 切出来再渲染；空串 / "(无依赖)" 占位走 fallback 分支，不强行套徽章。</p>
+     */
+    static final class ApiColumnRenderer extends JTextArea implements TableCellRenderer {
+        private static final Color EVEN_BG = new Color(0xFA, 0xFB, 0xFC);
+        private static final Color ODD_BG = new Color(0xF2, 0xF4, 0xF7);
+
+        ApiColumnRenderer() {
+            setLineWrap(true);
+            setWrapStyleWord(true);
+            setOpaque(true);
+            setEditable(false);
+            setFocusable(false);
+            setBorder(JBUI.Borders.empty(6, 8));
+            setMargin(JBUI.insets(2, 4));
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected,
+                                                        boolean hasFocus, int row, int column) {
+            String raw = value == null ? "" : String.valueOf(value).trim();
+            String method = "";
+            String body = raw;
+            // 从 "GET /admin/foo" / "[GET] foo" / "(无依赖)" 里切 method
+            int firstSpace = raw.indexOf(' ');
+            int firstBracket = raw.indexOf(']');
+            if (raw.startsWith("[") && firstBracket > 0 && firstBracket + 1 < raw.length()
+                    && raw.charAt(firstBracket + 1) == ' ') {
+                method = raw.substring(1, firstBracket);
+                body = raw.substring(firstBracket + 2).trim();
+            } else if (firstSpace > 0) {
+                String head = raw.substring(0, firstSpace);
+                if (isHttpMethod(head)) {
+                    method = head.toUpperCase();
+                    body = raw.substring(firstSpace + 1).trim();
+                }
+            }
+
+            JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
+            String methodHex = String.format("#%02x%02x%02x",
+                    methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
+
+            String prefix;
+            if (method.isBlank()) {
+                prefix = "<span style='color:" + (isSelected ? "#FFFFFF" : "#666666") + ";'>";
+                StringBuilder html = new StringBuilder("<html>").append(prefix)
+                        .append(escapeHtml(raw.isBlank() ? "—" : raw))
+                        .append("</span></html>");
+                setText(html.toString());
+            } else {
+                String fg = isSelected ? "#FFFFFF" : "#222222";
+                prefix = "<span style='background-color:" + methodHex
+                        + ";color:#FFFFFF;padding:1px 6px;border-radius:3px;font-weight:bold;font-size:10px;'>"
+                        + escapeHtml(method) + "</span> "
+                        + "<span style='color:" + fg + ";'>" + escapeHtml(body) + "</span>";
+                setText("<html>" + prefix + "</html>");
+            }
+            setFont(table.getFont());
+            // 选中态用主题色，奇偶行交替灰底
+            if (isSelected) {
+                setBackground(table.getSelectionBackground());
+                setForeground(table.getSelectionForeground());
+            } else {
+                setBackground(row % 2 == 0 ? EVEN_BG : ODD_BG);
+                setForeground(table.getForeground());
+            }
+            setToolTipText(raw.length() > 20 ? raw : null);
+            return this;
+        }
+    }
+
+    private static boolean isHttpMethod(String s) {
+        if (s == null) return false;
+        switch (s.toUpperCase()) {
+            case "GET": case "POST": case "PUT": case "DELETE":
+            case "PATCH": case "HEAD": case "OPTIONS":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;");
     }
 
     /** 表格中仅显示接口名称；名称为空时退化为 URL 最后一级。 */

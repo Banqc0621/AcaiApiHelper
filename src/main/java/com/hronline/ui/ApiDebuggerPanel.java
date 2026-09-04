@@ -131,6 +131,9 @@ public class ApiDebuggerPanel extends JPanel {
     private final JBLabel responseStatusLabel = new JBLabel("状态: -");
     private final JBLabel responseTimeLabel = new JBLabel("耗时: -");
     private final JBLabel responseSizeLabel = new JBLabel("大小: -");
+    /** #78：异常信息条。仅在响应状态为 ERROR 时可见，承载完整的异常文本，避开底部 statusLabel。 */
+    private final JBLabel responseErrorLabel = new JBLabel();
+    private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
 
     private final JBTextArea testResultArea = new JBTextArea();
     private final JProgressBar testProgressBar = new JProgressBar();
@@ -1056,14 +1059,22 @@ public class ApiDebuggerPanel extends JPanel {
         // 一伦优化 #66：参数 Tab 行动行「显示所有参数」按钮改为「保存参数」——
         // 「显示所有参数」会重新加载默认参数 + saved 合并，把用户在 UI 上未保存的修改冲掉，
         // 体感像「保存的数据不生效」。改成「保存参数」显式触发持久化，切走再回来显示用户上次保存的版本。
-        JButton saveParamsBtn = compactIconButton(AllIcons.Actions.Commit, "保存参数",
+        // #79：图标从 Commit（一个右箭头 + 勾）改为 Download（软盘带下载箭头）—— Commit 在
+        // 24×24 紧凑尺寸下看起来像一个普通的「确认」按钮，用户识别不出是「保存」；Download
+        // 是软盘图标，跨工具通用语义最稳。
+        JButton saveParamsBtn = compactIconButton(AllIcons.Actions.Download, "保存参数",
                 e -> saveCurrentParameters());
+        // #79：还原扫描参数按钮 —— 位于「保存参数」右边。用户改了参数保存后，如果想回到接口
+        // 最初的扫描结果（去掉用户增删行、改回默认 value），就点这个；不会动已保存的数据，
+        // 只刷新 UI 表格，不持久化（用户决定要不要再点保存）。
+        JButton restoreScannedBtn = compactIconButton(AllIcons.Actions.Refresh, "还原扫描参数（恢复接口默认扫描结果，不保存）",
+                e -> restoreScannedParameters());
         JPanel actionBar = createTabActionBar(
                 "添加自定义参数",
                 "删除选中的参数",
                 e -> addCustomParameter(),
                 e -> removeSelectedParameter(),
-                clearValuesBtn, saveParamsBtn);
+                clearValuesBtn, saveParamsBtn, restoreScannedBtn);
         actionBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         northContainer.add(actionBar);
 
@@ -1198,10 +1209,13 @@ public class ApiDebuggerPanel extends JPanel {
         return sep >= 0 ? path.substring(sep + 1) : path;
     }
 
-    /** 简单 HTML 转义，避免参数名/类型里的特殊字符破坏 JLabel 渲染 */
+    /** 简单 HTML 转义，避免参数名/类型里的特殊字符破坏 JLabel 渲染（#78：补 " 防 attribute 边界） */
     private String escapeHtml(String s) {
         if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
     }
 
     private JPanel createHeadersTab() {
@@ -1351,7 +1365,23 @@ public class ApiDebuggerPanel extends JPanel {
         statusPanel.add(responseTimeLabel);
         statusPanel.add(createSeparator());
         statusPanel.add(responseSizeLabel);
-        panel.add(statusPanel, BorderLayout.NORTH);
+
+        // #78：异常信息条放在响应面板顶部，状态栏下面。仅 ERROR 时显示，颜色与状态徽章统一红色。
+        responseErrorLabel.setFont(responseErrorLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
+        responseErrorLabel.setForeground(JBColor.foreground());
+        responseErrorPanel.setBorder(UiStyle.cardBorder(6, 8));
+        responseErrorPanel.setBackground(new JBColor(new Color(0xFFEBEE), new Color(0x4A2C2C)));
+        responseErrorPanel.add(responseErrorLabel, BorderLayout.CENTER);
+        responseErrorPanel.setVisible(false);
+
+        // 状态栏 + 异常条合并为顶部栈
+        JPanel topStack = new JPanel();
+        topStack.setLayout(new BoxLayout(topStack, BoxLayout.Y_AXIS));
+        statusPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        responseErrorPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        topStack.add(statusPanel);
+        topStack.add(responseErrorPanel);
+        panel.add(topStack, BorderLayout.NORTH);
 
         // === 响应 body 容器（卡片式：带色码边线） ===
         responseContentPanel.setBorder(JBUI.Borders.compound(
@@ -1891,67 +1921,7 @@ public class ApiDebuggerPanel extends JPanel {
             replaceParametersWithSaved(paramTableModel, api.getParameters(), savedParams);
         } else {
             // 默认路径：按 API 定义展开 path/query/header/body，所有参数（文件占位、复杂对象展开）
-            for (ApiParameter param : api.pathParameters()) {
-                paramTableModel.addRow(new Object[]{
-                        param.getName(),
-                        param.getType(),
-                        "PATH",
-                        param.generateDefaultValue(),
-                        param.isRequired() ? "是" : "否",
-                        param.getDescription()
-                });
-            }
-
-            // 添加查询参数
-            for (ApiParameter param : api.queryParameters()) {
-                paramTableModel.addRow(new Object[]{
-                        param.getName(),
-                        param.getType(),
-                        "QUERY",
-                        param.generateDefaultValue(),
-                        param.isRequired() ? "是" : "否",
-                        param.getDescription()
-                });
-            }
-
-            // 添加请求头参数
-            for (ApiParameter param : api.headerParameters()) {
-                paramTableModel.addRow(new Object[]{
-                        param.getName(),
-                        param.getType(),
-                        "HEADER",
-                        param.generateDefaultValue(),
-                        param.isRequired() ? "是" : "否",
-                        param.getDescription()
-                });
-            }
-
-            // 添加请求体参数（文件参数占位，等用户在附件面板选择）
-            // 修复提单「参数解析有问题」：复杂对象（DTO）不再压成一行（值是一整坨 JSON 字符串），
-            // 而是展开为点号路径行（request.appId 等），每个字段的类型/默认值/注释一目了然。
-            for (ApiParameter param : api.bodyParameters()) {
-                if (param.isFile()) {
-                    paramTableModel.addRow(new Object[]{
-                            param.getName(),
-                            param.getType(),
-                            "FILE",
-                            "请在右侧'文件参数'区选择本地文件",
-                            param.isRequired() ? "是" : "否",
-                            param.getDescription()
-                    });
-                } else if (param.isComplexType()) {
-                    addFlattenedBodyRows(param.getName(), param, 0);
-                } else {
-                    paramTableModel.addRow(new Object[]{
-                            param.getName(),
-                            param.getType(),
-                            "BODY",
-                            param.generateDefaultValue(),
-                            param.isRequired() ? "是" : "否",
-                            param.getDescription()
-                    });
-                }
-            }
+            rebuildParameterTableFromApi(api);
         }
         parameterUndoSnapshot = captureParameterSnapshot();
         parameterUndoManager.discardAllEdits();
@@ -2321,8 +2291,14 @@ public class ApiDebuggerPanel extends JPanel {
                 // 一伦优化 v11：恢复发送按钮为 Execute 图标
                 // v15 修复：setIcon 之前显式重置背景色，避免 spinner 切回 Execute
                 // 时把"hover/pressed 残影"带回来，看起来"点过后还发亮"。
-                resetSendButtonToIdle();
-                statusLabel.setText("● " + result.summary());
+                // #78：ERROR 状态时 summary() 会带完整异常文本，但异常信息现在已经在
+                // 右下方响应面板的红色 errorPanel 里显示，底部 statusLabel 只保留简洁状态，
+                // 避免同一异常重复。
+                if (result.getStatus() == TestStatus.ERROR) {
+                    statusLabel.setText("● ⚠ 请求异常，详情见下方响应面板");
+                } else {
+                    statusLabel.setText("● " + result.summary());
+                }
             });
         });
     }
@@ -2384,6 +2360,18 @@ public class ApiDebuggerPanel extends JPanel {
         // 大小：字段弱化 + 值（v3.0：去掉括号内冗余显示，与耗时标签对齐）
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>"
                 + formatBytes(size) + "</b></html>");
+
+        // #78：异常信息在响应面板顶部红色面板里显示，避开底部 statusLabel。
+        // 仅 ERROR 状态展示，PASSED / FAILED 不展示（FAILED 时 statusBadge 已经显示 · 失败）。
+        String error = result.getErrorMessage();
+        if (result.getStatus() == TestStatus.ERROR) {
+            responseErrorLabel.setText("<html><b style='color:#C62828'>⚠ 异常：</b> "
+                    + (error == null ? "未知异常" : escapeHtml(error)) + "</html>");
+            responseErrorPanel.setVisible(true);
+        } else {
+            responseErrorPanel.setVisible(false);
+            responseErrorLabel.setText("");
+        }
 
         String body = result.getResponseBody() == null ? "" : result.getResponseBody();
         responseArea.setText(body);
@@ -2570,6 +2558,98 @@ public class ApiDebuggerPanel extends JPanel {
         for (ApiParameter child : param.getChildren()) {
             addFlattenedBodyRows(prefix + "." + child.getName(), child, depth + 1);
         }
+    }
+
+    /**
+     * #79：按 API 扫描定义重建参数表（path / query / header / body 全展开，复杂对象递归为
+     * 点号路径行，文件参数留占位）。loadApi 首次打开 + 「还原扫描参数」按钮都走这里。
+     * <p>只刷新 UI 表格，不动持久化数据；调用方自己决定是否要再触发 save。</p>
+     */
+    private void rebuildParameterTableFromApi(ApiDefinition api) {
+        for (ApiParameter param : api.pathParameters()) {
+            paramTableModel.addRow(new Object[]{
+                    param.getName(),
+                    param.getType(),
+                    "PATH",
+                    param.generateDefaultValue(),
+                    param.isRequired() ? "是" : "否",
+                    param.getDescription()
+            });
+        }
+
+        for (ApiParameter param : api.queryParameters()) {
+            paramTableModel.addRow(new Object[]{
+                    param.getName(),
+                    param.getType(),
+                    "QUERY",
+                    param.generateDefaultValue(),
+                    param.isRequired() ? "是" : "否",
+                    param.getDescription()
+            });
+        }
+
+        for (ApiParameter param : api.headerParameters()) {
+            paramTableModel.addRow(new Object[]{
+                    param.getName(),
+                    param.getType(),
+                    "HEADER",
+                    param.generateDefaultValue(),
+                    param.isRequired() ? "是" : "否",
+                    param.getDescription()
+            });
+        }
+
+        // 修复提单「参数解析有问题」：复杂对象（DTO）不再压成一行（值是一整坨 JSON 字符串），
+        // 而是展开为点号路径行（request.appId 等），每个字段的类型/默认值/注释一目了然。
+        for (ApiParameter param : api.bodyParameters()) {
+            if (param.isFile()) {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "FILE",
+                        "请在右侧'文件参数'区选择本地文件",
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            } else if (param.isComplexType()) {
+                addFlattenedBodyRows(param.getName(), param, 0);
+            } else {
+                paramTableModel.addRow(new Object[]{
+                        param.getName(),
+                        param.getType(),
+                        "BODY",
+                        param.generateDefaultValue(),
+                        param.isRequired() ? "是" : "否",
+                        param.getDescription()
+                });
+            }
+        }
+    }
+
+    /**
+     * #79：参数 Tab「还原扫描参数」按钮的回调。把当前接口的 UI 参数表恢复成扫描出来的原始版本
+     * （去掉用户增删的行 / 改回默认值）。<b>不</b>自动写入 saved —— 用户如果满意可手动点
+     * 「保存参数」持久化；要恢复之前的 saved 切走再切回来即可。
+     */
+    private void restoreScannedParameters() {
+        if (currentApi == null) {
+            statusLabel.setText("● 请先选择一个 API 接口");
+            return;
+        }
+        // 用户在编辑器里改到一半点这个按钮，cellEditor 的 editingStopped 不一定触发。
+        flushTableCellEditor(paramTable);
+        suppressParameterUndo = true;
+        try {
+            paramTableModel.setRowCount(0);
+            rebuildParameterTableFromApi(currentApi);
+        } finally {
+            suppressParameterUndo = false;
+        }
+        // 重置撤销栈 + 快照：旧快照对应的是用户改过的状态，撤销会回到错的版本。
+        parameterUndoSnapshot = captureParameterSnapshot();
+        parameterUndoManager.discardAllEdits();
+        updateAttachmentPanel(currentApi);
+        statusLabel.setText("● 已还原扫描参数（未保存，点「保存参数」生效）");
     }
 
     private String generateDefaultBody(ApiDefinition api) {

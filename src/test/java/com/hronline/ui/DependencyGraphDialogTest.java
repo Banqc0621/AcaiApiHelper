@@ -370,6 +370,44 @@ class DependencyGraphDialogTest {
     }
 
     @Test
+    void rebuildFromRows_createsSequentialEdgeWithoutMappingForNewlyAddedRow() {
+        // #77 修：用户手动加一行，只填 producer+consumer，没填 sourcePath/targetParam，
+        // 点 OK 之后这条新顺序边必须被持久化。旧实现会因为「半填」+  不在 originalKeys
+        // 而静默丢弃，看上去像「依赖设置保存不了」。
+        ApiDefinition first = api("GET", "/first", "First");
+        ApiDefinition second = api("POST", "/second", "Second");
+        ApiDefinition third = api("GET", "/third", "Third");
+        List<ApiDependency> original = DependencyGraphDialog.createSequentialDependencies(
+                List.of(first, second, third));
+
+        // 用户新加一行：first → third，没有映射字段
+        List<String[]> rows = List.<String[]>of(
+                new String[]{"First", "", "Second", ""},
+                new String[]{"Second", "", "Third", ""},
+                new String[]{"First", "", "Third", ""}
+        );
+        Map<String, String> labels = Map.of(
+                first.uniqueKey(), "First",
+                second.uniqueKey(), "Second",
+                third.uniqueKey(), "Third"
+        );
+
+        List<ApiDependency> rebuilt = DependencyGraphDialog.rebuildFromRows(original, rows, labels);
+        assertEquals(3, rebuilt.size(), "原有 2 条 +  新加 1 条 =  3 条");
+        assertTrue(rebuilt.stream().anyMatch(d -> first.uniqueKey().equals(d.getProducerKey())
+                && second.uniqueKey().equals(d.getConsumerKey())));
+        assertTrue(rebuilt.stream().anyMatch(d -> second.uniqueKey().equals(d.getProducerKey())
+                && third.uniqueKey().equals(d.getConsumerKey())));
+        // 新加的 first → third 顺序边必须保留
+        ApiDependency firstThird = rebuilt.stream()
+                .filter(d -> first.uniqueKey().equals(d.getProducerKey())
+                        && third.uniqueKey().equals(d.getConsumerKey()))
+                .findFirst().orElseThrow();
+        assertTrue(firstThird.getMappings().isEmpty(),
+                "新顺序边不带 mapping 是合法的，UI 应该允许保存");
+    }
+
+    @Test
     void rebuildFromRows_emptyRowsListStillKeepsOriginalEdgesWhenUserViewsDefaultRows() {
         // 修复前的 bug：表格里只剩 fillTable 渲染出的原始顺序边（mapping 都空），
         // 用户没改一行点 OK 也要保留；这条 case 也覆盖了「空 rows」的等价分支。
