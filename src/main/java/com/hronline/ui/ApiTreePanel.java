@@ -3123,8 +3123,10 @@ public class ApiTreePanel extends JPanel {
                     .append("</span>&nbsp;<span style='color:").append(textColor)
                     .append("; font-size:11px;'>").append(escapeHtml(url)).append("</span>");
             if (red) {
-                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#CC0000").append(";font-size:10px;'>✗ ")
-                        .append(escapeHtml(st.getMessage() == null ? "失败" : st.getMessage())).append("</span>");
+                // #78：异常文案不再跟 URL 拼到一行 —— 用户反馈「接口的后面还有异常信息」，
+                // 全部异常描述统一放到右侧响应面板的红色 errorPanel 里。这里只保留红 ✗
+                // 标记 + 红色 URL 文字，告知「这条接口失败了」，具体原因点过去看响应面板。
+                text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#CC0000").append(";font-size:10px;'>✗</span>");
             } else if (green) {
                 text.append(" <span style='color:").append(sel ? toHex(selectionForeground()) : "#2E7D32").append(";font-size:10px;'>✓</span>");
             }

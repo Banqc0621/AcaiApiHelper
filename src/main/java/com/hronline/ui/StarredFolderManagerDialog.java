@@ -595,8 +595,11 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 setText(auo.api.getHttpMethod() + " " + auo.api.getUrl());
                 FolderApiStatus st = folderService.getStatus(auo.folderId, auo.api.uniqueKey());
                 if (st.shouldHighlightRed()) {
+                    // #78：异常文案不再跟 URL 拼一行 —— 用户反馈「接口的后面还有异常信息」，
+                    // 全部异常描述都放到右侧响应面板的红色 errorPanel 里。这里只保留
+                    // 红色 ✗ 标记，URL 红色，文案不进收藏夹管理列表。
                     setForeground(JBColor.RED);
-                    setText(auo.api.getHttpMethod() + " " + auo.api.getUrl() + "  ✗ " + st.getMessage());
+                    setText(auo.api.getHttpMethod() + " " + auo.api.getUrl() + "  ✗");
                 } else if (st.isPassed() && st.getTestedAt() > 0) {
                     setForeground(new JBColor(new Color(0, 128, 0), new Color(98, 190, 98)));
                     setText(auo.api.getHttpMethod() + " " + auo.api.getUrl() + "  ✓");
