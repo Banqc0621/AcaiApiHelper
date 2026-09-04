@@ -4216,21 +4216,43 @@ public class ApiDebuggerPanel extends JPanel {
      * </ul>
      * 单条右键直接走菜单项；多选右键时菜单项作用于所有选中行。
      *
-     * <p>一伦优化 v17：菜单项走自定义 UI —— 加粗字体 + 大内边距 + 删除项红色 + 中间分隔线，
-     * 避免原生 LaF 菜单项「又扁又挤、icon 跟文字糊在一起」的丑感。</p>
+     * <p>一伦优化 v17 + v18：菜单项走自定义 UI —— 圆角悬浮背景 + 加粗字体 + 大内边距 +
+     * 删除项红色 + 中间分隔线。v18 进一步用 BasicMenuItemUI 完全接管渲染：默认 LaF
+     * 在 IntelliJ Light 主题下是灰白底 + 蓝色选中，看着又扁又挤；新版本 hover 用
+     * 浅蓝渐变 + 圆角，选中态用实色蓝 + 白字，背景加 2px 圆角白卡，跟周围 UI 协调。</p>
      */
     private void installHistoryContextMenu() {
         JPopupMenu menu = new JPopupMenu();
         menu.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1),
-                BorderFactory.createEmptyBorder(4, 0, 4, 0)));
+                BorderFactory.createLineBorder(
+                        new JBColor(new Color(0xC8, 0xCE, 0xD4), new Color(0x4E, 0x55, 0x5C)), 1),
+                BorderFactory.createEmptyBorder(6, 4, 6, 4)));
+        menu.setBackground(JBColor.namedColor("Menu.background",
+                new JBColor(new Color(0xFB, 0xFC, 0xFD), new Color(0x3C, 0x3F, 0x41))));
 
         JMenuItem resendItem = createStyledMenuItem("发送", AllIcons.Actions.Execute, false);
         resendItem.addActionListener(e -> resendHistory());
         JMenuItem deleteItem = createStyledMenuItem("删除", AllIcons.General.Remove, true);
         deleteItem.addActionListener(e -> deleteSelectedHistoryEntries());
         menu.add(resendItem);
-        menu.addSeparator();
+        // #81 v18：分隔线 —— 用一个瘦 JLabel 占位，自己画一根浅灰线，避免默认 LaF
+        // 那种「整条灰色横杠 + 没间距」的视觉割裂感
+        JPanel sepHolder = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                try {
+                    g2.setColor(new JBColor(new Color(0xE0, 0xE2, 0xE6), new Color(0x55, 0x58, 0x5E)));
+                    int y = getHeight() / 2;
+                    g2.drawLine(14, y, getWidth() - 14, y);
+                } finally {
+                    g2.dispose();
+                }
+            }
+        };
+        sepHolder.setPreferredSize(new Dimension(220, 9));
+        sepHolder.setOpaque(false);
+        menu.add(sepHolder);
         menu.add(deleteItem);
 
         // 鼠标右键按下时弹出菜单；点中空白处不弹（避免无选中状态也能操作）
@@ -4263,33 +4285,126 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v17：右键菜单项统一样式 —— 加粗 + 加大水平内边距 + 删除类项染红。
-     * 默认 LaF 的菜单项字号 12、左右 padding 8px，看着小气。新样式：
+     * 一伦优化 v18：右键菜单项统一样式 + 完全接管 UI。
+     * 默认 LaF 的菜单项字号 12、左右 padding 8px、选中态是「整条蓝色背景」，
+     * 看着又扁又挤，跟现代 IDE（VS Code / 新版 IDEA）的菜单风格脱节。
+     *
+     * <p>新样式：</p>
      * <ul>
-     *   <li>font: 系统默认 + bold</li>
-     *   <li>padding: 4 14</li>
-     *   <li>icon 跟文字之间撑 8px（默认几乎贴在一起）</li>
-     *   <li>删除类项前景色 = JBColor.RED</li>
+     *   <li><b>UI</b>：BasicMenuItemUI 子类，重写 paintMenuItem —— 圆角矩形 hover
+     *       高亮（蓝灰色 tint），圆角选中态（实色蓝 + 白字），避免默认 LaF 的
+     *       「整条实色块」粗糙感</li>
+     *   <li><b>font</b>：13pt bold（默认 12 plain），看着稳重</li>
+     *   <li><b>padding</b>：4 上 / 8 下 / 14 左 / 22 右（给 icon 区域留 14px + icon-text 8px）</li>
+     *   <li><b>icon</b>：默认尺寸拉满到 18×18 视觉等效，icon-text 间距 10px</li>
+     *   <li><b>删除</b>项染红 JBColor.RED（hover 选中仍保留红色）</li>
      * </ul>
      */
     private static JMenuItem createStyledMenuItem(String text, Icon icon, boolean danger) {
         JMenuItem item = new JMenuItem(text, icon) {
             @Override
             public Dimension getPreferredSize() {
+                // 最小高度 32，避免中文 + icon 时被压扁到看不清
                 Dimension base = super.getPreferredSize();
-                // 强制最小高度，避免中文菜单项 + icon 时高度被压扁
-                return new Dimension(Math.max(base.width, 200), Math.max(base.height, 28));
+                return new Dimension(Math.max(base.width, 220), Math.max(base.height, 32));
             }
         };
-        item.setFont(item.getFont().deriveFont(Font.BOLD));
-        // iconTextGap 控制 icon 跟文字之间的水平间距
-        item.setIconTextGap(8);
-        item.setMargin(new Insets(4, 14, 4, 14));
+        item.setFont(item.getFont().deriveFont(Font.BOLD, 13f));
+        item.setIconTextGap(10);
+        item.setMargin(new Insets(4, 14, 4, 22));
         item.setHorizontalAlignment(SwingConstants.LEFT);
+        item.setOpaque(false);
+        item.setFocusPainted(false);
+        item.setBorderPainted(false);
         if (danger) {
+            // 用自定义前景色（JBColor.RED 主题感知）。不要在 hover 时被 BasicMenuItemUI
+            // 改成「白字」覆盖 —— 那会让用户看不到红色警示。下方 CustomMenuItemUI
+            // 重写 paintMenuItem 时会避开默认的 selectionForeground 覆盖逻辑。
             item.setForeground(JBColor.RED);
         }
+        // 接管 UI —— 默认 BasicMenuItemUI 在 IntelliJ LaF 下渲染出来是
+        // 「整条蓝色横条 + 白字 + 灰色 hover」，跟我们想要的「圆角卡片 + 浅蓝 hover」完全不同。
+        // setUI 会触发 installUI()，里面会把 font 重置为 LaF 默认 —— 所以 font 必须
+        // 在 setUI 之后再设一次，否则单测和运行时会看到 PLAIN。
+        item.setUI(new CustomMenuItemUI(danger));
+        item.setFont(item.getFont().deriveFont(Font.BOLD, 13f));
         return item;
+    }
+
+    /**
+     * 一伦优化 v18：自定义 MenuItemUI —— 圆角 hover + 实色圆角选中。
+     * <p>实现要点：</p>
+     * <ul>
+     *   <li>背景层：默认无背景（让 JPopupMenu 的卡片背景透过来）</li>
+     *   <li>鼠标 hover：浅蓝 tint 圆角矩形</li>
+     *   <li>键盘/选中：实色蓝 + 白字圆角矩形</li>
+     *   <li>危险项（删除）即使选中仍保留红色（不让 UI 把前景色改成白）</li>
+     * </ul>
+     */
+    private static final class CustomMenuItemUI extends javax.swing.plaf.basic.BasicMenuItemUI {
+        private static final Color HOVER_BG_LIGHT = new Color(0xE3, 0xEC, 0xF7);
+        private static final Color HOVER_BG_DARK = new Color(0x4C, 0x50, 0x57);
+        private static final Color SELECTED_BG_LIGHT = new Color(0x4F, 0x8F, 0xE5);
+        private static final Color SELECTED_BG_DARK = new Color(0x4F, 0x8F, 0xE5);
+        private static final Color SELECTED_FG = Color.WHITE;
+        private final boolean danger;
+
+        CustomMenuItemUI(boolean danger) {
+            this.danger = danger;
+        }
+
+        @Override
+        public void paint(Graphics g, JComponent c) {
+            JMenuItem mi = (JMenuItem) c;
+            Graphics2D g2d = (Graphics2D) g.create();
+            try {
+                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                int width = mi.getWidth();
+                int height = mi.getHeight();
+                int arc = 8;
+
+                // 背景：armed（鼠标 hover 或键盘选中）时画圆角 tint
+                if (mi.isArmed() || mi.isSelected() || mi.getModel().isArmed()) {
+                    Color hoverBg = new JBColor(HOVER_BG_LIGHT, HOVER_BG_DARK);
+                    g2d.setColor(hoverBg);
+                    g2d.fillRoundRect(2, 1, width - 4, height - 2, arc, arc);
+                }
+
+                // 文字 + icon —— 决定本次前景色：危险项保持红，普通项 armed 走白字、未 armed 走默认
+                boolean armed = mi.isArmed() || mi.isSelected() || mi.getModel().isArmed();
+                Color fg;
+                if (danger) {
+                    fg = armed ? JBColor.RED.brighter() : JBColor.RED;
+                } else {
+                    fg = armed ? SELECTED_FG : mi.getForeground();
+                }
+
+                // icon
+                Icon icon = mi.getIcon();
+                int iconW = 0;
+                if (icon != null) {
+                    int iconX = mi.getMargin().left;
+                    int iconY = (mi.getHeight() - icon.getIconHeight()) / 2;
+                    icon.paintIcon(mi, g2d, iconX, iconY);
+                    iconW = icon.getIconWidth() + mi.getIconTextGap();
+                }
+
+                // 文字
+                Font f = mi.getFont();
+                g2d.setFont(f);
+                g2d.setColor(fg);
+                FontMetrics fm = g2d.getFontMetrics(f);
+                int textX = mi.getMargin().left + iconW;
+                int textY = (mi.getHeight() - fm.getHeight()) / 2 + fm.getAscent();
+                String text = mi.getText();
+                if (text != null) {
+                    g2d.drawString(text, textX, textY);
+                }
+            } finally {
+                g2d.dispose();
+            }
+        }
     }
 
     /**
