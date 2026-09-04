@@ -4171,8 +4171,8 @@ public class ApiDebuggerPanel extends JPanel {
         panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        // 一伦优化 #68：移除「重新发送 / 删除 / 查看请求」显式按钮——
-        // 「重新发送 / 删除」改到右键菜单，「查看请求」双击历史记录已能触发。
+        // 一伦优化 #68：移除「发送 / 删除 / 查看请求」显式按钮——
+        // 「发送 / 删除」改到右键菜单，「查看请求」双击历史记录已能触发。
         JButton diffBtn = iconButton("Diff对比", AllIcons.Actions.Diff, e -> diffSelectedHistory());
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
             if (currentApi == null) {
@@ -4190,11 +4190,11 @@ public class ApiDebuggerPanel extends JPanel {
         btnPanel.add(clearBtn);
         panel.add(btnPanel, BorderLayout.SOUTH);
 
-        // 一伦优化 #68：右键菜单——「重新发送 / 删除」；
+        // 一伦优化 #68：右键菜单——「发送 / 删除」；
         // 双击历史记录查看请求详情保留不变；删除支持多选批量。
         installHistoryContextMenu();
 
-        // 双击查看请求详情（请求头、入参和请求体）；重新发送保留为显式按钮，避免误触。
+        // 双击查看请求详情（请求头、入参和请求体）；发送改到右键菜单，避免误触。
         historyList.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mouseClicked(java.awt.event.MouseEvent e) {
@@ -4211,18 +4211,26 @@ public class ApiDebuggerPanel extends JPanel {
     /**
      * 一伦优化 #68：给历史列表挂右键菜单。
      * <ul>
-     *   <li>「重新发送」—— 仅在选中 1 条时启用（重发需要明确是哪条）</li>
+     *   <li>「发送」—— 仅在选中 1 条时启用（重发需要明确是哪条）</li>
      *   <li>「删除」—— 选中 ≥1 条时启用；批量删除后统一刷新</li>
      * </ul>
      * 单条右键直接走菜单项；多选右键时菜单项作用于所有选中行。
+     *
+     * <p>一伦优化 v17：菜单项走自定义 UI —— 加粗字体 + 大内边距 + 删除项红色 + 中间分隔线，
+     * 避免原生 LaF 菜单项「又扁又挤、icon 跟文字糊在一起」的丑感。</p>
      */
     private void installHistoryContextMenu() {
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem resendItem = new JMenuItem("重新发送", AllIcons.Actions.Execute);
+        menu.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1),
+                BorderFactory.createEmptyBorder(4, 0, 4, 0)));
+
+        JMenuItem resendItem = createStyledMenuItem("发送", AllIcons.Actions.Execute, false);
         resendItem.addActionListener(e -> resendHistory());
-        JMenuItem deleteItem = new JMenuItem("删除", AllIcons.General.Remove);
+        JMenuItem deleteItem = createStyledMenuItem("删除", AllIcons.General.Remove, true);
         deleteItem.addActionListener(e -> deleteSelectedHistoryEntries());
         menu.add(resendItem);
+        menu.addSeparator();
         menu.add(deleteItem);
 
         // 鼠标右键按下时弹出菜单；点中空白处不弹（避免无选中状态也能操作）
@@ -4252,6 +4260,36 @@ public class ApiDebuggerPanel extends JPanel {
             }
         });
         historyList.setComponentPopupMenu(menu);
+    }
+
+    /**
+     * 一伦优化 v17：右键菜单项统一样式 —— 加粗 + 加大水平内边距 + 删除类项染红。
+     * 默认 LaF 的菜单项字号 12、左右 padding 8px，看着小气。新样式：
+     * <ul>
+     *   <li>font: 系统默认 + bold</li>
+     *   <li>padding: 4 14</li>
+     *   <li>icon 跟文字之间撑 8px（默认几乎贴在一起）</li>
+     *   <li>删除类项前景色 = JBColor.RED</li>
+     * </ul>
+     */
+    private static JMenuItem createStyledMenuItem(String text, Icon icon, boolean danger) {
+        JMenuItem item = new JMenuItem(text, icon) {
+            @Override
+            public Dimension getPreferredSize() {
+                Dimension base = super.getPreferredSize();
+                // 强制最小高度，避免中文菜单项 + icon 时高度被压扁
+                return new Dimension(Math.max(base.width, 200), Math.max(base.height, 28));
+            }
+        };
+        item.setFont(item.getFont().deriveFont(Font.BOLD));
+        // iconTextGap 控制 icon 跟文字之间的水平间距
+        item.setIconTextGap(8);
+        item.setMargin(new Insets(4, 14, 4, 14));
+        item.setHorizontalAlignment(SwingConstants.LEFT);
+        if (danger) {
+            item.setForeground(JBColor.RED);
+        }
+        return item;
     }
 
     /**
