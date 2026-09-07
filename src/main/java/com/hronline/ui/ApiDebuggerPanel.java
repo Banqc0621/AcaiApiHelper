@@ -891,7 +891,10 @@ public class ApiDebuggerPanel extends JPanel {
 
         UiStyle.styleTable(variableOverrideTable);
         variableOverrideTable.setRowHeight(26);
-        variablesPanel.add(new JBScrollPane(variableOverrideTable), BorderLayout.CENTER);
+        // 一伦优化 #89：变量覆盖表格显式加可见边框（默认 LaF 在 Darcula 下边框几乎看不见）
+        JBScrollPane varScroll = new JBScrollPane(variableOverrideTable);
+        varScroll.setBorder(BorderFactory.createLineBorder(JBColor.border(), 1));
+        variablesPanel.add(varScroll, BorderLayout.CENTER);
 
         JBLabel variablesHint = new JBLabel("覆盖运行时变量，作用于本次请求");
         UiStyle.hint(variablesHint);
@@ -1695,6 +1698,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         // ── 中部：测试结果 + 进度条（沿用原「测试」Tab 的 testResultArea / testProgressBar） ──
         JPanel center = new JPanel(new BorderLayout(0, 2));
+        // 一伦优化 #89：进度条前景/背景改成主题中性色，去掉 LaF 默认的刺眼蓝色填充
+        testProgressBar.setBackground(JBColor.namedColor("Panel.background", new JBColor(new Color(0xF7, 0xF8, 0xFA), new Color(0x3C, 0x3F, 0x41))));
+        testProgressBar.setForeground(JBColor.namedColor("Component.borderColor", new JBColor(new Color(0xC4, 0xC8, 0xCE), new Color(0x49, 0x4D, 0x53))));
         testProgressBar.setVisible(false);
         testProgressBar.setStringPainted(true);
         testProgressBar.setPreferredSize(new Dimension(-1, 18));

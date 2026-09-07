@@ -512,6 +512,9 @@ public class ApiTreePanel extends JPanel {
         statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         statsLabel.setForeground(JBColor.GRAY);
         bottomPanel.add(statsLabel, BorderLayout.WEST);
+        // 一伦优化 #89：批量测试进度条前景/背景改成主题中性色，去掉 LaF 默认刺眼蓝色填充
+        starredBatchProgress.setBackground(JBColor.namedColor("Panel.background", new JBColor(new Color(0xF7, 0xF8, 0xFA), new Color(0x3C, 0x3F, 0x41))));
+        starredBatchProgress.setForeground(JBColor.namedColor("Component.borderColor", new JBColor(new Color(0xC4, 0xC8, 0xCE), new Color(0x49, 0x4D, 0x53))));
         starredBatchProgress.setVisible(false);
         starredBatchProgress.setStringPainted(true);
         starredBatchProgress.setPreferredSize(new Dimension(132, 16));

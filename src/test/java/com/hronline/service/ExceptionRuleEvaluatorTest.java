@@ -271,4 +271,37 @@ class ExceptionRuleEvaluatorTest {
         assertTrue(ExceptionRuleEvaluator.evaluateRules(
                 List.of(rule), 200, "{\"code\":500}").isPassed());
     }
+
+    // ---------- 一伦优化 #89：通用默认规则 ----------
+
+    @Test
+    void defaultRulesContainStandardHttpAndFieldRules() {
+        // 默认规则包含 HTTP_VALUE 白名单 + FIELD_VALUE 黑名单
+        List<ExceptionRule> defaults = ExceptionRule.defaultRules();
+        assertEquals(2, defaults.size(), "默认应注入 2 条规则");
+        // 第一条：HTTP_VALUE 白名单 200/201/204
+        ExceptionRule httpRule = defaults.get(0);
+        assertEquals(ExceptionRule.RuleType.HTTP_VALUE, httpRule.getType());
+        assertEquals(List.of("200", "201", "204"), httpRule.getExpectedValues());
+        assertTrue(httpRule.isEnabled());
+        // 第二条：FIELD_VALUE code 黑名单 500/9999
+        ExceptionRule fieldRule = defaults.get(1);
+        assertEquals(ExceptionRule.RuleType.FIELD_VALUE, fieldRule.getType());
+        assertEquals("code", fieldRule.getFieldName());
+        assertEquals(List.of("500", "9999"), fieldRule.getExpectedValues());
+        assertTrue(fieldRule.isEnabled());
+    }
+
+    @Test
+    void defaultRulesProtectAgainstCommonFailureResponses() {
+        // 默认规则实际生效：
+        // HTTP 200 通过；HTTP 500 爆红；code=500 爆红（即便 HTTP 200）
+        List<ExceptionRule> defaults = ExceptionRule.defaultRules();
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":0}").isPassed(),
+                "HTTP 200 + code=0 应通过");
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(defaults, 500, "{}").isPassed(),
+                "HTTP 500 应爆红（不在白名单）");
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":500}").isPassed(),
+                "code=500 应爆红（命中黑名单）");
+    }
 }

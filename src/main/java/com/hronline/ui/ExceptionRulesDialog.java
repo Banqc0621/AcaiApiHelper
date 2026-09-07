@@ -212,7 +212,12 @@ public class ExceptionRulesDialog extends DialogWrapper {
         private void loadRules() {
             tableModel.setRowCount(0);
             List<ExceptionRule> rules = RestAutoLabSettingsState.getInstance(project).loadExceptionRules();
-            if (rules == null) return;
+            // 一伦优化 #89：首次进入且已存规则为空 → 自动注入通用默认规则并落盘，
+            // 用户可立即看到合理的告警行为，也可编辑 / 删除 / 禁用。
+            if (rules == null || rules.isEmpty()) {
+                rules = ExceptionRule.defaultRules();
+                RestAutoLabSettingsState.getInstance(project).saveExceptionRules(rules);
+            }
             for (ExceptionRule r : rules) {
                 tableModel.addRow(new Object[]{
                         r.getType(),
@@ -255,16 +260,18 @@ public class ExceptionRulesDialog extends DialogWrapper {
                     return false;
                 }
                 if (type == ExceptionRule.RuleType.HTTP_VALUE) {
+                    // 一伦优化 #89：HTTP_VALUE 不强制要求是 100-599 整数 ——
+                    // 部分业务接口 OK 响应里 code 字段为字符串（如 "SYSTEM_ERROR"），按字面量精确匹配即可。
+                    // 若值能解析为整数，仅做 100-599 范围校验；解析不了视为合法字符串字面量。
                     for (String value : values) {
                         try {
                             int code = Integer.parseInt(value);
                             if (code < 100 || code > 599) {
-                                showValidationError(i, "HTTP 状态码必须是 100-599 的整数：" + value);
+                                showValidationError(i, "HTTP 状态码数值必须是 100-599：" + value);
                                 return false;
                             }
-                        } catch (NumberFormatException ex) {
-                            showValidationError(i, "HTTP 状态码必须是整数：" + value);
-                            return false;
+                        } catch (NumberFormatException ignored) {
+                            // 非数字字面量，按字符串匹配规则保留
                         }
                     }
                 }

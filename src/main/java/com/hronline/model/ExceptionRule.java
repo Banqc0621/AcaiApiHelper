@@ -26,6 +26,25 @@ import java.util.Objects;
  */
 public class ExceptionRule {
 
+    /**
+     * 一伦优化 #89：开箱即用的通用规则。首次进入异常规则弹框且已存规则为空时自动注入并落盘，
+     * 用户可直接使用 / 编辑 / 删除。语义遵循：
+     * <ul>
+     *   <li>HTTP_VALUE 白名单 [200,201,204] —— 标准成功状态码，之外的才爆红（不加这条会
+     *       让所有非 200/201/204 都告警，太严）</li>
+     *   <li>FIELD_VALUE 黑名单 code=[500,9999] —— 业务字段 code 等于 500/9999 时告警
+     *       （最常见的失败码，覆盖大半业务接口）</li>
+     * </ul>
+     */
+    public static java.util.List<ExceptionRule> defaultRules() {
+        java.util.List<ExceptionRule> defaults = new java.util.ArrayList<>();
+        defaults.add(new ExceptionRule(RuleType.HTTP_VALUE, "",
+                java.util.Arrays.asList("200", "201", "204"), true));
+        defaults.add(new ExceptionRule(RuleType.FIELD_VALUE, "code",
+                java.util.Arrays.asList("500", "9999"), true));
+        return defaults;
+    }
+
     public enum RuleType {
         /** HTTP 状态码白名单：值在白名单 = 正常。 */
         @SerializedName("HTTP_VALUE")
