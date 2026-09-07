@@ -140,8 +140,6 @@ public class ApiDebuggerPanel extends JPanel {
     private JButton responseCollapseBtn;
     /** 展开态主体容器（内容 + 底部按钮），折叠时整块隐藏。 */
     private JPanel responseBodyContainer;
-    /** 顶部状态行（toggle 行），始终挂在 BorderLayout.NORTH，整行可点击切换折叠。 */
-    private JPanel responseStatusPanel;
     /** 一伦优化 #96：保存调试器垂直 splitter 的引用，展开/收起时联动调整比例。 */
     private JBSplitter debuggerSplitter;
     /** 用户主动拖动 splitter 的比例（用于展开时尊重用户的偏好，不强制写死）。 */
@@ -277,11 +275,35 @@ public class ApiDebuggerPanel extends JPanel {
         });
 
         // 底部状态栏
+        // 一伦优化 #97：把响应面板的展开/收起按钮挪到这一行，跟 statusLabel 同行同字体。
+        // 响应面板本身不再单独有 toggle 行，折叠时整个响应面板完全隐藏，只留底部这行的按钮。
         JPanel bottomPanel = new JPanel(new BorderLayout());
         bottomPanel.setBorder(UiStyle.topDivider());
         UiStyle.hint(statusLabel);
         statusLabel.setText("就绪");
-        bottomPanel.add(statusLabel, BorderLayout.WEST);
+        // 左侧：statusLabel，右侧：响应面板展开/收起按钮（hint 同字体）
+        JPanel bottomLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        bottomLeft.setOpaque(false);
+        bottomLeft.add(statusLabel);
+        bottomPanel.add(bottomLeft, BorderLayout.WEST);
+        // 右侧按钮：用 hint 同字号 + 灰色前景，跟 statusLabel 视觉一致
+        responseExpandBtn = iconButton("展开响应", AllIcons.Actions.Expandall,
+                e -> setResponseContentCollapsed(false));
+        responseCollapseBtn = iconButton("收起响应", AllIcons.Actions.Collapseall,
+                e -> setResponseContentCollapsed(true));
+        // UiStyle.hint(JLabel) 不接受 JButton，手动套同款 FONT_HINT + 灰前景
+        Font hintFont = statusLabel.getFont();
+        responseExpandBtn.setFont(hintFont);
+        responseCollapseBtn.setFont(hintFont);
+        responseExpandBtn.setForeground(JBColor.GRAY);
+        responseCollapseBtn.setForeground(JBColor.GRAY);
+        responseExpandBtn.setToolTipText("展开接口响应（查看响应内容）");
+        responseCollapseBtn.setToolTipText("收起接口响应（仅显示请求结果摘要）");
+        JPanel bottomRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        bottomRight.setOpaque(false);
+        bottomRight.add(responseExpandBtn);
+        bottomRight.add(responseCollapseBtn);
+        bottomPanel.add(bottomRight, BorderLayout.EAST);
         add(bottomPanel, BorderLayout.SOUTH);
 
         // ── v2.0.0 交互增强：body 编辑器撤销/折叠 ──
@@ -1521,14 +1543,13 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 0));
         panel.setBorder(JBUI.Borders.empty(0));
 
-        // === 一伦优化 #95：响应面板折叠方案 v4 ===
-        // 状态行挂到面板 SOUTH（底部）：折叠时行紧贴面板底边，展开时响应内容从行上方生长出来，
-        // 视觉上状态行随展开关闭上下滑动，像抽屉把手。
-        // 状态行瘦身：更矮的内边距 + 更小的字号 + 不再显示白/黑名单告警文字。
+        // === 一伦优化 #97：响应面板 = 仅响应内容 + 底部按钮 ===
+        // 状态行（状态/耗时/大小/展开收起）已移到外层底部栏，跟请求结果摘要同行同字体。
+        // 折叠时整个响应面板完全隐藏；展开时显示。
 
-        // === 主体：内容 + 底部按钮（折叠时整块隐藏）===
+        // 主体：内容 + 底部按钮
         JPanel responseBodyContainer = new JPanel(new BorderLayout(0, 4));
-        responseBodyContainer.setBorder(JBUI.Borders.empty(4, 4, 0, 4));
+        responseBodyContainer.setBorder(JBUI.Borders.empty(4, 4, 4, 4));
 
         responseContentPanel.setBorder(JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1),
@@ -1585,91 +1606,25 @@ public class ApiDebuggerPanel extends JPanel {
 
         responseBodyContainer.add(btnPanel, BorderLayout.SOUTH);
 
-        // === 状态行（toggle 行，挂 SOUTH）===
-        // 一伦优化 #95：高度更矮（empty(2,8)）、字号 FONT_HINT-2、不显示告警文字
-        // 整行只有 状态/耗时/大小 + 展开/收起按钮
-        JPanel statusPanel = new JPanel(new BorderLayout(8, 0));
-        statusPanel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border(), 1),
-                JBUI.Borders.empty(2, 8)));
-        statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
+        panel.add(responseBodyContainer, BorderLayout.CENTER);
 
-        JPanel statusLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        statusLeft.setOpaque(false);
-        // 一伦优化 #95：状态/耗时/大小都用更小字号（11pt）
-        Font statusFont = responseStatusLabel.getFont().deriveFont(Font.PLAIN, 11f);
-        responseStatusLabel.setFont(statusFont.deriveFont(Font.BOLD));
-        responseTimeLabel.setFont(statusFont);
-        responseSizeLabel.setFont(statusFont);
-        statusLeft.add(responseStatusLabel);
-        statusLeft.add(createSeparator());
-        statusLeft.add(responseTimeLabel);
-        statusLeft.add(createSeparator());
-        statusLeft.add(responseSizeLabel);
-        statusPanel.add(statusLeft, BorderLayout.WEST);
-
-        // 一伦优化 #95：不再展示白/黑名单告警文字（占空间且分散注意力）
-        // 但保留 responseErrorLabel 引用以便别处仍然能 setText（保持兼容）
-        responseErrorLabel.setFont(statusFont);
-        responseErrorLabel.setForeground(new JBColor(new Color(0xC62828), new Color(0xFF8A80)));
-        responseErrorLabel.setText(""); // 默认清空
-
-        // 右侧：展开/收起按钮
-        responseExpandBtn = iconButton("展开", AllIcons.Actions.Expandall,
-                e -> setResponseContentCollapsed(false));
-        responseExpandBtn.setToolTipText("展开接口响应（点击状态行任意位置也可切换）");
-        responseCollapseBtn = iconButton("收起", AllIcons.Actions.Collapseall,
-                e -> setResponseContentCollapsed(true));
-        responseCollapseBtn.setToolTipText("收起接口响应（点击状态行任意位置也可切换）");
-        JPanel statusRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
-        statusRight.setOpaque(false);
-        statusRight.add(responseExpandBtn);
-        statusRight.add(responseCollapseBtn);
-        statusPanel.add(statusRight, BorderLayout.EAST);
-
-        // 兼容旧字段
+        // 兼容旧字段（响应面板不再展示告警文字 / 状态）
         responseErrorPanel.setVisible(false);
 
-        // 整行设置 hand cursor + 点击切换
-        Cursor hand = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR);
-        statusPanel.setCursor(hand);
-        statusLeft.setCursor(hand);
-        statusRight.setCursor(hand);
-        responseStatusLabel.setCursor(hand);
-        responseTimeLabel.setCursor(hand);
-        responseSizeLabel.setCursor(hand);
-        java.awt.event.MouseAdapter rowClick = new java.awt.event.MouseAdapter() {
-            @Override public void mouseClicked(java.awt.event.MouseEvent e) {
-                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)) {
-                    Object src = e.getSource();
-                    if (src instanceof JButton) return;
-                    setResponseContentCollapsed(!responseContentCollapsed);
-                }
-            }
-        };
-        statusPanel.addMouseListener(rowClick);
-        statusLeft.addMouseListener(rowClick);
-        statusRight.addMouseListener(rowClick);
-
-        // === 外层布局：状态行挂 SOUTH（底部），主体在 CENTER ===
-        panel.add(responseBodyContainer, BorderLayout.CENTER);
-        panel.add(statusPanel, BorderLayout.SOUTH);
-
         this.responseBodyContainer = responseBodyContainer;
-        this.responseStatusPanel = statusPanel;
 
         // 默认折叠
         applyResponseCollapsedState();
         return panel;
     }
 
-    /** 一伦优化 #95：切换响应面板整体折叠状态。 */
+    /** 一伦优化 #97：切换响应面板整体折叠状态。 */
     private void setResponseContentCollapsed(boolean collapsed) {
         this.responseContentCollapsed = collapsed;
         applyResponseCollapsedState();
     }
 
-    /** 一伦优化 #95/96：根据 {@link #responseContentCollapsed} 同步主体可见性 + 按钮图标 + 联动 splitter 比例。 */
+    /** 一伦优化 #96/97：根据折叠状态同步主体可见性 + 按钮 + 联动 splitter 比例。 */
     private void applyResponseCollapsedState() {
         if (responseBodyContainer != null) {
             responseBodyContainer.setVisible(!responseContentCollapsed);
@@ -1680,21 +1635,20 @@ public class ApiDebuggerPanel extends JPanel {
         if (responseCollapseBtn != null) {
             responseCollapseBtn.setVisible(!responseContentCollapsed);
         }
-        // 一伦优化 #96：联动调整 splitter 比例。折叠时把响应区压到最小（~10%），让上半部分占满；
-        // 展开时恢复到用户最近一次拖动记录的比例（默认 0.6）。这样拖动过的位置不会被无视，
-        // 但折叠态始终给请求编辑层让出最大空间。
+        // 联动调整 splitter 比例：折叠时把响应区压到接近 0，展开时回到用户偏好比例
         if (debuggerSplitter != null) {
-            float target = responseContentCollapsed
-                    ? Math.min(userSplitterProportion, 0.5f) // 折叠态：响应区最多 50%（实际更小，因为还有状态行撑底）
-                    : userSplitterProportion;
-            // 折叠时给一个接近"只露状态行"的最小比例 —— 取 splitter 高度的 ~10%
+            float target;
             if (responseContentCollapsed) {
+                // 折叠时只给响应面板一个最小可见厚度（约 30px）
                 int totalHeight = debuggerSplitter.getHeight();
-                int minHeight = responseStatusPanel != null
-                        ? responseStatusPanel.getPreferredSize().height + 8 : 28;
+                int minHeight = 30;
                 if (totalHeight > 0 && minHeight > 0 && minHeight < totalHeight) {
                     target = 1f - (float) minHeight / totalHeight;
+                } else {
+                    target = 0.95f; // 没有可用高度时给个保底
                 }
+            } else {
+                target = userSplitterProportion;
             }
             target = Math.max(0.05f, Math.min(0.95f, target));
             duringAutoProportionChange = true;
