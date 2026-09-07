@@ -46,8 +46,6 @@ import javax.swing.table.TableRowSorter;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.text.JTextComponent;
 import java.awt.*;
-import java.awt.event.ComponentAdapter;
-import java.awt.event.ComponentEvent;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -131,7 +129,7 @@ public class ApiDebuggerPanel extends JPanel {
     private final JBLabel responseStatusLabel = new JBLabel("状态: -");
     private final JBLabel responseTimeLabel = new JBLabel("耗时: -");
     private final JBLabel responseSizeLabel = new JBLabel("大小: -");
-    /** #78：异常信息条。仅在响应状态为 ERROR 时可见，承载完整的异常文本，避开底部 statusLabel。 */
+    /** #78/#85：异常信息条。网络 ERROR 或业务规则 FAILED 且有原因时可见，承载完整文本，避开底部 statusLabel。 */
     private final JBLabel responseErrorLabel = new JBLabel();
     private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
 
@@ -162,6 +160,8 @@ public class ApiDebuggerPanel extends JPanel {
     private DefaultListModel<RequestHistory> historyListModel;
     private JList<RequestHistory> historyList;
     private JBLabel historyTitleLabel;
+    /** 批量执行完成后可切换到全部接口历史，避免当前接口过滤造成“只有一条”的误解。 */
+    private boolean historyAllScope = false;
     private DefaultTableModel assertionTableModel;
     private JBTable assertionTable;
     private JComboBox<String> expectedStatusCombo;
@@ -235,10 +235,22 @@ public class ApiDebuggerPanel extends JPanel {
 
         JPanel responsePanel = createResponsePanel();
 
+        // 一伦优化 #88：去掉 JLayeredPane 浮动覆盖层 —— 「发起请求」按钮改为顶部独立一行（右对齐），
+        // 不再悬浮覆盖在 tab 条右缘上。原 v35/v37 方案导致按钮看起来"飘在内容上"，和 tabs 不像是一体。
+        // 现在按钮是请求编辑区域顶部的常规工具栏元素，视觉上与 tabs 解耦、布局上稳定。
+        JPanel sendButtonBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+        sendButtonBar.setOpaque(false);
+        sendButtonBar.setBorder(JBUI.Borders.empty(2, 4, 2, 4));
+        sendButtonBar.add(createTabStripSendButton());
+
+        JPanel requestContainer = new JPanel(new BorderLayout());
+        requestContainer.setOpaque(false);
+        requestContainer.add(sendButtonBar, BorderLayout.NORTH);
+        requestContainer.add(requestScroll, BorderLayout.CENTER);
+
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        // 一伦优化 v35：「发起请求」与 tabs 同一行，钉死最右端 —— 覆盖层方案，按钮不占布局宽度
-        splitter.setFirstComponent(new TabStripSendButtonLayer(requestScroll, createTabStripSendButton()));
+        splitter.setFirstComponent(requestContainer);
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
         splitter.setHonorComponentsMinimumSize(false);
@@ -640,7 +652,7 @@ public class ApiDebuggerPanel extends JPanel {
         row.add(Box.createHorizontalGlue());
 
         // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮
-        // —— 一伦优化 v34：发送入口与 tabs 同一行，靠最右边固定（TabStripSendButtonLayer + createTabStripSendButton）。
+        // 一伦优化 #87：发送入口独立到下方顶部按钮栏（NORTH 独立行），不再悬浮覆盖在 tabs 上。
         return row;
     }
 
@@ -1059,10 +1071,9 @@ public class ApiDebuggerPanel extends JPanel {
         // 一伦优化 #66：参数 Tab 行动行「显示所有参数」按钮改为「保存参数」——
         // 「显示所有参数」会重新加载默认参数 + saved 合并，把用户在 UI 上未保存的修改冲掉，
         // 体感像「保存的数据不生效」。改成「保存参数」显式触发持久化，切走再回来显示用户上次保存的版本。
-        // #79：图标从 Commit（一个右箭头 + 勾）改为 Download（软盘带下载箭头）—— Commit 在
-        // 24×24 紧凑尺寸下看起来像一个普通的「确认」按钮，用户识别不出是「保存」；Download
-        // 是软盘图标，跨工具通用语义最稳。
-        JButton saveParamsBtn = compactIconButton(AllIcons.Actions.Download, "保存参数",
+        // #79：使用 MenuSaveall 软盘图标。Commit（右箭头 + 勾）在 24×24 紧凑尺寸下
+        // 容易被误认为普通「确认」，软盘图标能更直接表达「保存」语义。
+        JButton saveParamsBtn = compactIconButton(AllIcons.Actions.MenuSaveall, "保存参数",
                 e -> saveCurrentParameters());
         // #79：还原扫描参数按钮 —— 位于「保存参数」右边。用户改了参数保存后，如果想回到接口
         // 最初的扫描结果（去掉用户增删行、改回默认 value），就点这个；不会动已保存的数据，
@@ -1210,7 +1221,7 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /** 简单 HTML 转义，避免参数名/类型里的特殊字符破坏 JLabel 渲染（#78：补 " 防 attribute 边界） */
-    private String escapeHtml(String s) {
+    private static String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;")
                 .replace("<", "&lt;")
@@ -1337,7 +1348,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 改为显式触发：点击后把当前参数、请求头和 body 持久化到当前接口，确保切换页面不丢。
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton fmtBtn = iconButton("格式化", AllIcons.Actions.PrettyPrint, e -> formatJson());
-        JButton saveBtn = iconButton("保存", AllIcons.Actions.Commit, e -> saveCurrentRequestBody());
+        JButton saveBtn = iconButton("保存", AllIcons.Actions.MenuSaveall, e -> saveCurrentRequestBody());
         saveBtn.setToolTipText("保存当前接口的参数、请求头和请求体（切换页面后自动恢复）");
         JButton clrBtn = iconButton("清空", AllIcons.Actions.GC, e -> bodyEditor.setText(""));
         btnPanel.add(fmtBtn);
@@ -1366,7 +1377,8 @@ public class ApiDebuggerPanel extends JPanel {
         statusPanel.add(createSeparator());
         statusPanel.add(responseSizeLabel);
 
-        // #78：异常信息条放在响应面板顶部，状态栏下面。仅 ERROR 时显示，颜色与状态徽章统一红色。
+        // #78/#85：异常信息条放在响应面板顶部，状态栏下面。网络 ERROR 与业务规则 FAILED
+        // 均在这里展示，避免长错误信息挤入底部状态栏。
         responseErrorLabel.setFont(responseErrorLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         responseErrorLabel.setForeground(JBColor.foreground());
         responseErrorPanel.setBorder(UiStyle.cardBorder(6, 8));
@@ -1662,6 +1674,8 @@ public class ApiDebuggerPanel extends JPanel {
             if (action != null) action.actionPerformed(e);
         });
         btn.setToolTipText(tooltip);
+        // 图标按钮没有可见文字，补充无障碍名称，让键盘/屏幕阅读器用户能识别动作。
+        btn.getAccessibleContext().setAccessibleName(tooltip);
         btn.setMargin(new Insets(0, 0, 0, 0));
         Dimension size = new Dimension(24, 24);
         btn.setPreferredSize(size);
@@ -1749,127 +1763,24 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v35/v37：「发起请求」与 tabs 同一行、钉死在整行最右端 —— 按钮是容器内覆盖层的一部分。
-     * <p>点击 forward 到主 {@code sendButton}（doClick），业务逻辑只走 {@link #setupActions()} 一处；
-     * 主按钮请求中会切 spinner，本按钮同步 icon，再点一次即取消，行为与顶部发送完全一致。</p>
-     * <p>v36 曾只保留图标；v37 按用户要求恢复「发起请求」文字（保留 tooltip）。</p>
-     * <p>布局：{@code [参数][请求头][请求体][历史][AI 助手] ...... [▶ 发起请求]} ——
-     * 按钮绝对定位悬浮在 tab 条右缘（不占布局宽度、不居中），tab 条占满整行。</p>
+     * 一伦优化 #87：「发起请求」按钮 —— 行内按钮栏的真正按钮组件。
+     * <p>布局归属：在 {@link ApiDebuggerPanel} 构造函数中，sendButtonBar（NORTH, FlowLayout.RIGHT）
+     * 持有本按钮实例，requestScroll 在 CENTER —— 彻底取代 v33-v86 的 JLayeredPane 浮动覆盖层方案。
+     * 点击 forward 到主 {@code sendButton}（doClick）；主按钮请求中切 spinner，本按钮同步 icon，
+     * 行为与顶部发送完全一致。</p>
      */
     private JButton createTabStripSendButton() {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         btn.setMargin(new Insets(4, 8, 4, 8));
+        btn.setToolTipText("发送请求到当前接口 (Ctrl+Enter)");
+        btn.getAccessibleContext().setAccessibleName("发起请求");
 
         // 与主 sendButton 状态同步：请求中 icon 切 spinner / 请求完成恢复
         sendButton.addPropertyChangeListener("icon", evt -> btn.setIcon((Icon) evt.getNewValue()));
         sendButton.addPropertyChangeListener("enabled", evt -> btn.setEnabled((Boolean) evt.getNewValue()));
+        sendButton.addPropertyChangeListener("toolTipText", evt -> btn.setToolTipText((String) evt.getNewValue()));
         return btn;
-    }
-
-    /**
-     * 一伦优化 v35：让「发起请求」与 tabs 处于同一行、并钉死在整行最右端的容器层。
-     * <p>结构：{@link JLayeredPane} —— 原 requestScroll 占满整行（DEFAULT_LAYER），
-     * 按钮绝对定位悬浮在 tab 标题条右缘（PALETTE_LAYER），<b>不占布局宽度、不会被居中</b>；
-     * 面板尺寸变化时自动重新定位。无论面板多宽，按钮右缘始终硬贴容器右缘。</p>
-     * <p>历史包袱：v33/v34 用 BorderLayout.EAST 预留宽度放按钮，实际渲染中 EAST 区域
-     * 被拉成一大块，按钮居中且 tab 条变窄 —— 覆盖层方案彻底规避布局挤占。</p>
-     */
-    static class TabStripSendButtonLayer extends JLayeredPane {
-        private final JTabbedPane pane;
-        private final JButton button;
-        private final JScrollPane scroll;
-
-        TabStripSendButtonLayer(Component center, JButton sendBtn) {
-            setLayout(null);
-            add(center, JLayeredPane.DEFAULT_LAYER);
-            add(sendBtn, JLayeredPane.PALETTE_LAYER);
-
-            this.button = sendBtn;
-            this.scroll = center instanceof JScrollPane sp ? sp : null;
-            this.pane = (scroll != null && scroll.getViewport() != null
-                    && scroll.getViewport().getView() instanceof JTabbedPane tp) ? tp : null;
-
-            addComponentListener(new ComponentAdapter() {
-                @Override
-                public void componentResized(ComponentEvent e) {
-                    reposition();
-                }
-            });
-            // 一伦优化 #47：垂直滚动条出现/消失会收窄内容列可见宽度，
-            // 按钮右缘必须跟随 viewport 可见右缘，才能与下方内容（AI 配置卡等）右对齐，
-            // 不再硬贴容器右缘显得突出
-            if (scroll != null && scroll.getViewport() != null) {
-                scroll.getViewport().addComponentListener(new ComponentAdapter() {
-                    @Override
-                    public void componentResized(ComponentEvent e) {
-                        reposition();
-                    }
-                });
-            }
-        }
-
-        @Override
-        public void doLayout() {
-            reposition();
-        }
-
-        /** 尺寸语义跟随内容（scroll 容器）——覆盖层不参与布局挤占，但 splitter 初始比例仍合理。 */
-        @Override
-        public Dimension getPreferredSize() {
-            for (Component c : getComponents()) {
-                if (c != button) return c.getPreferredSize();
-            }
-            return super.getPreferredSize();
-        }
-
-        @Override
-        public Dimension getMinimumSize() {
-            return JBUI.size(1, 1);
-        }
-
-        /** 覆盖层定位：content 占满整行，按钮右缘与内容列可见右缘对齐（垂直居中对齐 tab 标题行）。 */
-        private void reposition() {
-            int w = getWidth();
-            int h = getHeight();
-            if (w <= 0 || h <= 0) return;
-
-            // tab 条在本层坐标系里的位置与高度（tabbedPane 是 requestScroll 的 view）
-            int stripX = 0;
-            int stripY = 0;
-            int stripH = 28;
-            if (pane != null) {
-                Point p = SwingUtilities.convertPoint(pane, new Point(0, 0), this);
-                stripX = p.x;
-                stripY = p.y;
-                if (pane.getTabCount() > 0) {
-                    Rectangle r = pane.getBoundsAt(0);
-                    if (r != null && r.height > 0) stripH = r.y + r.height;
-                }
-            }
-
-            // 一伦优化 #47：右缘对齐内容列可见宽度（viewport），而不是容器硬边 ——
-            // 垂直滚动条出现时内容列收窄，按钮同步内移，与下方 AI 配置卡右缘齐平；
-            // 8px 内缩与内容卡右内边距（cardBorder 8）一致
-            int rightEdge = w;
-            if (scroll != null && scroll.getViewport() != null && scroll.getViewport().getWidth() > 0) {
-                Point vp = SwingUtilities.convertPoint(scroll.getViewport(), new Point(0, 0), this);
-                rightEdge = vp.x + scroll.getViewport().getWidth();
-            }
-            Dimension ps = button.getPreferredSize();
-            int rightInset = 8;
-            int x = Math.max(stripX, rightEdge - ps.width - rightInset);
-            int y = stripY + Math.max(0, (stripH - ps.height) / 2);
-
-            for (Component c : getComponents()) {
-                if (c == button) {
-                    c.setBounds(x, y, ps.width, ps.height);
-                } else {
-                    c.setBounds(0, 0, w, h);
-                }
-            }
-            repaint();
-        }
     }
 
     // ================================================================
@@ -1895,6 +1806,8 @@ public class ApiDebuggerPanel extends JPanel {
         stopRequestIfRunningForApiSwitch();
         currentApi = api;
         currentFolderId = folderId;
+        // 选中具体接口后恢复默认的接口范围；批量测试完成时会显式切到全部范围。
+        historyAllScope = false;
         loadPreRequestConfig(api);
         methodCombo.setSelectedItem(api.getHttpMethod());
         urlField.setText(api.getUrl());
@@ -1973,6 +1886,9 @@ public class ApiDebuggerPanel extends JPanel {
         responseStatusLabel.setForeground(JBColor.foreground());
         responseTimeLabel.setText("耗时: -");
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>-</b></html>");
+        responseErrorPanel.setVisible(false);
+        responseErrorLabel.setText("");
+        responseErrorLabel.setIcon(null);
 
         refreshHistoryList();
 
@@ -2282,7 +2198,10 @@ public class ApiDebuggerPanel extends JPanel {
                         : ex.getMessage();
                 requestResult = TestResult.fromError(requestApi, message);
             }
-            TestResult result = requestResult;
+            // 适配器异常实现有可能返回 null（例如请求被外部取消）；统一转成错误结果，
+            // 这样响应区仍会展示异常详情，发送按钮也一定能恢复空闲态。
+            TestResult result = requestResult == null
+                    ? TestResult.fromError(requestApi, "请求失败: 无响应") : requestResult;
 
             ApplicationManager.getApplication().invokeLater(() -> {
                 if (requestId != requestSequence.get()) return;
@@ -2291,14 +2210,10 @@ public class ApiDebuggerPanel extends JPanel {
                 // 一伦优化 v11：恢复发送按钮为 Execute 图标
                 // v15 修复：setIcon 之前显式重置背景色，避免 spinner 切回 Execute
                 // 时把"hover/pressed 残影"带回来，看起来"点过后还发亮"。
-                // #78：ERROR 状态时 summary() 会带完整异常文本，但异常信息现在已经在
-                // 右下方响应面板的红色 errorPanel 里显示，底部 statusLabel 只保留简洁状态，
-                // 避免同一异常重复。
-                if (result.getStatus() == TestStatus.ERROR) {
-                    statusLabel.setText("● ⚠ 请求异常，详情见下方响应面板");
-                } else {
-                    statusLabel.setText("● " + result.summary());
-                }
+                // #78/#85：异常详情统一在右下方响应面板展示；底部状态栏只报结果，
+                // 不再把长异常文本拼到接口名称后面（业务规则 FAILED 同样适用）。
+                resetSendButtonToIdle();
+                statusLabel.setText(requestCompletionStatus(result));
             });
         });
     }
@@ -2334,6 +2249,9 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private void displayResponse(TestResult result) {
+        if (result == null) {
+            result = TestResult.fromError(currentApi, "请求失败: 无响应");
+        }
         int code = result.getStatusCode();
         long ms = result.getDurationMs();
         int size = result.getResponseBody() == null ? 0 : result.getResponseBody().length();
@@ -2361,17 +2279,21 @@ public class ApiDebuggerPanel extends JPanel {
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>"
                 + formatBytes(size) + "</b></html>");
 
-        // #78：异常信息在响应面板顶部红色面板里显示，避开底部 statusLabel。
-        // 仅 ERROR 状态展示，PASSED / FAILED 不展示（FAILED 时 statusBadge 已经显示 · 失败）。
+        // #78/#85：异常信息在响应面板顶部红色面板里显示，避开底部 statusLabel。
+        // 网络 ERROR 与业务规则 FAILED（例如实际 code=500）都要显示完整原因。
         String error = result.getErrorMessage();
-        if (result.getStatus() == TestStatus.ERROR) {
-            responseErrorLabel.setText("<html><b style='color:#C62828'>⚠ 异常：</b> "
-                    + (error == null ? "未知异常" : escapeHtml(error)) + "</html>");
+        if (error != null && !error.isBlank()) {
+            responseErrorLabel.setIcon(AllIcons.General.Warning);
+            responseErrorLabel.setText("<html><b style='color:#C62828'>异常：</b> "
+                    + escapeHtml(error) + "</html>");
             responseErrorPanel.setVisible(true);
         } else {
             responseErrorPanel.setVisible(false);
             responseErrorLabel.setText("");
+            responseErrorLabel.setIcon(null);
         }
+        responseErrorPanel.revalidate();
+        if (responseErrorPanel.getParent() != null) responseErrorPanel.getParent().revalidate();
 
         String body = result.getResponseBody() == null ? "" : result.getResponseBody();
         responseArea.setText(body);
@@ -2928,23 +2850,22 @@ public class ApiDebuggerPanel extends JPanel {
             ApplicationManager.getApplication().invokeLater(() -> {
                 testProgressBar.setVisible(false);
                 
-                if (r == null) {
-                    testResultArea.setText("{\n  \"error\": \"请求失败: 无响应\"\n}");
-                    statusLabel.setText("❌ 测试失败");
-                    return;
-                }
+                // 执行器极端情况下可能返回 null（例如线程被取消或适配器未返回结果）。
+                // 统一转成错误结果，确保异常仍显示在右侧响应区域，并结束“处理中”状态。
+                final TestResult result = r == null
+                        ? TestResult.fromError(currentApi, "请求失败: 无响应") : r;
                 
                 // 构建结构化JSON测试结果
                 Map<String, Object> resultJson = new LinkedHashMap<>();
                 resultJson.put("api", currentApi.getName());
                 resultJson.put("method", currentApi.getHttpMethod());
-                resultJson.put("url", r.getRequestUrl());
-                resultJson.put("statusCode", r.getStatusCode());
-                resultJson.put("status", r.isPassed() ? "PASSED" : (r.getStatus() == TestStatus.ERROR ? "ERROR" : "FAILED"));
-                resultJson.put("durationMs", r.getDurationMs());
+                resultJson.put("url", result.getRequestUrl());
+                resultJson.put("statusCode", result.getStatusCode());
+                resultJson.put("status", result.isPassed() ? "PASSED" : (result.getStatus() == TestStatus.ERROR ? "ERROR" : "FAILED"));
+                resultJson.put("durationMs", result.getDurationMs());
                 
                 // 响应体：尝试解析为JSON对象
-                String responseBody = r.getResponseBody();
+                String responseBody = result.getResponseBody();
                 if (responseBody != null && !responseBody.isBlank()) {
                     try {
                         resultJson.put("response", JsonParser.parseString(responseBody));
@@ -2955,21 +2876,28 @@ public class ApiDebuggerPanel extends JPanel {
                     resultJson.put("response", null);
                 }
                 
-                if (r.getErrorMessage() != null && !r.getErrorMessage().isBlank()) {
-                    resultJson.put("error", r.getErrorMessage());
+                if (result.getErrorMessage() != null && !result.getErrorMessage().isBlank()) {
+                    resultJson.put("error", result.getErrorMessage());
                 }
                 
                 String formatted = gson.toJson(resultJson);
                 testResultArea.setText(formatted);
                 testResultArea.setCaretPosition(0);
                 
-                String statusIcon = r.isPassed() ? "✅" : "❌";
-                String reason = r.getErrorMessage() == null || r.getErrorMessage().isBlank()
-                        ? "" : " · " + r.getErrorMessage();
-                statusLabel.setText(statusIcon + " 测试完成: " + currentApi.getName() + " ("
-                        + r.getStatusCode() + ", " + r.getDurationMs() + "ms)" + reason);
+                displayResponse(result);
+                statusLabel.setText(requestCompletionStatus(result));
             });
         });
+    }
+
+    /** 请求完成后的底部状态文案不带异常详情；异常统一显示在响应区。 */
+    private String requestCompletionStatus(TestResult result) {
+        if (result == null) return "● 请求完成";
+        String state = result.isPassed() ? "通过"
+                : result.getStatus() == TestStatus.ERROR ? "异常"
+                : result.getStatus() == TestStatus.CANCELLED ? "已取消" : "失败";
+        return "● 请求完成：" + state + "（" + result.getStatusCode() + "，"
+                + result.getDurationMs() + "ms；详情见右侧响应）";
     }
 
     private void runAllTests() {
@@ -4175,7 +4103,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 「发送 / 删除」改到右键菜单，「查看请求」双击历史记录已能触发。
         JButton diffBtn = iconButton("Diff对比", AllIcons.Actions.Diff, e -> diffSelectedHistory());
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
-            if (currentApi == null) {
+            if (currentApi == null || historyAllScope) {
                 requestHistory.clear();
                 lastResponseByApi.clear();
             } else {
@@ -4226,7 +4154,7 @@ public class ApiDebuggerPanel extends JPanel {
         menu.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(
                         new JBColor(new Color(0xC8, 0xCE, 0xD4), new Color(0x4E, 0x55, 0x5C)), 1),
-                BorderFactory.createEmptyBorder(6, 4, 6, 4)));
+                BorderFactory.createEmptyBorder(4, 3, 4, 3)));
         menu.setBackground(JBColor.namedColor("Menu.background",
                 new JBColor(new Color(0xFB, 0xFC, 0xFD), new Color(0x3C, 0x3F, 0x41))));
 
@@ -4250,7 +4178,10 @@ public class ApiDebuggerPanel extends JPanel {
                 }
             }
         };
-        sepHolder.setPreferredSize(new Dimension(220, 9));
+        // 分隔线不能成为菜单最宽元素，否则即使菜单项已紧凑，整个菜单仍会被撑得很长。
+        // 分隔线仅需覆盖菜单项的实际内容宽度；跟随紧凑菜单项宽度，避免空白分隔线
+        // 把右键菜单再次撑成长条。
+        sepHolder.setPreferredSize(new Dimension(88, 7));
         sepHolder.setOpaque(false);
         menu.add(sepHolder);
         menu.add(deleteItem);
@@ -4268,6 +4199,9 @@ public class ApiDebuggerPanel extends JPanel {
                 maybeShowHistoryMenu(e);
             }
             private void maybeShowHistoryMenu(java.awt.event.MouseEvent e) {
+                // 某些平台会同时派发 pressed + released 两个 popup 事件；第一次
+                // 已经显示菜单时忽略第二次，避免出现重叠/尺寸异常的双菜单。
+                if (menu.isVisible()) return;
                 int row = historyList.locationToIndex(e.getPoint());
                 if (row < 0) return;  // 空白处右键不弹
                 // 多选时右键点中已选行保留选区；点中未选行则切换为只选该行
@@ -4276,12 +4210,15 @@ public class ApiDebuggerPanel extends JPanel {
                 }
                 int selectedCount = historyList.getSelectedIndices().length;
                 resendItem.setEnabled(selectedCount == 1);
-                String label = selectedCount > 1 ? "删除选中 " + selectedCount + " 条" : "删除";
+                // 使用紧凑计数文案，避免“删除选中 N 条”把整个右键菜单横向撑长。
+                String label = selectedCount > 1 ? "删除（" + selectedCount + "）" : "删除";
                 deleteItem.setText(label);
                 menu.show(historyList, e.getX(), e.getY());
             }
         });
-        historyList.setComponentPopupMenu(menu);
+        // 右键触发、选区同步和菜单显示由上面的 mouse listener 统一处理；
+        // 不再同时设置 componentPopupMenu，避免 Windows/Linux 在 pressed/released
+        // 两个事件上弹出两次菜单，造成“菜单很大/重叠”的观感。
     }
 
     /**
@@ -4294,9 +4231,9 @@ public class ApiDebuggerPanel extends JPanel {
      *   <li><b>UI</b>：BasicMenuItemUI 子类，重写 paintMenuItem —— 圆角矩形 hover
      *       高亮（蓝灰色 tint），圆角选中态（实色蓝 + 白字），避免默认 LaF 的
      *       「整条实色块」粗糙感</li>
-     *   <li><b>font</b>：13pt bold（默认 12 plain），看着稳重</li>
-     *   <li><b>padding</b>：4 上 / 8 下 / 14 左 / 22 右（给 icon 区域留 14px + icon-text 8px）</li>
-     *   <li><b>icon</b>：默认尺寸拉满到 18×18 视觉等效，icon-text 间距 10px</li>
+     *   <li><b>font</b>：12pt bold，保持历史列表菜单紧凑但易读</li>
+     *   <li><b>padding</b>：3 上下 / 8 左右，避免菜单按钮过长</li>
+     *   <li><b>icon</b>：沿用 IDE 图标，icon-text 间距 6px</li>
      *   <li><b>删除</b>项染红 JBColor.RED（hover 选中仍保留红色）</li>
      * </ul>
      */
@@ -4304,14 +4241,16 @@ public class ApiDebuggerPanel extends JPanel {
         JMenuItem item = new JMenuItem(text, icon) {
             @Override
             public Dimension getPreferredSize() {
-                // 最小高度 32，避免中文 + icon 时被压扁到看不清
+                // 保持菜单紧凑：历史列表本身是高密度区域，菜单不应抢占大块空间。
                 Dimension base = super.getPreferredSize();
-                return new Dimension(Math.max(base.width, 220), Math.max(base.height, 32));
+                // 不再使用 116px 的固定宽度；短文案按真实内容收缩，保留 88px 的
+                // 最小点击宽度，删除多选计数较长时仍由 base.width 自然撑开。
+                return new Dimension(Math.max(base.width, 88), Math.max(base.height, 28));
             }
         };
-        item.setFont(item.getFont().deriveFont(Font.BOLD, 13f));
-        item.setIconTextGap(10);
-        item.setMargin(new Insets(4, 14, 4, 22));
+        item.setFont(item.getFont().deriveFont(Font.BOLD, 12f));
+        item.setIconTextGap(6);
+        item.setMargin(new Insets(3, 8, 3, 8));
         item.setHorizontalAlignment(SwingConstants.LEFT);
         item.setOpaque(false);
         item.setFocusPainted(false);
@@ -4327,7 +4266,7 @@ public class ApiDebuggerPanel extends JPanel {
         // setUI 会触发 installUI()，里面会把 font 重置为 LaF 默认 —— 所以 font 必须
         // 在 setUI 之后再设一次，否则单测和运行时会看到 PLAIN。
         item.setUI(new CustomMenuItemUI(danger));
-        item.setFont(item.getFont().deriveFont(Font.BOLD, 13f));
+        item.setFont(item.getFont().deriveFont(Font.BOLD, 12f));
         return item;
     }
 
@@ -4426,7 +4365,7 @@ public class ApiDebuggerPanel extends JPanel {
 
     /** 当前接口对应的历史记录；未选择接口时保留全量历史。 */
     private List<RequestHistory> getVisibleHistory() {
-        if (currentApi == null) return new ArrayList<>(requestHistory);
+        if (currentApi == null || historyAllScope) return new ArrayList<>(requestHistory);
         List<RequestHistory> visible = new ArrayList<>();
         for (RequestHistory h : requestHistory) {
             if (historyBelongsToCurrentApi(h)) visible.add(h);
@@ -4472,9 +4411,22 @@ public class ApiDebuggerPanel extends JPanel {
         List<RequestHistory> visible = getVisibleHistory();
         for (RequestHistory h : visible) historyListModel.addElement(h);
         if (historyTitleLabel != null) {
-            String scope = currentApi == null ? "全部接口" : currentApi.displayLabel();
+            String scope = currentApi == null || historyAllScope ? "全部接口" : currentApi.displayLabel();
             historyTitleLabel.setText("请求历史 · " + scope + "（" + visible.size() + " 条），双击查看请求详情");
         }
+    }
+
+    /**
+     * 批量测试完成后展示全部请求历史。保留当前接口和响应上下文，
+     * 仅解除历史列表的接口过滤，确保用户能看到批量执行产生的每一条记录。
+     */
+    public void showAllHistory() {
+        Runnable refresh = () -> {
+            historyAllScope = true;
+            refreshHistoryList();
+        };
+        if (ApplicationManager.getApplication().isDispatchThread()) refresh.run();
+        else ApplicationManager.getApplication().invokeLater(refresh);
     }
 
     /** 清除响应区当前展示，保持“清空当前接口历史”后的结果区语义一致。 */
@@ -4487,6 +4439,9 @@ public class ApiDebuggerPanel extends JPanel {
         responseStatusLabel.setForeground(JBColor.foreground());
         responseTimeLabel.setText("耗时: -");
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>-</b></html>");
+        responseErrorPanel.setVisible(false);
+        responseErrorLabel.setText("");
+        responseErrorLabel.setIcon(null);
         responseCardLayout.show(responseContentPanel, "text");
         responseViewTree = false;
     }
@@ -4586,10 +4541,17 @@ public class ApiDebuggerPanel extends JPanel {
                 boolean passed = (h.getErrorMessage() == null || h.getErrorMessage().isBlank())
                         && h.getStatusCode() >= 200 && h.getStatusCode() < 300;
                 String color = passed ? "#2E7D32" : "#C62828";
+                String fullUrl = h.getUrl() == null ? "" : h.getUrl();
+                // 列表保持紧凑，但同时保留基础地址开头和最终路径/查询串尾部；
+                // 完整 URL 通过鼠标悬停提示查看，避免把 /users/{id} 模板误当成实际请求。
+                String visibleUrl = fullUrl.length() > 104
+                        ? fullUrl.substring(0, 32) + "…" + fullUrl.substring(fullUrl.length() - 68)
+                        : fullUrl;
                 setText(String.format("<html><span style='color:%s;font-weight:bold'>[%s]</span> %d <span style='color:#666'>(%dms)</span> %s - %s</html>",
                         color, h.getMethod(), h.getStatusCode(), h.getDurationMs(),
                         h.timeDisplay(),
-                        h.getUrl().length() > 60 ? h.getUrl().substring(h.getUrl().length() - 60) : h.getUrl()));
+                        escapeHtml(visibleUrl)));
+                setToolTipText(fullUrl);
             }
             return this;
         }
