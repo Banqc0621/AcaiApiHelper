@@ -146,6 +146,10 @@ public class ApiDebuggerPanel extends JPanel {
     private boolean duringAutoProportionChange = false;
     /** 一伦优化 #99：单个 toggle 按钮，文字在「展开响应」/「收起响应」间切换，纯文字无图标，跟就绪 label 等大。 */
     private JButton responseToggleBtn;
+    /** 一伦优化 #100：响应面板整体折叠态下 splitter 第二组件换成的 0 高占位面板，保证上区域贴底。 */
+    private JPanel responseCollapsedPlaceholder;
+    /** 一伦优化 #100：保存 createResponsePanel 返回的响应面板本尊，展开时塞回 splitter。 */
+    private JPanel responsePanelRoot;
 
     private final JBTextArea testResultArea = new JBTextArea();
     
@@ -1620,6 +1624,10 @@ public class ApiDebuggerPanel extends JPanel {
 
         this.responseBodyContainer = responseBodyContainer;
 
+        // 一伦优化 #100：保留响应面板本尊引用，折叠时 splitter 第二组件会换成 0 高占位面板，
+        // 上区域才能贴底——只 setVisible(false) 容器仍占它能"想要"的高度。
+        this.responsePanelRoot = panel;
+
         // 默认折叠
         applyResponseCollapsedState();
         return panel;
@@ -1631,20 +1639,34 @@ public class ApiDebuggerPanel extends JPanel {
         applyResponseCollapsedState();
     }
 
-    /** 一伦优化 #96/97/99：根据折叠状态同步主体可见性 + toggle 按钮文字 + 联动 splitter 比例。 */
+    /** 一伦优化 #96/97/99/100：根据折叠状态同步主体可见性 + toggle 按钮文字 + 联动 splitter 比例。 */
     private void applyResponseCollapsedState() {
-        if (responseBodyContainer != null) {
-            responseBodyContainer.setVisible(!responseContentCollapsed);
-        }
         // 单按钮 toggle：文字随状态切换
         if (responseToggleBtn != null) {
             responseToggleBtn.setText(responseContentCollapsed ? "展开响应" : "收起响应");
         }
+
+        // 一伦优化 #100：折叠时把 splitter 第二组件换成 0 高占位面板，
+        // 上区域才能贴底——之前只把 responseBodyContainer 设 invisible，
+        // 但 splitter 第二组件是外层 responsePanel（BorderLayout），容器不可见
+        // 仍会按 proportion 5% 占据 30px，看起来像"没到底"。
+        if (debuggerSplitter != null && responsePanelRoot != null) {
+            JPanel desired = responseContentCollapsed ? getOrCreateCollapsedPlaceholder() : responsePanelRoot;
+            if (debuggerSplitter.getSecondComponent() != desired) {
+                debuggerSplitter.setSecondComponent(desired);
+            }
+        }
+
+        // 主体可见性：折叠时彻底隐藏；展开时显示
+        if (responseBodyContainer != null) {
+            responseBodyContainer.setVisible(!responseContentCollapsed);
+        }
+
         // 联动调整 splitter 比例：折叠时把响应区压到接近 0，展开时回到用户偏好比例
         if (debuggerSplitter != null) {
             float target;
             if (responseContentCollapsed) {
-                // 折叠时只给响应面板一个最小可见厚度（约 30px）
+                // 折叠时给响应区留个最小可见厚度（约 30px），方便拖动分割条往下拉
                 int totalHeight = debuggerSplitter.getHeight();
                 int minHeight = 30;
                 if (totalHeight > 0 && minHeight > 0 && minHeight < totalHeight) {
@@ -1667,6 +1689,27 @@ public class ApiDebuggerPanel extends JPanel {
             responseBodyContainer.getParent().revalidate();
             responseBodyContainer.getParent().repaint();
         }
+        if (debuggerSplitter != null) {
+            debuggerSplitter.revalidate();
+            debuggerSplitter.repaint();
+        }
+    }
+
+    /**
+     * 一伦优化 #100：懒创建折叠态 splitter 占位面板，0×0 + opaque=false，不抢任何空间。
+     * setHonorComponentsMinimumSize(false) 已设，splitter 不会强制最小高度，所以占位面板只占
+     * proportion × 总高 的那一份，可以非常贴底。
+     */
+    private JPanel getOrCreateCollapsedPlaceholder() {
+        if (responseCollapsedPlaceholder == null) {
+            JPanel ph = new JPanel();
+            ph.setOpaque(false);
+            ph.setMinimumSize(new Dimension(0, 0));
+            ph.setPreferredSize(new Dimension(0, 0));
+            ph.setMaximumSize(new Dimension(Integer.MAX_VALUE, 0));
+            responseCollapsedPlaceholder = ph;
+        }
+        return responseCollapsedPlaceholder;
     }
 
     private JSeparator createSeparator() {
