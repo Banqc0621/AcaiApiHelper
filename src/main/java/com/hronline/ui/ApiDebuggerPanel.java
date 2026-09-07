@@ -29,6 +29,8 @@ import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.JBSplitter;
@@ -654,9 +656,8 @@ public class ApiDebuggerPanel extends JPanel {
 
     /**
      * 构建请求行的稳定三段布局：左侧方法标识、中央可收缩 URL、右侧主操作。
-     * <p>使用带宽度保护的行布局明确声明主操作的右侧归属，避免悬浮层或 glue
-     * 导致按钮在窄窗口、滚动条变化时漂移到中间/左侧；空间不足时 URL 区域最先收缩到 0，
-     * 不会生成 Swing 默认 BorderLayout 可能产生的负宽度。</p>
+     * <p>专用布局管理器明确把主按钮固定在右缘，并在窄窗口时把 URL 收缩到 0，
+     * 避免 BorderLayout 中心区域出现负宽度；按钮始终与当前接口方法/路径处于同一行。</p>
      */
     static JPanel createRequestActionRow(Component prefix, Component url, Component action) {
         JPanel row = new JPanel(new RequestActionRowLayout(prefix, url, action, 8));
@@ -727,8 +728,7 @@ public class ApiDebuggerPanel extends JPanel {
 
             int urlX = left + prefixWidth + (prefixWidth > 0 && contentRight > left + prefixWidth ? gap : 0);
             int urlWidth = Math.max(0, contentRight - urlX);
-            Dimension urlPreferred = url.getPreferredSize();
-            int urlHeight = Math.min(height, Math.max(0, urlPreferred.height));
+            int urlHeight = Math.min(height, Math.max(0, url.getPreferredSize().height));
             url.setBounds(urlX, top + (height - urlHeight) / 2, urlWidth, urlHeight);
         }
     }
@@ -822,7 +822,12 @@ public class ApiDebuggerPanel extends JPanel {
         panel.setBorder(UiStyle.cardBorder(6, 8));
 
         // 一伦优化 #88：顶部环境行 —— 字号提到 FONT_BODY + 加粗，scope hint 用更柔和的灰色
-        JPanel envRow = new JPanel(new BorderLayout());
+        JPanel envRow = new JPanel(new BorderLayout(8, 0));
+        envRow.setOpaque(true);
+        envRow.setBackground(JBColor.namedColor("Panel.background", new Color(0xF7, 0xF8, 0xFA)));
+        envRow.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1),
+                JBUI.Borders.empty(6, 8)));
         activeEnvInfoLabel.setFont(activeEnvInfoLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
         if (active != null) {
@@ -839,7 +844,9 @@ public class ApiDebuggerPanel extends JPanel {
         // 编辑器高度从 78 提到 160，给脚本真正可写的空间
         // 编辑器下方加 hint 描述 DSL 语法
         JPanel scriptPanel = new JPanel(new BorderLayout(0, 6));
-        scriptPanel.setBorder(JBUI.Borders.emptyRight(6));
+        scriptPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1),
+                JBUI.Borders.empty(8, 8, 6, 8)));
 
         JPanel scriptHeaderRow = new JPanel(new BorderLayout());
         scriptHeaderRow.setOpaque(false);
@@ -870,7 +877,9 @@ public class ApiDebuggerPanel extends JPanel {
         // 标题行：section 标题 + 右侧 toolbar（添加 / 删除），不再悬空放在表格下方
         // 表格下方加 hint 描述语义
         JPanel variablesPanel = new JPanel(new BorderLayout(0, 6));
-        variablesPanel.setBorder(JBUI.Borders.emptyLeft(6));
+        variablesPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1),
+                JBUI.Borders.empty(8, 8, 6, 8)));
 
         JPanel variablesHeaderRow = new JPanel(new BorderLayout());
         variablesHeaderRow.setOpaque(false);
@@ -891,9 +900,17 @@ public class ApiDebuggerPanel extends JPanel {
 
         UiStyle.styleTable(variableOverrideTable);
         variableOverrideTable.setRowHeight(26);
-        // 一伦优化 #89：变量覆盖表格显式加可见边框（默认 LaF 在 Darcula 下边框几乎看不见）
+        // 变量覆盖是两列可编辑表格，必须同时看清外框和单元格分隔。仅给 JScrollPane
+        // 加一圈 JBColor.border 在 Darcula 下仍像“无边框”，因此启用主题感知网格线。
+        Color variableGridColor = JBColor.namedColor("Table.gridColor",
+                new JBColor(new Color(0xB8, 0xBE, 0xC6), new Color(0x60, 0x66, 0x6E)));
+        variableOverrideTable.setShowGrid(true);
+        variableOverrideTable.setGridColor(variableGridColor);
+        variableOverrideTable.setIntercellSpacing(JBUI.size(1, 1));
         JBScrollPane varScroll = new JBScrollPane(variableOverrideTable);
-        varScroll.setBorder(BorderFactory.createLineBorder(JBColor.border(), 1));
+        varScroll.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(variableGridColor, 1),
+                JBUI.Borders.empty(1)));
         variablesPanel.add(varScroll, BorderLayout.CENTER);
 
         JBLabel variablesHint = new JBLabel("覆盖运行时变量，作用于本次请求");
@@ -1696,15 +1713,11 @@ public class ApiDebuggerPanel extends JPanel {
         topBar.add(controlPanel);
         panel.add(topBar, BorderLayout.NORTH);
 
-        // ── 中部：测试结果 + 进度条（沿用原「测试」Tab 的 testResultArea / testProgressBar） ──
+        // ── 中部：测试结果 ──
         JPanel center = new JPanel(new BorderLayout(0, 2));
-        // 一伦优化 #89：进度条前景/背景改成主题中性色，去掉 LaF 默认的刺眼蓝色填充
-        testProgressBar.setBackground(JBColor.namedColor("Panel.background", new JBColor(new Color(0xF7, 0xF8, 0xFA), new Color(0x3C, 0x3F, 0x41))));
-        testProgressBar.setForeground(JBColor.namedColor("Component.borderColor", new JBColor(new Color(0xC4, 0xC8, 0xCE), new Color(0x49, 0x4D, 0x53))));
+        // 进度通过底部状态栏和结果区逐项文本展示。隐藏旧 JProgressBar，避免在
+        // IntelliJ LaF 下出现刺眼的整块蓝色填充，且不会额外占用响应区高度。
         testProgressBar.setVisible(false);
-        testProgressBar.setStringPainted(true);
-        testProgressBar.setPreferredSize(new Dimension(-1, 18));
-        center.add(testProgressBar, BorderLayout.NORTH);
 
         testResultArea.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
         testResultArea.setEditable(false);
@@ -2955,7 +2968,7 @@ public class ApiDebuggerPanel extends JPanel {
             return;
         }
         
-        testProgressBar.setVisible(true);
+        testProgressBar.setVisible(false);
         testProgressBar.setIndeterminate(true);
         testResultArea.setText("");
         statusLabel.setText("● 正在测试: " + currentApi.getName());
@@ -3036,10 +3049,7 @@ public class ApiDebuggerPanel extends JPanel {
         batchTestBtn.setText("⏹ 停止测试");
         batchTestBtn.setToolTipText("点击停止正在进行的批量测试");
         
-        testProgressBar.setVisible(true);
-        testProgressBar.setMaximum(apis.size());
-        testProgressBar.setValue(0);
-        testProgressBar.setString("0/" + apis.size());
+        testProgressBar.setVisible(false);
         testResultArea.setText("");
         statusLabel.setText("● 批量测试开始 (" + apis.size() + " 个API)");
 
@@ -3056,7 +3066,6 @@ public class ApiDebuggerPanel extends JPanel {
                 if (batchTestCancelled) {
                     int completed = i;
                     ApplicationManager.getApplication().invokeLater(() -> {
-                        testProgressBar.setVisible(false);
                         batchTestBtn.setText("批量测试");
                         batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
                         testResultArea.append("\n⏹ 测试已停止 (完成 " + completed + "/" + apis.size() + ")\n");
@@ -3080,8 +3089,6 @@ public class ApiDebuggerPanel extends JPanel {
                 final TestResult r = result;
                 final int p = passed, f = failed, er = error;
                 ApplicationManager.getApplication().invokeLater(() -> {
-                    testProgressBar.setValue(cur);
-                    testProgressBar.setString(cur + "/" + apis.size());
                     String icon = r.isPassed() ? "✅" : (r.getStatus() == TestStatus.ERROR ? "⚠" : "❌");
                     testResultArea.append("[" + cur + "/" + apis.size() + "] " + icon + " " 
                             + r.getStatusCode() + " " + r.getDurationMs() + "ms  " 
@@ -3093,7 +3100,6 @@ public class ApiDebuggerPanel extends JPanel {
             final int total = apis.size();
             final int fp = passed, ff = failed, fe = error;
             ApplicationManager.getApplication().invokeLater(() -> {
-                testProgressBar.setVisible(false);
                 batchTestBtn.setText("▶ 批量测试");
                 batchTestBtn.setToolTipText("点击开始批量测试所有API，测试中再次点击可停止");
                 batchTestRunning = false;
@@ -4223,17 +4229,29 @@ public class ApiDebuggerPanel extends JPanel {
         // 一伦优化 #68：移除「发送 / 删除 / 查看请求」显式按钮——
         // 「发送 / 删除」改到右键菜单，「查看请求」双击历史记录已能触发。
         JButton diffBtn = iconButton("Diff对比", AllIcons.Actions.Diff, e -> diffSelectedHistory());
+        // 一伦优化 #91：「清空历史」按钮永远全量清空（按钮文案承诺的就是清空历史）。
+        // 之前按 currentApi / historyAllScope 分支：选了具体接口时只 removeIf 当前接口的记录，
+        // 剩下的批量测试记录依然在 requestHistory 里，下次批量测试 showAllHistory 切到全部范围
+        // 它们就『复活』了，看起来像清空没生效。
+        // 顺手也清掉历史所在接口对应的响应缓存，避免响应区残留旧接口的 lastResponseByApi 引用。
+        final java.util.Set<String> affectedKeys = new java.util.HashSet<>();
+        for (RequestHistory h : requestHistory) {
+            if (h != null && h.getApiKey() != null) affectedKeys.add(h.getApiKey());
+        }
+        if (currentApi != null && currentApi.uniqueKey() != null) affectedKeys.add(currentApi.uniqueKey());
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
-            if (currentApi == null || historyAllScope) {
-                requestHistory.clear();
-                lastResponseByApi.clear();
-            } else {
-                requestHistory.removeIf(this::historyBelongsToCurrentApi);
-                lastResponseByApi.remove(currentApi.uniqueKey());
-            }
+            int cleared = requestHistory.size();
+            requestHistory.clear();
+            for (String key : affectedKeys) lastResponseByApi.remove(key);
             persistHistory();
             refreshHistoryList();
             clearDisplayedResponse();
+            // 操作反馈：让用户清楚看见刚才清掉了多少条，而不是怀疑按钮没反应
+            NotificationGroupManager.getInstance().getNotificationGroup(RestAutoLabConstants.NOTIFICATION_GROUP)
+                    .createNotification(
+                            "已清空 " + cleared + " 条历史记录",
+                            NotificationType.INFORMATION)
+                    .notify(project);
         });
         btnPanel.add(diffBtn);
         btnPanel.add(clearBtn);
