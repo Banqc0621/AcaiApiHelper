@@ -134,10 +134,15 @@ public class ApiDebuggerPanel extends JPanel {
     /** #78/#85：异常信息条。网络 ERROR 或业务规则 FAILED 且有原因时可见，承载完整文本，避开底部 statusLabel。 */
     private final JBLabel responseErrorLabel = new JBLabel();
     private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
-    /** 一伦优化 #92：响应内容区折叠状态。默认折叠，等有响应或用户点击展开按钮才显示。 */
+    /** 一伦优化 #93：响应面板整体折叠状态。默认折叠（只露一条细标题栏），有响应或用户点击展开才显示完整面板。 */
     private boolean responseContentCollapsed = true;
     private JButton responseExpandBtn;
     private JButton responseCollapseBtn;
+    /** 折叠态显示的细标题栏 + 概要 label（始终可见，由 applyResponseCollapsedState 同步）。 */
+    private JPanel responseCollapsedHeader;
+    private JBLabel responseCollapsedSummaryLabel;
+    /** 展开态主体容器（状态 + 内容 + 按钮 三段），折叠时整块隐藏。 */
+    private JPanel responseBodyContainer;
 
     private final JBTextArea testResultArea = new JBTextArea();
     
@@ -1498,15 +1503,19 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private JPanel createResponsePanel() {
-        JPanel panel = new JPanel(new BorderLayout(0, 4));
-        panel.setBorder(JBUI.Borders.empty(4));
+        JPanel panel = new JPanel(new BorderLayout(0, 0));
+        panel.setBorder(JBUI.Borders.empty(0));
 
-        // === 顶部状态栏（一伦优化 #92：合并异常信息，字体更小，单行展示）===
+        // === 一伦优化 #93：响应面板整块可折叠 ===
+        // 折叠时整块（状态 + 内容 + 按钮）一起隐藏，只留一条 ~28px 高的细标题栏，
+        // 让 JBSplitter 把空间让给上半部分的请求面板。
+        // 展开时标题栏变成完整状态栏 + 内容区 + 底部按钮。
+
+        // 状态栏（展开态显示，与 #92 一致：合并异常 + 单行 + 小字）
         JPanel statusPanel = new JPanel(new BorderLayout(8, 0));
         statusPanel.setBorder(UiStyle.cardBorder(4, 6));
         statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
 
-        // 左侧：状态 / 耗时 / 大小 三段，中间：异常信息（合并进同一行）
         JPanel statusLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         statusLeft.setOpaque(false);
         responseStatusLabel.setFont(responseStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
@@ -1519,14 +1528,20 @@ public class ApiDebuggerPanel extends JPanel {
         statusLeft.add(responseSizeLabel);
         statusPanel.add(statusLeft, BorderLayout.WEST);
 
-        // 中间：异常 / 警告 提示（合并到同一行，单行展示 + tooltip 看完整内容）
         responseErrorLabel.setFont(responseErrorLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
         responseErrorLabel.setForeground(new JBColor(new Color(0xC62828), new Color(0xFF8A80)));
-        // 单行显示：截断省略号 + tooltip 完整内容
         responseErrorLabel.putClientProperty("html.disable", Boolean.FALSE);
         statusPanel.add(responseErrorLabel, BorderLayout.CENTER);
 
-        // 右侧：折叠/展开按钮
+        // === 折叠态的细标题栏 ===
+        // 整块只显示一个标签「▶ 接口响应 + 状态/耗时/大小概要」+ 右侧展开按钮
+        JBLabel collapsedSummaryLabel = new JBLabel();
+        collapsedSummaryLabel.setFont(collapsedSummaryLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
+        collapsedSummaryLabel.setForeground(JBColor.foreground());
+
+        // === 状态栏右侧操作区（展开/收起） ===
+        // 收起态：标题栏右侧放一个「展开」按钮
+        // 展开态：状态栏右侧放一个「收起」按钮
         responseExpandBtn = iconButton("展开响应", AllIcons.Actions.Expandall, e -> setResponseContentCollapsed(false));
         responseExpandBtn.setToolTipText("展开接口响应内容");
         responseCollapseBtn = iconButton("收起响应", AllIcons.Actions.Collapseall, e -> setResponseContentCollapsed(true));
@@ -1537,20 +1552,54 @@ public class ApiDebuggerPanel extends JPanel {
         statusRight.add(responseCollapseBtn);
         statusPanel.add(statusRight, BorderLayout.EAST);
 
-        // 保留旧 responseErrorPanel 引用兼容（不再加入布局，但避免其它处 NPE）
+        // 兼容旧字段
         responseErrorPanel.setVisible(false);
 
-        panel.add(statusPanel, BorderLayout.NORTH);
+        // === 折叠态细标题栏（始终在最外层 BorderLayout.NORTH）===
+        JPanel collapsedHeader = new JPanel(new BorderLayout(8, 0));
+        collapsedHeader.setBorder(JBUI.Borders.compound(
+                JBUI.Borders.customLine(JBColor.border(), 1),
+                JBUI.Borders.empty(4, 8)));
+        collapsedHeader.setBackground(JBColor.namedColor("Panel.background", new Color(245, 246, 248)));
+        JBLabel collapsedTitle = new JBLabel("▶ 接口响应");
+        collapsedTitle.setFont(collapsedTitle.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
+        collapsedHeader.add(collapsedTitle, BorderLayout.WEST);
+        collapsedHeader.add(collapsedSummaryLabel, BorderLayout.CENTER);
+        JButton expandFromHeader = iconButton("展开", AllIcons.Actions.Expandall, e -> setResponseContentCollapsed(false));
+        expandFromHeader.setToolTipText("展开接口响应（状态/耗时/大小 + 响应内容 + 操作按钮）");
+        JPanel collapsedHeaderRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        collapsedHeaderRight.setOpaque(false);
+        collapsedHeaderRight.add(expandFromHeader);
+        collapsedHeader.add(collapsedHeaderRight, BorderLayout.EAST);
+        // 整个标题栏也可点击展开
+        collapsedHeader.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        collapsedHeader.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)) {
+                    setResponseContentCollapsed(false);
+                }
+            }
+        });
+        collapsedTitle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        collapsedSummaryLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-        // === 响应 body 容器（一伦优化 #92：默认折叠，等有响应或用户点展开才显示）===
+        // 记录下来，applyResponseCollapsedState 用
+        this.responseCollapsedHeader = collapsedHeader;
+        this.responseCollapsedSummaryLabel = collapsedSummaryLabel;
+
+        // === 展开态主体：状态栏 + 内容 + 按钮 三段包成一个 panel ===
+        JPanel responseBodyContainer = new JPanel(new BorderLayout(0, 4));
+        responseBodyContainer.setBorder(JBUI.Borders.empty(4));
+        responseBodyContainer.add(statusPanel, BorderLayout.NORTH);
+
+        // 响应 body 容器（卡片式）
         responseContentPanel.setBorder(JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1),
                 JBUI.Borders.empty(2)));
         responseContentPanel.setBackground(JBColor.namedColor("Editor.background", new Color(250, 250, 250)));
-        panel.add(responseContentPanel, BorderLayout.CENTER);
+        responseBodyContainer.add(responseContentPanel, BorderLayout.CENTER);
 
-        // === 响应内容区域（支持文本/树形切换） ===
-        // v2.0.0：文本视图使用 JsonSyntaxPane（JSON 语法高亮 + Ctrl+滚轮缩放 + 右键菜单）
+        // 内容区：文本 + 树形
         responsePane.setEditable(false);
         responsePane.setToolTipText("提示：Ctrl+滚轮 或 Ctrl++/- 可缩放字体，右键提供复制/全选/缩放");
         JScrollPane textScroll = new JBScrollPane(responsePane);
@@ -1559,12 +1608,10 @@ public class ApiDebuggerPanel extends JPanel {
         textScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
         responseContentPanel.add(textScroll, "text");
 
-        // 保持 responseArea 同步（用于后台数据兼容，不直接显示）
         responseArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
         responseArea.setEditable(false);
         responseArea.setLineWrap(false);
 
-        // 树形视图
         responseJsonTree.setRootVisible(false);
         responseJsonTree.setShowsRootHandles(true);
         responseJsonTree.setFont(responseJsonTree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
@@ -1573,10 +1620,9 @@ public class ApiDebuggerPanel extends JPanel {
         treeScroll.setBorder(JBUI.Borders.empty());
         responseContentPanel.add(treeScroll, "tree");
 
-        // 默认显示文本视图
         responseCardLayout.show(responseContentPanel, "text");
 
-        // === 底部操作按钮（v3.0：去掉 emoji 前缀、统一 iconTextGap=6、字色与字号一致）===
+        // 底部操作按钮
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
 
         JButton viewToggleBtn = iconButton("树形视图", AllIcons.Actions.ShowAsTree, e -> toggleResponseView());
@@ -1600,34 +1646,54 @@ public class ApiDebuggerPanel extends JPanel {
         btnPanel.add(copyBtn);
         btnPanel.add(clearBtn);
 
-        panel.add(btnPanel, BorderLayout.SOUTH);
+        responseBodyContainer.add(btnPanel, BorderLayout.SOUTH);
 
-        // 一伦优化 #92：默认折叠响应内容区，展开按钮可见、收起按钮隐藏
+        // 记录引用供 applyResponseCollapsedState 用
+        this.responseBodyContainer = responseBodyContainer;
+
+        // === 外层布局：折叠态标题栏固定 NORTH + 展开态主体在 CENTER ===
+        panel.add(collapsedHeader, BorderLayout.NORTH);
+        panel.add(responseBodyContainer, BorderLayout.CENTER);
+
+        // 默认折叠
         applyResponseCollapsedState();
         return panel;
     }
 
-    /** 一伦优化 #92：切换响应内容区的折叠状态，并同步顶部按钮可见性。 */
+    /** 一伦优化 #93：切换响应面板整体折叠状态（标题栏常驻 + 主体显示/隐藏）。 */
     private void setResponseContentCollapsed(boolean collapsed) {
         this.responseContentCollapsed = collapsed;
         applyResponseCollapsedState();
     }
 
-    /** 一伦优化 #92：根据 {@link #responseContentCollapsed} 同步折叠 UI。 */
+    /** 一伦优化 #93：根据 {@link #responseContentCollapsed} 同步标题栏 + 主体可见性。 */
     private void applyResponseCollapsedState() {
-        if (responseContentPanel != null) {
-            responseContentPanel.setVisible(!responseContentCollapsed);
+        if (responseBodyContainer != null) {
+            responseBodyContainer.setVisible(!responseContentCollapsed);
         }
+        // 状态栏右侧展开/收起按钮只对展开态可见（折叠态用标题栏的展开按钮）
         if (responseExpandBtn != null) {
-            responseExpandBtn.setVisible(responseContentCollapsed);
+            responseExpandBtn.setVisible(false); // 折叠态时外层标题栏已有展开按钮，状态栏这个隐藏避免重复
         }
         if (responseCollapseBtn != null) {
             responseCollapseBtn.setVisible(!responseContentCollapsed);
         }
+        // 折叠态摘要标签：展示状态/耗时/大小概要
+        if (responseCollapsedSummaryLabel != null) {
+            String status = responseStatusLabel.getText();
+            String time = responseTimeLabel.getText();
+            String sizeHtml = responseSizeLabel.getText();
+            String sizeText = sizeHtml.replaceAll("<[^>]+>", "");
+            if (responseContentCollapsed && (!status.contains("-") || !status.equals("状态: -"))) {
+                responseCollapsedSummaryLabel.setText(status + "  ·  " + time + "  ·  " + sizeText);
+            } else {
+                responseCollapsedSummaryLabel.setText("");
+            }
+        }
         // 重绘外层 panel 让 JBSplitter 重新分配空间
-        if (responseContentPanel != null && responseContentPanel.getParent() != null) {
-            responseContentPanel.getParent().revalidate();
-            responseContentPanel.getParent().repaint();
+        if (responseBodyContainer != null && responseBodyContainer.getParent() != null) {
+            responseBodyContainer.getParent().revalidate();
+            responseBodyContainer.getParent().repaint();
         }
     }
 
