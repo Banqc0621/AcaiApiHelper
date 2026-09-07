@@ -1505,82 +1505,15 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 0));
         panel.setBorder(JBUI.Borders.empty(0));
 
-        // === 一伦优化 #94：响应面板折叠方案 v3 ===
-        // 永远显示一行：状态 / 耗时 / 大小 / [展开|收起] —— 这一行本身就是 toggle 行
-        // 折叠时只有这一行（~28px），整行可点击切换；展开时下面挂响应内容 + 操作按钮。
-        // 没有冗余的「▶ 接口响应」标题栏，状态行就是标题行。
-
-        // === 状态行（toggle 行）===
-        JPanel statusPanel = new JPanel(new BorderLayout(8, 0));
-        statusPanel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(JBColor.border(), 1),
-                JBUI.Borders.empty(4, 8)));
-        statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
-
-        JPanel statusLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        statusLeft.setOpaque(false);
-        responseStatusLabel.setFont(responseStatusLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
-        responseTimeLabel.setFont(responseTimeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        responseSizeLabel.setFont(responseSizeLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        statusLeft.add(responseStatusLabel);
-        statusLeft.add(createSeparator());
-        statusLeft.add(responseTimeLabel);
-        statusLeft.add(createSeparator());
-        statusLeft.add(responseSizeLabel);
-        statusPanel.add(statusLeft, BorderLayout.WEST);
-
-        responseErrorLabel.setFont(responseErrorLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_HINT));
-        responseErrorLabel.setForeground(new JBColor(new Color(0xC62828), new Color(0xFF8A80)));
-        responseErrorLabel.putClientProperty("html.disable", Boolean.FALSE);
-        statusPanel.add(responseErrorLabel, BorderLayout.CENTER);
-
-        // 右侧：展开/收起按钮（同一个位置，根据状态切换图标和 tooltip）
-        responseExpandBtn = iconButton("展开", AllIcons.Actions.Expandall,
-                e -> setResponseContentCollapsed(false));
-        responseExpandBtn.setToolTipText("展开接口响应（点击状态行任意位置也可切换）");
-        responseCollapseBtn = iconButton("收起", AllIcons.Actions.Collapseall,
-                e -> setResponseContentCollapsed(true));
-        responseCollapseBtn.setToolTipText("收起接口响应（点击状态行任意位置也可切换）");
-        JPanel statusRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 2));
-        statusRight.setOpaque(false);
-        statusRight.add(responseExpandBtn);
-        statusRight.add(responseCollapseBtn);
-        statusPanel.add(statusRight, BorderLayout.EAST);
-
-        // 兼容旧字段
-        responseErrorPanel.setVisible(false);
-
-        // 整行设置 hand cursor + 点击切换 —— 任何空白区域点击都生效
-        Cursor hand = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR);
-        statusPanel.setCursor(hand);
-        statusLeft.setCursor(hand);
-        statusRight.setCursor(hand);
-        responseErrorLabel.setCursor(hand);
-        responseStatusLabel.setCursor(hand);
-        responseTimeLabel.setCursor(hand);
-        responseSizeLabel.setCursor(hand);
-        // 不让按钮的 hit area 阻断（按钮自己处理点击）
-        java.awt.event.MouseAdapter rowClick = new java.awt.event.MouseAdapter() {
-            @Override public void mouseClicked(java.awt.event.MouseEvent e) {
-                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)) {
-                    // 命中点在按钮上就交给按钮自己处理（按钮 click 会先于 rowClick 触发，
-                    // 但保险起见判断 source）
-                    Object src = e.getSource();
-                    if (src instanceof JButton) return;
-                    setResponseContentCollapsed(!responseContentCollapsed);
-                }
-            }
-        };
-        statusPanel.addMouseListener(rowClick);
-        statusLeft.addMouseListener(rowClick);
-        statusRight.addMouseListener(rowClick);
-        responseErrorLabel.addMouseListener(rowClick);
+        // === 一伦优化 #95：响应面板折叠方案 v4 ===
+        // 状态行挂到面板 SOUTH（底部）：折叠时行紧贴面板底边，展开时响应内容从行上方生长出来，
+        // 视觉上状态行随展开关闭上下滑动，像抽屉把手。
+        // 状态行瘦身：更矮的内边距 + 更小的字号 + 不再显示白/黑名单告警文字。
 
         // === 主体：内容 + 底部按钮（折叠时整块隐藏）===
         JPanel responseBodyContainer = new JPanel(new BorderLayout(0, 4));
-        responseBodyContainer.setBorder(JBUI.Borders.empty(4));
+        responseBodyContainer.setBorder(JBUI.Borders.empty(4, 4, 0, 4));
 
-        // 响应 body 容器（卡片式）
         responseContentPanel.setBorder(JBUI.Borders.compound(
                 JBUI.Borders.customLine(JBColor.border(), 1),
                 JBUI.Borders.empty(2)));
@@ -1636,9 +1569,75 @@ public class ApiDebuggerPanel extends JPanel {
 
         responseBodyContainer.add(btnPanel, BorderLayout.SOUTH);
 
-        // === 外层布局：状态行固定 NORTH + 主体在 CENTER ===
-        panel.add(statusPanel, BorderLayout.NORTH);
+        // === 状态行（toggle 行，挂 SOUTH）===
+        // 一伦优化 #95：高度更矮（empty(2,8)）、字号 FONT_HINT-2、不显示告警文字
+        // 整行只有 状态/耗时/大小 + 展开/收起按钮
+        JPanel statusPanel = new JPanel(new BorderLayout(8, 0));
+        statusPanel.setBorder(JBUI.Borders.compound(
+                JBUI.Borders.customLine(JBColor.border(), 1),
+                JBUI.Borders.empty(2, 8)));
+        statusPanel.setBackground(JBColor.namedColor("Panel.background", new Color(248, 249, 250)));
+
+        JPanel statusLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        statusLeft.setOpaque(false);
+        // 一伦优化 #95：状态/耗时/大小都用更小字号（11pt）
+        Font statusFont = responseStatusLabel.getFont().deriveFont(Font.PLAIN, 11f);
+        responseStatusLabel.setFont(statusFont.deriveFont(Font.BOLD));
+        responseTimeLabel.setFont(statusFont);
+        responseSizeLabel.setFont(statusFont);
+        statusLeft.add(responseStatusLabel);
+        statusLeft.add(createSeparator());
+        statusLeft.add(responseTimeLabel);
+        statusLeft.add(createSeparator());
+        statusLeft.add(responseSizeLabel);
+        statusPanel.add(statusLeft, BorderLayout.WEST);
+
+        // 一伦优化 #95：不再展示白/黑名单告警文字（占空间且分散注意力）
+        // 但保留 responseErrorLabel 引用以便别处仍然能 setText（保持兼容）
+        responseErrorLabel.setFont(statusFont);
+        responseErrorLabel.setForeground(new JBColor(new Color(0xC62828), new Color(0xFF8A80)));
+        responseErrorLabel.setText(""); // 默认清空
+
+        // 右侧：展开/收起按钮
+        responseExpandBtn = iconButton("展开", AllIcons.Actions.Expandall,
+                e -> setResponseContentCollapsed(false));
+        responseExpandBtn.setToolTipText("展开接口响应（点击状态行任意位置也可切换）");
+        responseCollapseBtn = iconButton("收起", AllIcons.Actions.Collapseall,
+                e -> setResponseContentCollapsed(true));
+        responseCollapseBtn.setToolTipText("收起接口响应（点击状态行任意位置也可切换）");
+        JPanel statusRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
+        statusRight.setOpaque(false);
+        statusRight.add(responseExpandBtn);
+        statusRight.add(responseCollapseBtn);
+        statusPanel.add(statusRight, BorderLayout.EAST);
+
+        // 兼容旧字段
+        responseErrorPanel.setVisible(false);
+
+        // 整行设置 hand cursor + 点击切换
+        Cursor hand = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR);
+        statusPanel.setCursor(hand);
+        statusLeft.setCursor(hand);
+        statusRight.setCursor(hand);
+        responseStatusLabel.setCursor(hand);
+        responseTimeLabel.setCursor(hand);
+        responseSizeLabel.setCursor(hand);
+        java.awt.event.MouseAdapter rowClick = new java.awt.event.MouseAdapter() {
+            @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+                if (e.getClickCount() == 1 && SwingUtilities.isLeftMouseButton(e)) {
+                    Object src = e.getSource();
+                    if (src instanceof JButton) return;
+                    setResponseContentCollapsed(!responseContentCollapsed);
+                }
+            }
+        };
+        statusPanel.addMouseListener(rowClick);
+        statusLeft.addMouseListener(rowClick);
+        statusRight.addMouseListener(rowClick);
+
+        // === 外层布局：状态行挂 SOUTH（底部），主体在 CENTER ===
         panel.add(responseBodyContainer, BorderLayout.CENTER);
+        panel.add(statusPanel, BorderLayout.SOUTH);
 
         this.responseBodyContainer = responseBodyContainer;
         this.responseStatusPanel = statusPanel;
@@ -1648,25 +1647,23 @@ public class ApiDebuggerPanel extends JPanel {
         return panel;
     }
 
-    /** 一伦优化 #94：切换响应面板整体折叠状态。 */
+    /** 一伦优化 #95：切换响应面板整体折叠状态。 */
     private void setResponseContentCollapsed(boolean collapsed) {
         this.responseContentCollapsed = collapsed;
         applyResponseCollapsedState();
     }
 
-    /** 一伦优化 #94：根据 {@link #responseContentCollapsed} 同步主体可见性 + 按钮图标。 */
+    /** 一伦优化 #95：根据 {@link #responseContentCollapsed} 同步主体可见性 + 按钮图标。 */
     private void applyResponseCollapsedState() {
         if (responseBodyContainer != null) {
             responseBodyContainer.setVisible(!responseContentCollapsed);
         }
-        // 状态行右侧按钮：折叠态显示「展开」，展开态显示「收起」
         if (responseExpandBtn != null) {
             responseExpandBtn.setVisible(responseContentCollapsed);
         }
         if (responseCollapseBtn != null) {
             responseCollapseBtn.setVisible(!responseContentCollapsed);
         }
-        // 重绘外层 panel 让 JBSplitter 重新分配空间
         if (responseBodyContainer != null && responseBodyContainer.getParent() != null) {
             responseBodyContainer.getParent().revalidate();
             responseBodyContainer.getParent().repaint();
@@ -2492,20 +2489,11 @@ public class ApiDebuggerPanel extends JPanel {
         responseSizeLabel.setText("<html><span style='color:gray'>大小</span> <b>"
                 + formatBytes(size) + "</b></html>");
 
-        // 一伦优化 #92：异常信息合并到顶部状态栏单行展示（与状态/耗时/大小共用一行），
-        // 不再单独占一行红色面板，整体更紧凑。
-        String error = result.getErrorMessage();
-        if (error != null && !error.isBlank()) {
-            // tooltip 保留完整内容，UI 文本做截断避免挤压状态字段
-            String compact = error.length() > 80 ? error.substring(0, 80) + "…" : error;
-            responseErrorLabel.setIcon(AllIcons.General.Warning);
-            responseErrorLabel.setText("异常：" + escapeHtml(compact));
-            responseErrorLabel.setToolTipText("<html><body style='width:400px'>" + escapeHtml(error) + "</body></html>");
-        } else {
-            responseErrorLabel.setIcon(null);
-            responseErrorLabel.setText("");
-            responseErrorLabel.setToolTipText(null);
-        }
+        // 一伦优化 #95：状态行不再展示白/黑名单告警文字（占空间且分散注意力），
+        // 告警信息清空。需要时用户可点开日志或在异常 Tab 查看。
+        responseErrorLabel.setIcon(null);
+        responseErrorLabel.setText("");
+        responseErrorLabel.setToolTipText(null);
         // 兼容旧字段：保持 responseErrorPanel 不可见
         responseErrorPanel.setVisible(false);
 
