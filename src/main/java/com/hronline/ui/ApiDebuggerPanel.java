@@ -286,20 +286,36 @@ public class ApiDebuggerPanel extends JPanel {
         bottomLeft.setOpaque(false);
         bottomLeft.add(statusLabel);
         bottomPanel.add(bottomLeft, BorderLayout.WEST);
-        // 右侧按钮：用 hint 同字号 + 灰色前景，跟 statusLabel 视觉一致
-        responseExpandBtn = iconButton("展开响应", AllIcons.Actions.Expandall,
-                e -> setResponseContentCollapsed(false));
-        responseCollapseBtn = iconButton("收起响应", AllIcons.Actions.Collapseall,
-                e -> setResponseContentCollapsed(true));
-        // UiStyle.hint(JLabel) 不接受 JButton，手动套同款 FONT_HINT + 灰前景
+        // 右侧按钮：扁平化成跟 statusLabel 完全一致的字号/前景色，没有任何边框/背景/留白
+        // iconButton 走 UiStyle.button 会带 2,8 内边距 + 边框 + focusPaint，必须全部清掉才能跟 JLabel 同高同大
+        responseExpandBtn = new JButton("展开响应", AllIcons.Actions.Expandall);
+        responseExpandBtn.addActionListener(e -> setResponseContentCollapsed(false));
+        responseCollapseBtn = new JButton("收起响应", AllIcons.Actions.Collapseall);
+        responseCollapseBtn.addActionListener(e -> setResponseContentCollapsed(true));
+        // 一伦优化 #98：完全扁平化 —— 跟 statusLabel 同款 (FONT_HINT PLAIN 11f + JBColor.GRAY)
         Font hintFont = statusLabel.getFont();
         responseExpandBtn.setFont(hintFont);
         responseCollapseBtn.setFont(hintFont);
         responseExpandBtn.setForeground(JBColor.GRAY);
         responseCollapseBtn.setForeground(JBColor.GRAY);
+        responseExpandBtn.setBorder(BorderFactory.createEmptyBorder());
+        responseCollapseBtn.setBorder(BorderFactory.createEmptyBorder());
+        responseExpandBtn.setMargin(new Insets(0, 0, 0, 0));
+        responseCollapseBtn.setMargin(new Insets(0, 0, 0, 0));
+        responseExpandBtn.setContentAreaFilled(false);
+        responseCollapseBtn.setContentAreaFilled(false);
+        responseExpandBtn.setFocusPainted(false);
+        responseCollapseBtn.setFocusPainted(false);
+        responseExpandBtn.setBorderPainted(false);
+        responseCollapseBtn.setBorderPainted(false);
+        responseExpandBtn.setIconTextGap(2);
+        responseCollapseBtn.setIconTextGap(2);
+        responseExpandBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        responseCollapseBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         responseExpandBtn.setToolTipText("展开接口响应（查看响应内容）");
         responseCollapseBtn.setToolTipText("收起接口响应（仅显示请求结果摘要）");
-        JPanel bottomRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        // 用 FlowLayout(LEFT, 0, 0) 跟左侧 statusLabel 完全水平对齐（不留额外间距）
+        JPanel bottomRight = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         bottomRight.setOpaque(false);
         bottomRight.add(responseExpandBtn);
         bottomRight.add(responseCollapseBtn);
