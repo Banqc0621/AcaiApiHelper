@@ -103,14 +103,16 @@ public class ApiTreePanel extends JPanel {
     private final JToggleButton btnLatest = new JToggleButton(FILTER_LATEST, AllIcons.Actions.Refresh);
     /** 收藏视图右上角的一键折叠按钮 */
     private JButton collapseAllFoldersButton;
-    // #83 v2：合并成一个 SplitButton（主按钮 28x28 + 紧贴的小下拉箭头 14x28，视觉上是
-    // 一个复合组件）。主按钮 = toggle 行为（按当前状态智能执行收起或展开），下拉箭头
-    // = 弹出菜单让用户强制选「一键收起 / 一键展开」。这是 IntelliJ 工具栏通用模式
-    // （Run / Save / Compare 按钮都这么做）。
-    private JButton expandCollapseDropdownButton;
+
+    /** 收藏树重建时沿用用户最后一次“一键展开/收起”的状态，避免刷新后又被强制展开。 */
+    private boolean starredFoldersExpanded = true;
+    /** 批量展开/收起期间屏蔽 TreeExpansionListener，避免中间态覆盖最终状态。 */
+    private boolean applyingFolderExpansion;
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
+    /** 收藏夹批量测试的可视化进度，避免仅靠状态文字难以判断整体进度。 */
+    private final JProgressBar starredBatchProgress = new JProgressBar();
 
     /** API选中回调 - 通知调试面板更新 */
     private Consumer<ApiDefinition> onApiSelected = null;
@@ -184,9 +186,13 @@ public class ApiTreePanel extends JPanel {
         tree.setTransferHandler(new StarredDragTransferHandler());
         tree.addTreeExpansionListener(new javax.swing.event.TreeExpansionListener() {
             @Override public void treeExpanded(javax.swing.event.TreeExpansionEvent event) {
+                // 用户也可以逐个点击三角手动展开。把“全部展开”状态同步回按钮状态，
+                // 这样随后刷新/切换收藏视图时不会把用户刚才的操作悄悄覆盖掉。
+                if (!applyingFolderExpansion) syncStarredExpansionState();
                 updateExpandCollapseButtons();
             }
             @Override public void treeCollapsed(javax.swing.event.TreeExpansionEvent event) {
+                if (!applyingFolderExpansion) syncStarredExpansionState();
                 updateExpandCollapseButtons();
             }
         });
@@ -506,6 +512,12 @@ public class ApiTreePanel extends JPanel {
         statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         statsLabel.setForeground(JBColor.GRAY);
         bottomPanel.add(statsLabel, BorderLayout.WEST);
+        starredBatchProgress.setVisible(false);
+        starredBatchProgress.setStringPainted(true);
+        starredBatchProgress.setPreferredSize(new Dimension(132, 16));
+        starredBatchProgress.setMinimum(0);
+        starredBatchProgress.getAccessibleContext().setAccessibleName("收藏夹批量测试进度");
+        bottomPanel.add(starredBatchProgress, BorderLayout.EAST);
         add(bottomPanel, BorderLayout.SOUTH);
 
         // 保存 centerPanel 引用以便切换
@@ -572,6 +584,7 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
+            starredBatchProgress.setVisible(false);
             updateExpandCollapseButtons();
             // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
             // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
@@ -616,6 +629,7 @@ public class ApiTreePanel extends JPanel {
         // 等持久化字段从旧 key 改写到新 key，完成后收藏视图会自动反映最新接口信息。
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
+            starredBatchProgress.setVisible(false);
             updateExpandCollapseButtons();
             // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
             triggerScanIfNeeded("最新");
@@ -658,13 +672,10 @@ public class ApiTreePanel extends JPanel {
         // 弹性空白把收藏视图操作推到右上角。
         row.add(Box.createHorizontalGlue());
 
-        // #83 v2：SplitButton —— 主按钮 + 紧贴下拉箭头，两者无视觉间隙，视觉上是单一组件。
-        // 主按钮执行 toggle（按当前状态智能切换收起/展开），下拉箭头固定向下三角，
-        // 弹出菜单让用户强制选「收起 / 展开」。
+        // #84：收起/展开合并为一个智能切换按钮。按钮图标和提示随当前状态变化，
+        // 点击一次即执行对应动作，避免主按钮 + 下拉箭头造成重复入口和状态不同步。
         collapseAllFoldersButton = new JButton(AllIcons.Actions.Collapseall);
-        // tooltip 双行同时显示两个动作，避免图标切换造成的歧义（用户 hover 就知道两个都有）
-        collapseAllFoldersButton.setToolTipText(
-                "<html>一键收起所有文件夹<br/>一键展开所有文件夹</html>");
+        collapseAllFoldersButton.setToolTipText("一键收起或展开所有文件夹");
         collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起或展开所有文件夹");
         styleToolbarIconButton(collapseAllFoldersButton, "一键收起所有文件夹 / 一键展开所有文件夹");
         collapseAllFoldersButton.setPreferredSize(new Dimension(28, 28));
@@ -672,28 +683,8 @@ public class ApiTreePanel extends JPanel {
         collapseAllFoldersButton.setMaximumSize(new Dimension(28, 28));
         collapseAllFoldersButton.addActionListener(e -> toggleAllFolderNodes());
 
-        expandCollapseDropdownButton = new JButton(new DownTriangleIcon());
-        expandCollapseDropdownButton.setToolTipText("选择收起或展开所有文件夹");
-        expandCollapseDropdownButton.getAccessibleContext().setAccessibleName("选择收起或展开所有文件夹");
-        styleToolbarIconButton(expandCollapseDropdownButton, "选择收起或展开所有文件夹");
-        // 下拉箭头按钮窄一点，紧贴主按钮
-        expandCollapseDropdownButton.setPreferredSize(new Dimension(14, 28));
-        expandCollapseDropdownButton.setMinimumSize(new Dimension(14, 28));
-        expandCollapseDropdownButton.setMaximumSize(new Dimension(14, 28));
-        expandCollapseDropdownButton.addActionListener(e ->
-                showCollapseExpandMenu(expandCollapseDropdownButton));
-
-        // 关键 —— 两个按钮 BoxLayout 紧贴放一起，setAlignmentY 都是居中，视觉上是单一组件
-        JPanel splitGroup = new JPanel();
-        splitGroup.setLayout(new BoxLayout(splitGroup, BoxLayout.X_AXIS));
-        splitGroup.setOpaque(false);
         collapseAllFoldersButton.setAlignmentY(Component.CENTER_ALIGNMENT);
-        expandCollapseDropdownButton.setAlignmentY(Component.CENTER_ALIGNMENT);
-        splitGroup.add(collapseAllFoldersButton);
-        splitGroup.add(expandCollapseDropdownButton);
-        // SplitGroup 自身在 row 里按 left-align
-        splitGroup.setAlignmentX(Component.LEFT_ALIGNMENT);
-        row.add(splitGroup);
+        row.add(collapseAllFoldersButton);
         // 与左侧分类按钮基线之间留 4px 呼吸
         row.add(Box.createHorizontalStrut(4));
         updateExpandCollapseButtons();
@@ -702,20 +693,25 @@ public class ApiTreePanel extends JPanel {
     }
 
     private void updateExpandCollapseButtons() {
-        // #83 v2：SplitButton 主体只控制可见性 + enabled，主按钮图标根据「当前是否全部展开」
-        // 切换 Collapseall ↔ Expandall，hover tooltip 双行说明让用户知道两个动作都有。
-        if (collapseAllFoldersButton == null || expandCollapseDropdownButton == null) return;
+        // #84：单按钮智能切换。图标/tooltip 是当前状态的即时反馈，避免用户误解。
+        if (collapseAllFoldersButton == null) return;
         boolean starred = FILTER_STARRED.equals(currentFilter);
         boolean hasContent = starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
-                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
+                && hasExpandableFolderNodes((DefaultMutableTreeNode) treeModel.getRoot());
         collapseAllFoldersButton.setVisible(starred);
-        expandCollapseDropdownButton.setVisible(starred);
         collapseAllFoldersButton.setEnabled(hasContent);
-        expandCollapseDropdownButton.setEnabled(hasContent);
         if (hasContent) {
             boolean expanded = areAllFolderNodesExpanded((DefaultMutableTreeNode) treeModel.getRoot());
             collapseAllFoldersButton.setIcon(expanded
                     ? AllIcons.Actions.Collapseall : AllIcons.Actions.Expandall);
+            collapseAllFoldersButton.setToolTipText(expanded
+                    ? "一键收起所有文件夹" : "一键展开所有文件夹");
+            collapseAllFoldersButton.getAccessibleContext().setAccessibleName(expanded
+                    ? "一键收起所有文件夹" : "一键展开所有文件夹");
+        } else {
+            collapseAllFoldersButton.setIcon(AllIcons.Actions.Collapseall);
+            collapseAllFoldersButton.setToolTipText("一键收起或展开所有文件夹");
+            collapseAllFoldersButton.getAccessibleContext().setAccessibleName("一键收起或展开所有文件夹");
         }
         Container parent = collapseAllFoldersButton.getParent();
         if (parent != null) {
@@ -725,52 +721,16 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * #83 v2：SplitButton 下拉箭头菜单 —— 让用户可以强制选「收起」还是「展开」，
-     * 不必依赖主按钮的智能 toggle。两个菜单项用图标 + 文本，互斥可选。
+     * 把树当前可见的展开状态同步到收藏视图的重建策略。
+     * <p>只在收藏视图且根节点已准备好时读取，避免全量/最新视图的展开事件把收藏状态
+     * 改掉。部分展开时记为 false；下一次“一键”会执行完整展开，行为稳定可预期。</p>
      */
-    private void showCollapseExpandMenu(JComponent anchor) {
-        if (!FILTER_STARRED.equals(currentFilter)) return;
-        boolean hasContent = treeModel.getRoot() instanceof DefaultMutableTreeNode
-                && ((DefaultMutableTreeNode) treeModel.getRoot()).getChildCount() > 0;
-        if (!hasContent) return;
-
-        JPopupMenu menu = new JPopupMenu();
-        JMenuItem collapse = new JMenuItem("一键收起所有文件夹", AllIcons.Actions.Collapseall);
-        collapse.addActionListener(e -> collapseAllFolderNodes());
-        JMenuItem expand = new JMenuItem("一键展开所有文件夹", AllIcons.Actions.Expandall);
-        expand.addActionListener(e -> expandAllFolderNodesFromToolbar());
-        menu.add(collapse);
-        menu.add(expand);
-        menu.show(anchor, 0, anchor.getHeight());
-    }
-
-    /**
-     * #83 v2：自绘的小下三角箭头图标 —— 跟主按钮无视觉间隙紧贴成组。
-     * Swing 的 BasicArrowButton 在 IntelliJ LaF 下渲染不协调，自绘最稳。
-     */
-    private static final class DownTriangleIcon implements javax.swing.Icon {
-        @Override public void paintIcon(Component c, Graphics g, int x, int y) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                // 颜色跟主按钮一致：hover/selected 状态取前景，否则用半透明灰
-                Color fg = c.isEnabled()
-                        ? (c.getForeground() != null ? c.getForeground() : UIManager.getColor("Label.foreground"))
-                        : UIManager.getColor("Label.disabledForeground");
-                if (fg == null) fg = new JBColor(new Color(0x66, 0x66, 0x66), new Color(0xAA, 0xAA, 0xAA));
-                g2.setColor(fg);
-                // 居中画一个小三角（4px 边长）
-                int cx = x + getIconWidth() / 2;
-                int cy = y + getIconHeight() / 2 - 1;
-                int[] xs = {cx - 3, cx + 3, cx};
-                int[] ys = {cy - 2, cy - 2, cy + 2};
-                g2.fillPolygon(xs, ys, 3);
-            } finally {
-                g2.dispose();
-            }
-        }
-        @Override public int getIconWidth() { return 10; }
-        @Override public int getIconHeight() { return 10; }
+    private void syncStarredExpansionState() {
+        if (!FILTER_STARRED.equals(currentFilter)
+                || !(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        if (!hasExpandableFolderNodes(root)) return;
+        starredFoldersExpanded = areAllFolderNodesExpanded(root);
     }
 
     /**
@@ -1182,10 +1142,20 @@ public class ApiTreePanel extends JPanel {
             for (StarredFolder folder : topFolders) {
                 root.add(buildFolderNode(folder, childrenByParent, keyword, counters));
             }
-            treeModel.setRoot(root);
-            // setRoot 已触发结构重载，无需再 reload()（reload 会再次清空 expandedState，让紧随的 expandPath 失效）
-            // 同步展开所有层级的文件夹节点：紧随 setRoot 之后，路径基于新 root 构造，有效
-            expandAllFolderNodes(root);
+            applyingFolderExpansion = true;
+            try {
+                treeModel.setRoot(root);
+                // setRoot 已触发结构重载，无需再 reload()（reload 会再次清空 expandedState，让紧随的 expandPath 失效）
+                // 同步应用上次的一键状态：扫描、搜索或切换页面重建树时，不应把用户刚收起的
+                // 文件夹重新展开，否则下一次点击按钮会出现“图标变了但界面没变化”的错觉。
+                if (starredFoldersExpanded) {
+                    expandAllFolderNodes(root);
+                } else {
+                    collapseAllFolderNodes(root);
+                }
+            } finally {
+                applyingFolderExpansion = false;
+            }
             statsLabel.setText(String.format("● 文件夹 %d · 接口 %d%s · 失败标红 %d",
                     counters[0], counters[1],
                     counters[3] > 0 ? " · ⚠失效 " + counters[3] : "",
@@ -1248,13 +1218,25 @@ public class ApiTreePanel extends JPanel {
     private void collapseAllFolderNodes() {
         if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        starredFoldersExpanded = false;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        applyingFolderExpansion = true;
+        try {
+            collapseAllFolderNodes(root);
+        } finally {
+            applyingFolderExpansion = false;
+        }
+        tree.clearSelection();
+        updateExpandCollapseButtons();
+    }
+
+    /** 折叠指定子树中的全部文件夹；不依赖当前过滤状态，供重建树时复用。 */
+    private void collapseAllFolderNodes(DefaultMutableTreeNode root) {
+        if (root == null) return;
         for (int i = 0; i < root.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
             if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
         }
-        tree.clearSelection();
-        updateExpandCollapseButtons();
     }
 
     /** 当前收藏树是否已经把所有有子节点的文件夹展开。 */
@@ -1269,12 +1251,25 @@ public class ApiTreePanel extends JPanel {
         return true;
     }
 
-    /** #83 v2：SplitButton 主按钮的 toggle 行为 —— 按当前状态决定执行收起还是展开。
-     *  下拉箭头按钮负责强制菜单，两个入口都保留：主按钮点一下智能完成，下拉箭头选具体动作。 */
+    /** 仅当树中存在真正可展开的文件夹时启用工具栏按钮，避免空文件夹点击后看起来“失效”。 */
+    private boolean hasExpandableFolderNodes(DefaultMutableTreeNode node) {
+        if (node == null) return false;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            if (child.getChildCount() > 0) return true;
+            if (hasExpandableFolderNodes(child)) return true;
+        }
+        return false;
+    }
+
+    /** 单按钮 toggle 行为：按当前树状态决定执行收起还是展开。 */
     private void toggleAllFolderNodes() {
         if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        // 以实际树状态为准，而不是只依赖上次按钮状态；用户手动展开/收起后第一次点击
+        // 也能得到可预测的相反动作。
         if (areAllFolderNodesExpanded(root)) {
             collapseAllFolderNodes();
         } else {
@@ -1288,15 +1283,18 @@ public class ApiTreePanel extends JPanel {
     private void expandAllFolderNodesFromToolbar() {
         if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        starredFoldersExpanded = true;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         // 先全部收起，再展开，确保所有中间节点都处于展开态
-        for (int i = 0; i < root.getChildCount(); i++) {
-            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
-            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
-        }
-        for (int i = 0; i < root.getChildCount(); i++) {
-            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
-            if (child.getUserObject() instanceof FolderNode) expandAllFolderNodes(child);
+        applyingFolderExpansion = true;
+        try {
+            collapseAllFolderNodes(root);
+            // 从 root 开始递归，必须先展开顶层文件夹，再展开其子文件夹。
+            // 旧逻辑从每个顶层节点的 children 开始，漏掉了顶层本身，导致按钮点击后
+            // 图标仍显示“展开”且用户看不到任何接口，表现为一键展开失效。
+            expandAllFolderNodes(root);
+        } finally {
+            applyingFolderExpansion = false;
         }
         tree.clearSelection();
         updateExpandCollapseButtons();
@@ -2136,43 +2134,35 @@ public class ApiTreePanel extends JPanel {
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "批量测试"); return; }
         List<FolderApiTarget> targets = collectSubtreeTargets(f);
         if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹（含子目录）无接口", "批量测试"); return; }
+        // 收藏夹批量测试必须复用依赖链执行器：拓扑排序保证上游完成后再发下游，
+        // 并把依赖设置中保存的字段映射注入下游参数。没有保存依赖时传空边，
+        // 执行器会按收藏夹顺序串行执行，仍然不会并发乱序。
+        List<ApiDependency> dependencies = savedDependenciesForSubtree(f);
+        executeStarredChainBatch(targets, dependencies, "批量测试");
+    }
 
-        final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
-        statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            int passed = 0, failed = 0;
-            for (int i = 0; i < targets.size(); i++) {
-                final FolderApiTarget t = targets.get(i);
-                final ApiDefinition api = t.api;
-                final String folderId = t.folder.getId();
-                Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
-                if (params == null) params = aiService.generateDefaultParameters(api);
-                final int idx = i + 1;
-                FolderApiStatus status = new FolderApiStatus();
-                try {
-                    TestResult tr = httpService.executeRequest(api, baseUrl, params);
-                    status.setPassed(tr.getStatus() == TestStatus.PASSED);
-                    status.setStatusCode(tr.getStatusCode());
-                    status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));
-                } catch (Exception ex) {
-                    status.setPassed(false);
-                    status.setStatusCode(-1);
-                    status.setMessage("请求异常：" + ex.getMessage());
+    /**
+     * 读取当前文件夹及子文件夹的已保存依赖。通常依赖设置保存在根文件夹，
+     * 但合并子文件夹配置可以避免用户分别维护子目录后从父目录批量测试时丢边。
+     */
+    private List<ApiDependency> savedDependenciesForSubtree(StarredFolder root) {
+        if (root == null) return Collections.emptyList();
+        LinkedHashMap<String, ApiDependency> merged = new LinkedHashMap<>();
+        for (StarredFolder folder : folderService.collectSubtreeFolders(root.getId())) {
+            if (!folderService.hasDependencies(folder.getId())) continue;
+            for (ApiDependency dependency : folderService.getDependencies(folder.getId())) {
+                if (dependency == null) continue;
+                String key = String.valueOf(dependency.getProducerKey()) + "\u0000"
+                        + String.valueOf(dependency.getConsumerKey());
+                ApiDependency existing = merged.get(key);
+                if (existing == null) {
+                    merged.put(key, dependency);
+                } else {
+                    existing.mergeMappings(dependency);
                 }
-                status.setManuallyCleared(false);
-                status.setTestedAt(System.currentTimeMillis());
-                folderService.setStatus(folderId, api.uniqueKey(), status);
-                if (status.isPassed()) passed++; else failed++;
-                final int pNow = passed, fNow = failed;
-                SwingUtilities.invokeLater(() ->
-                        statsLabel.setText("批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow));
             }
-            final int passedF = passed, failedF = failed;
-            SwingUtilities.invokeLater(() -> {
-                buildStarredTree();
-                statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
-            });
-        });
+        }
+        return new ArrayList<>(merged.values());
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2191,42 +2181,119 @@ public class ApiTreePanel extends JPanel {
             return;
         }
         final List<StarredApiNode> targets = new ArrayList<>(selected);
-        final String baseUrl = RestAutoLabSettingsState.getInstance(project).getBaseUrl();
-        statsLabel.setText("批量测试中（0/" + targets.size() + "）…");
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            int passed = 0, failed = 0;
-            for (int i = 0; i < targets.size(); i++) {
-                final StarredApiNode n = targets.get(i);
-                ApiDefinition api = starredApiByKey.get(n.api.uniqueKey());
-                if (api == null) continue;
-                Map<String, String> params = folderService.getParams(n.folderId, api.uniqueKey());
-                if (params == null) params = aiService.generateDefaultParameters(api);
-                final int idx = i + 1;
-                FolderApiStatus status = new FolderApiStatus();
-                try {
-                    TestResult tr = httpService.executeRequest(api, baseUrl, params);
-                    status.setPassed(tr.getStatus() == TestStatus.PASSED);
-                    status.setStatusCode(tr.getStatusCode());
-                    status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));
-                } catch (Exception ex) {
-                    status.setPassed(false);
-                    status.setStatusCode(-1);
-                    status.setMessage("请求异常：" + ex.getMessage());
-                }
-                status.setManuallyCleared(false);
-                status.setTestedAt(System.currentTimeMillis());
-                folderService.setStatus(n.folderId, api.uniqueKey(), status);
-                if (status.isPassed()) passed++; else failed++;
-                final int pNow = passed, fNow = failed;
-                SwingUtilities.invokeLater(() ->
-                        statsLabel.setText("批量测试中（" + idx + "/" + targets.size() + "）… 通过 " + pNow + " · 失败 " + fNow));
+        List<FolderApiTarget> chainTargets = new ArrayList<>();
+        String commonFolderId = null;
+        boolean sameFolder = true;
+        for (StarredApiNode n : targets) {
+            ApiDefinition api = starredApiByKey.get(n.api.uniqueKey());
+            if (api == null) continue;
+            if (commonFolderId == null) commonFolderId = n.folderId;
+            else if (!Objects.equals(commonFolderId, n.folderId)) sameFolder = false;
+            StarredFolder folder = folderService.loadFolders().stream()
+                    .filter(candidate -> Objects.equals(candidate.getId(), n.folderId))
+                    .findFirst().orElse(null);
+            if (folder != null) chainTargets.add(new FolderApiTarget(folder, api));
+        }
+        if (chainTargets.isEmpty()) return;
+        // 跨文件夹多选没有唯一的依赖图，保持用户选择顺序执行；同一文件夹则使用其已保存配置。
+        final String selectedCommonFolderId = commonFolderId;
+        StarredFolder commonFolder = selectedCommonFolderId == null ? null : chainTargets.stream()
+                .map(target -> target.folder)
+                .filter(folder -> Objects.equals(folder.getId(), selectedCommonFolderId))
+                .findFirst().orElse(null);
+        List<ApiDependency> dependencies = sameFolder ? savedDependenciesForSubtree(commonFolder)
+                : Collections.emptyList();
+        executeStarredChainBatch(chainTargets, dependencies, "批量测试");
+    }
+
+    /**
+     * 收藏夹批量执行的统一入口。每个接口完成后都会通过 HttpExecutorService 的
+     * HistoryListener 写入一条历史；链路 listener 同时持久化收藏状态并更新进度。
+     */
+    private void executeStarredChainBatch(List<FolderApiTarget> targets,
+                                          List<ApiDependency> dependencies,
+                                          String operationName) {
+        if (targets == null || targets.isEmpty()) return;
+
+        // uniqueKey 是依赖图节点标识。同一接口重复出现在子文件夹时，依赖关系无法区分
+        // 两个实例，按收藏树首次出现的位置执行一次，避免拓扑排序丢失节点/进度错误。
+        LinkedHashMap<String, FolderApiTarget> firstTargetByKey = new LinkedHashMap<>();
+        for (FolderApiTarget target : targets) {
+            if (target != null && target.api != null) {
+                firstTargetByKey.putIfAbsent(target.api.uniqueKey(), target);
             }
-            final int passedF = passed, failedF = failed;
+        }
+        if (firstTargetByKey.isEmpty()) return;
+
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        final String baseUrl = settings.getBaseUrl();
+        final Environment environment = settings.getActiveEnvironmentObj();
+        final List<ApiDefinition> apis = firstTargetByKey.values().stream()
+                .map(target -> target.api).collect(Collectors.toList());
+        final TestProfile profile = new TestProfile(operationName, baseUrl);
+        if (environment != null && environment.getGlobalHeaders() != null) {
+            profile.setGlobalHeaders(new LinkedHashMap<>(environment.getGlobalHeaders()));
+        }
+        for (FolderApiTarget target : firstTargetByKey.values()) {
+            Map<String, String> params = folderService.getParams(target.folder.getId(), target.api.uniqueKey());
+            if (params == null || params.isEmpty()) params = aiService.generateDefaultParameters(target.api);
+            profile.setParams(target.api.uniqueKey(), params);
+        }
+        final List<ApiDependency> deps = dependencies == null ? Collections.emptyList() : dependencies;
+        final int total = apis.size();
+        starredBatchProgress.setMaximum(total);
+        starredBatchProgress.setValue(0);
+        starredBatchProgress.setString("0/" + total);
+        starredBatchProgress.setVisible(true);
+        statsLabel.setText(operationName + "中（0/" + total + "）…");
+
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            ChainTestExecutor chain = ChainTestExecutor.getInstance(project);
+            TestReport report = chain.execute(apis, deps, profile, environment,
+                    (result, current, count) -> {
+                        FolderApiTarget target = firstTargetByKey.get(
+                                result.getApiDefinition() == null ? "" : result.getApiDefinition().uniqueKey());
+                        if (target != null) persistStarredStatus(target, result);
+                        String state = result.getStatus() == TestStatus.PASSED ? "通过"
+                                : result.getStatus() == TestStatus.SKIPPED ? "跳过"
+                                : result.getStatus() == TestStatus.ERROR ? "异常" : "失败";
+                        String label = result.getApiDefinition() == null ? "接口" : result.getApiDefinition().displayLabel();
+                        SwingUtilities.invokeLater(() -> {
+                            starredBatchProgress.setMaximum(count);
+                            starredBatchProgress.setValue(current);
+                            starredBatchProgress.setString(current + "/" + count);
+                            statsLabel.setText(operationName + "中（" + current + "/" + count + "）· " + state + " · " + label);
+                        });
+                    });
+
+            int passed = report.getPassedCount();
+            int failed = report.getFailedCount() + report.getErrorCount();
+            int skipped = report.getSkippedCount();
+            int recorded = (int) report.getResults().stream()
+                    .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
-                statsLabel.setText("批量测试完成：通过 " + passedF + " · 失败 " + failedF);
+                if (debuggerPanel != null) debuggerPanel.showAllHistory();
+                starredBatchProgress.setMaximum(total);
+                starredBatchProgress.setValue(total);
+                starredBatchProgress.setString(total + "/" + total);
+                statsLabel.setText(operationName + "完成：通过 " + passed + " · 失败 " + failed
+                        + (skipped > 0 ? " · 跳过 " + skipped : "")
+                        + " · 已记录 " + recorded + " 条历史");
             });
         });
+    }
+
+    private void persistStarredStatus(FolderApiTarget target, TestResult result) {
+        if (target == null || target.folder == null || target.api == null || result == null) return;
+        FolderApiStatus status = new FolderApiStatus();
+        status.setPassed(result.getStatus() == TestStatus.PASSED);
+        status.setStatusCode(result.getStatusCode());
+        status.setMessage(status.isPassed() ? "通过"
+                : result.getStatus() == TestStatus.SKIPPED ? "依赖接口失败，已跳过" : failureMessage(result));
+        status.setManuallyCleared(false);
+        status.setTestedAt(System.currentTimeMillis());
+        folderService.setStatus(target.folder.getId(), target.api.uniqueKey(), status);
     }
 
     /** 优先展示断言/异常规则给出的具体原因，HTTP 状态码仅作为兜底。 */
@@ -2347,6 +2414,9 @@ public class ApiTreePanel extends JPanel {
         final String baseUrl = settings.getBaseUrl();
         final Environment env = settings.getActiveEnvironmentObj();
         final TestProfile profile = new TestProfile("依赖链测试", baseUrl);
+        if (env != null && env.getGlobalHeaders() != null) {
+            profile.setGlobalHeaders(new LinkedHashMap<>(env.getGlobalHeaders()));
+        }
 
         // 生成默认参数
         for (ApiDefinition api : selected) {
@@ -2375,8 +2445,11 @@ public class ApiTreePanel extends JPanel {
             final int passed = report.getPassedCount();
             final int failed = report.getFailedCount();
             final int skipped = report.getSkippedCount();
+            final int recorded = (int) report.getResults().stream()
+                    .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             SwingUtilities.invokeLater(() -> {
-                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed + " · 跳过 " + skipped);
+                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
+                        + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
                 String summary = report.generateSummary();
                 Messages.showInfoMessage(project, summary, "依赖链测试报告");
             });
@@ -2464,12 +2537,17 @@ public class ApiTreePanel extends JPanel {
             return;
         }
 
-        // 检测依赖（同一接口在多个文件夹中出现时只保留一份，避免依赖图重复节点）
+        // 同一接口在多个文件夹中出现时只保留一份，避免依赖图重复节点。
         java.util.LinkedHashSet<ApiDefinition> uniqApis = new java.util.LinkedHashSet<>();
         for (FolderApiTarget t : targetPairs) uniqApis.add(t.api);
         java.util.List<ApiDefinition> targets = new ArrayList<>(uniqApis);
-        java.util.List<ApiDependency> deps =
-                DependencyDetector.detect(targets);
+        // 收藏夹依赖链必须优先使用“依赖设置”中已保存的关系；只有首次使用时
+        // 才自动检测，避免每次测试把用户手工编辑的映射覆盖掉。
+        boolean hasSavedDependencies = folderService.collectSubtreeFolders(f.getId()).stream()
+                .anyMatch(folder -> folderService.hasDependencies(folder.getId()));
+        java.util.List<ApiDependency> deps = hasSavedDependencies
+                ? savedDependenciesForSubtree(f)
+                : DependencyDetector.detect(targets);
 
         // 弹对话框确认
         DependencyGraphDialog dialog = new DependencyGraphDialog(project, targets, deps);
@@ -2480,6 +2558,9 @@ public class ApiTreePanel extends JPanel {
         final Environment env =
                 RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
         final TestProfile profile = new TestProfile("依赖链测试", baseUrl);
+        if (env != null && env.getGlobalHeaders() != null) {
+            profile.setGlobalHeaders(new LinkedHashMap<>(env.getGlobalHeaders()));
+        }
 
         // 从各文件夹加载已保存的参数（按 (文件夹, 接口) 优先），没有则生成默认值
         for (FolderApiTarget t : targetPairs) {
@@ -2494,33 +2575,54 @@ public class ApiTreePanel extends JPanel {
         final java.util.List<ApiDependency> finalDeps = deps;
         final int total = apis.size();
 
+        LinkedHashMap<String, FolderApiTarget> statusTargets = new LinkedHashMap<>();
+        for (FolderApiTarget target : targetPairs) {
+            statusTargets.putIfAbsent(target.api.uniqueKey(), target);
+        }
+        starredBatchProgress.setMaximum(total);
+        starredBatchProgress.setValue(0);
+        starredBatchProgress.setString("0/" + total);
+        starredBatchProgress.setVisible(true);
         statsLabel.setText("依赖链测试中（0/" + total + "）…");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             ChainTestExecutor chain =
                     ChainTestExecutor.getInstance(project);
             TestReport report = chain.execute(apis, finalDeps, profile, env,
                     (result, cur, t) -> {
+                        FolderApiTarget target = statusTargets.get(result.getApiDefinition().uniqueKey());
+                        if (target != null) persistStarredStatus(target, result);
                         String icon = result.getStatus() == TestStatus.PASSED ? "✅"
                                 : result.getStatus() == TestStatus.SKIPPED ? "⊘"
                                 : result.getStatus() == TestStatus.ERROR ? "⚠" : "❌";
-                        SwingUtilities.invokeLater(() ->
-                                statsLabel.setText("依赖链测试中（" + cur + "/" + t + "）… " + icon + " " +
-                                        result.getApiDefinition().displayLabel()));
+                        SwingUtilities.invokeLater(() -> {
+                            starredBatchProgress.setMaximum(t);
+                            starredBatchProgress.setValue(cur);
+                            starredBatchProgress.setString(cur + "/" + t);
+                            statsLabel.setText("依赖链测试中（" + cur + "/" + t + "）… " + icon + " " +
+                                    result.getApiDefinition().displayLabel());
+                        });
                     });
 
             final int passed = report.getPassedCount();
             final int failed = report.getFailedCount();
             final int skipped = report.getSkippedCount();
+            final int recorded = (int) report.getResults().stream()
+                    .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
-                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed + " · 跳过 " + skipped);
+                if (debuggerPanel != null) debuggerPanel.showAllHistory();
+                starredBatchProgress.setValue(total);
+                starredBatchProgress.setString(total + "/" + total);
+                statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
+                        + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
             });
         });
     }
 
     /**
      * 打开收藏文件夹的依赖设置。首次打开时按文件夹接口顺序生成相邻依赖边，
-     * 后续打开则恢复用户已保存的配置；“保存”由对话框 OK 完成，不会自动执行请求。
+     * 后续打开则恢复用户已保存的配置；编辑草稿会自动保存，OK 仍会显式确认当前配置，
+     * 不会自动执行请求。
      */
     private void openStarredDependencySettings() {
         StarredFolder folder = getSelectedStarredFolder();
@@ -2535,16 +2637,29 @@ public class ApiTreePanel extends JPanel {
             return;
         }
 
-        List<ApiDependency> dependencies = folderService.getDependencies(folder.getId());
-        if (!folderService.hasDependencies(folder.getId())) {
+        String folderId = folder.getId();
+        boolean hasSavedDependencies = folderService.hasDependencies(folderId);
+        List<ApiDependency> dependencies = folderService.getDependencies(folderId);
+        LOG.info("[依赖设置] 打开文件夹 name=" + folder.getName() + ", folderId=" + folderId
+                + ", 已保存=" + hasSavedDependencies + ", 依赖边=" + dependencies.size());
+        if (!hasSavedDependencies) {
             dependencies = DependencyGraphDialog.createSequentialDependencies(orderedApis);
         }
 
         DependencyGraphDialog dialog = new DependencyGraphDialog(
-                project, orderedApis, dependencies, "依赖设置 · " + folder.getName());
+                project, orderedApis, dependencies, "依赖设置 · " + folder.getName(),
+                draft -> {
+                    // 依赖设置是收藏夹级配置。窗口编辑期间立即写入当前 profile，
+                    // 即使用户直接点右上角 X/按 ESC，下一次打开仍能恢复最新草稿。
+                    folderService.saveDependencies(folderId, draft);
+                    LOG.debug("[依赖设置] 自动保存草稿 folderId=" + folderId
+                            + ", 依赖边=" + (draft == null ? 0 : draft.size()));
+                });
         if (!dialog.showAndGet()) return;
         List<ApiDependency> saved = dialog.getDependencies();
-        folderService.saveDependencies(folder.getId(), saved);
+        folderService.saveDependencies(folderId, saved);
+        LOG.info("[依赖设置] 保存文件夹 name=" + folder.getName() + ", folderId=" + folderId
+                + ", 依赖边=" + saved.size());
         statsLabel.setText("● 已保存「" + folder.getName() + "」依赖设置："
                 + saved.size() + " 条依赖边，支持多字段映射");
     }

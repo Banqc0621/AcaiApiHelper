@@ -17,8 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * #80：依赖设置弹框里接口行渲染的契约测试。
  *
- * <p>渲染器返回 HTML 文本，徽章用主题色块 + HTTP method，URL 走对应文字色；
- * 这里只验 HTML 字符串契约（保证样式 token 不漏），不验像素颜色。</p>
+ * <p>收藏夹顺序和依赖表格接口列均返回稳定的纯文本，避免 IntelliJ LaF 对 HTML/CSS
+ * inline span 的兼容差异导致路径内容消失或样式代码泄露。</p>
  */
 class DependencyGraphDialogRendererTest {
 
@@ -31,8 +31,7 @@ class DependencyGraphDialogRendererTest {
     }
 
     /**
-     * OrderListCellRenderer 必须把 method 渲染为带颜色背景的徽章 + URL。
-     * <p>GET 用 GET 主题色 (#2E7D32 light / 等价 dark)，POST 是 #1565C0 系蓝。</p>
+     * OrderListCellRenderer 必须稳定渲染序号、HTTP 方法和完整 URL。
      */
     @Test
     void orderListCellRenderer_emitsMethodBadgeAndUrl() {
@@ -43,15 +42,15 @@ class DependencyGraphDialogRendererTest {
         Component c = renderer.getListCellRendererComponent(list,
                 api("GET", "/admin/box/list"), 0, false, false);
         assertNotNull(c);
-        String html = ((javax.swing.JLabel) c).getText();
-        assertTrue(html.contains("GET"),
+        String text = ((javax.swing.JLabel) c).getText();
+        assertTrue(text.contains("GET"),
                 "OrderListCellRenderer 文本必须包含方法名");
-        assertTrue(html.contains("/admin/box/list"),
+        assertTrue(text.contains("/admin/box/list"),
                 "OrderListCellRenderer 文本必须包含 URL");
-        assertTrue(html.contains("background-color"),
-                "OrderListCellRenderer 必须给方法徽章配背景色（不要纯文字）");
+        assertFalse(text.contains("<span"),
+                "OrderListCellRenderer 不得依赖可能丢失内容的 HTML span");
         // 第 0 行必须显示序号 "1."
-        assertTrue(html.contains("1."));
+        assertTrue(text.contains("1."));
     }
 
     @Test
@@ -62,15 +61,15 @@ class DependencyGraphDialogRendererTest {
         // null api → 不抛异常
         Component c = renderer.getListCellRendererComponent(list, null, 0, false, false);
         assertNotNull(c);
-        // method 为空字符串时徽章用 "API" 兜底（不显示空白徽章）
+        // method 为空字符串时用 "API" 兜底（不显示空白方法）
         ApiDefinition noMethod = new ApiDefinition();
         noMethod.setHttpMethod("");
         noMethod.setUrl("/x");
         Component c2 = renderer.getListCellRendererComponent(list, noMethod, 1, false, false);
-        String html2 = ((javax.swing.JLabel) c2).getText();
-        assertTrue(html2.contains("API"),
-                "method 为空时徽章兜底显示 API，而不是空白");
-        assertTrue(html2.contains("/x"));
+        String text2 = ((javax.swing.JLabel) c2).getText();
+        assertTrue(text2.contains("API"),
+                "method 为空时兜底显示 API，而不是空白");
+        assertTrue(text2.contains("/x"));
     }
 
     /**
@@ -101,8 +100,8 @@ class DependencyGraphDialogRendererTest {
         String html = ((javax.swing.JTextArea) c).getText();
         assertTrue(html.contains("GET"));
         assertTrue(html.contains("/admin/box/list"));
-        assertTrue(html.contains("background-color"),
-                "ApiColumnRenderer 必须给方法徽章配背景色");
+        assertFalse(html.contains("<span"),
+                "ApiColumnRenderer 使用 JTextArea 时不得把 HTML/CSS 样式代码泄露到界面");
     }
 
     @Test
@@ -159,7 +158,7 @@ class DependencyGraphDialogRendererTest {
         String html = ((javax.swing.JTextArea) renderer.getTableCellRendererComponent(
                 table, "", false, false, 0, 0)).getText();
         assertTrue(html.contains("—"), "空 value 必须用 em-dash 占位");
-        assertTrue(html.contains("italic"),
-                "空 value 必须走 italic 样式，让用户区分于真实接口");
+        assertFalse(html.contains("<span"),
+                "占位文本不得包含 HTML/CSS 样式代码");
     }
 }

@@ -438,8 +438,8 @@ public class ApiDebuggerPanel extends JPanel {
      *   <li><b>环境 / 接口分两列上下</b>：上行=环境路径（环境下拉 + baseUrl），
      *       下行=接口路径（方法 chip + urlField + 发送/停止按钮），
      *       段间用 1px 浅灰水平线分隔，告别"一条长长横排"的拥挤感</li>
-     *   <li><b>发送/停止按钮只保留图标</b>：去掉"发送"/"停止"文字，仅保留图标；
-     *       tooltip 保留文字提示，符合 ui-ux-pro-max icon-only button 规则</li>
+     *   <li><b>发送按钮与接口上下文同行</b>：保留「发起请求」文字和执行图标，
+     *       固定在接口行最右侧，tooltip 同步说明发送/取消状态</li>
      *   <li><b>文本框美化</b>：baseUrl / urlField 都接入 {@link UiStyle#applyTextFieldStyle}
      *       —— 圆角描边 + focus 主色高亮 + 内边距留白</li>
      *   <li><b>环境/接口两段都自带「⛓ 环境」「接口」小标签</b>：一眼可辨，告别"两个文本框一前一后挤一起"</li>
@@ -581,25 +581,20 @@ public class ApiDebuggerPanel extends JPanel {
 
     /** 一伦优化 v10：构建「接口路径」行 —— 接口 [方法] [urlField] [发送] [停止]。 */
     private JPanel createApiRow() {
-        JPanel row = new JPanel(new BorderLayout(8, 0));
-        row.setOpaque(false);
-        row.setAlignmentX(Component.LEFT_ALIGNMENT);
-        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
-
-        // 左侧请求定位区可收缩；发送按钮独立放在 EAST，避免 BoxLayout 的 glue/最大尺寸
-        // 在窄窗口或滚动条出现时把按钮错误地挤到中间或左侧。
-        JPanel requestFields = new JPanel();
-        requestFields.setLayout(new BoxLayout(requestFields, BoxLayout.X_AXIS));
-        requestFields.setOpaque(false);
-        requestFields.setAlignmentY(Component.CENTER_ALIGNMENT);
+        // 左侧仅保留请求标识和方法；URL 使用 CENTER 填充剩余空间，发送按钮固定在 EAST。
+        // 这样按钮始终贴着请求行右缘，URL 也不会因固定宽度留下一大片“悬浮”空白。
+        JPanel requestPrefix = new JPanel();
+        requestPrefix.setLayout(new BoxLayout(requestPrefix, BoxLayout.X_AXIS));
+        requestPrefix.setOpaque(false);
+        requestPrefix.setAlignmentY(Component.CENTER_ALIGNMENT);
 
         // "接口"小标签
         JBLabel apiLabel = new JBLabel("接口");
         apiLabel.setFont(apiLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         apiLabel.setForeground(JBColor.GRAY);
         apiLabel.setAlignmentY(Component.CENTER_ALIGNMENT);
-        requestFields.add(apiLabel);
-        requestFields.add(Box.createHorizontalStrut(6));
+        requestPrefix.add(apiLabel);
+        requestPrefix.add(Box.createHorizontalStrut(6));
 
         // 方法彩色 chip
         // 一伦优化 v26：methodCombo 与 envCombo 等宽 100×28，4 重保险锁死。
@@ -632,8 +627,8 @@ public class ApiDebuggerPanel extends JPanel {
 
             statusLabel.setText("● 已切换方法: " + newMethod + " - " + currentApi.displayLabel());
         });
-        requestFields.add(methodCombo);
-        requestFields.add(Box.createHorizontalStrut(6));
+        requestPrefix.add(methodCombo);
+        requestPrefix.add(Box.createHorizontalStrut(6));
 
         // urlField（圆角描边美化 + focus 主色 + 等宽字体）
         urlField.setEditable(false);
@@ -645,21 +640,97 @@ public class ApiDebuggerPanel extends JPanel {
         urlField.setMinimumSize(new Dimension(220, 28));
         urlField.setPreferredSize(new Dimension(460, 28));
         urlField.setMaximumSize(new Dimension(460, 28));
-        requestFields.add(urlField);
-        requestFields.add(Box.createHorizontalGlue());
-        row.add(requestFields, BorderLayout.CENTER);
-
         // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮。
         // 一伦优化 #89：当前请求的主操作与方法/URL 同行，硬贴接口行右缘。
-        JButton rowSendButton = createTabStripSendButton();
+        JButton rowSendButton = createRequestSendButton();
         rowSendButton.setAlignmentY(Component.CENTER_ALIGNMENT);
         Dimension sendSize = rowSendButton.getPreferredSize();
         sendSize.height = 28;
         rowSendButton.setPreferredSize(sendSize);
         rowSendButton.setMinimumSize(sendSize);
         rowSendButton.setMaximumSize(sendSize);
-        row.add(rowSendButton, BorderLayout.EAST);
+        return createRequestActionRow(requestPrefix, urlField, rowSendButton);
+    }
+
+    /**
+     * 构建请求行的稳定三段布局：左侧方法标识、中央可收缩 URL、右侧主操作。
+     * <p>使用带宽度保护的行布局明确声明主操作的右侧归属，避免悬浮层或 glue
+     * 导致按钮在窄窗口、滚动条变化时漂移到中间/左侧；空间不足时 URL 区域最先收缩到 0，
+     * 不会生成 Swing 默认 BorderLayout 可能产生的负宽度。</p>
+     */
+    static JPanel createRequestActionRow(Component prefix, Component url, Component action) {
+        JPanel row = new JPanel(new RequestActionRowLayout(prefix, url, action, 8));
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        row.add(prefix);
+        row.add(url);
+        row.add(action);
         return row;
+    }
+
+    /** 请求操作行专用布局：主操作固定右对齐，其余区域只做非负宽度收缩。 */
+    private static final class RequestActionRowLayout implements LayoutManager {
+        private final Component prefix;
+        private final Component url;
+        private final Component action;
+        private final int gap;
+
+        private RequestActionRowLayout(Component prefix, Component url, Component action, int gap) {
+            this.prefix = prefix;
+            this.url = url;
+            this.action = action;
+            this.gap = Math.max(0, gap);
+        }
+
+        @Override public void addLayoutComponent(String name, Component comp) {}
+        @Override public void removeLayoutComponent(Component comp) {}
+
+        @Override
+        public Dimension preferredLayoutSize(Container parent) {
+            Insets insets = parent.getInsets();
+            Dimension p = prefix.getPreferredSize();
+            Dimension u = url.getPreferredSize();
+            Dimension a = action.getPreferredSize();
+            return new Dimension(insets.left + insets.right + p.width + u.width + a.width + gap * 2,
+                    insets.top + insets.bottom + Math.max(p.height, Math.max(u.height, a.height)));
+        }
+
+        @Override
+        public Dimension minimumLayoutSize(Container parent) {
+            Insets insets = parent.getInsets();
+            Dimension a = action.getPreferredSize();
+            return new Dimension(insets.left + insets.right + a.width,
+                    insets.top + insets.bottom + a.height);
+        }
+
+        @Override
+        public void layoutContainer(Container parent) {
+            Insets insets = parent.getInsets();
+            int left = insets.left;
+            int top = insets.top;
+            int width = Math.max(0, parent.getWidth() - insets.left - insets.right);
+            int height = Math.max(0, parent.getHeight() - insets.top - insets.bottom);
+
+            Dimension actionPreferred = action.getPreferredSize();
+            int actionWidth = Math.min(width, Math.max(0, actionPreferred.width));
+            int actionHeight = Math.min(height, Math.max(0, actionPreferred.height));
+            int actionX = left + width - actionWidth;
+            action.setBounds(actionX, top + (height - actionHeight) / 2, actionWidth, actionHeight);
+
+            int contentRight = Math.max(left, actionX - (actionWidth > 0 ? gap : 0));
+            int contentWidth = Math.max(0, contentRight - left);
+            Dimension prefixPreferred = prefix.getPreferredSize();
+            int prefixWidth = Math.min(contentWidth, Math.max(0, prefixPreferred.width));
+            int prefixHeight = Math.min(height, Math.max(0, prefixPreferred.height));
+            prefix.setBounds(left, top + (height - prefixHeight) / 2, prefixWidth, prefixHeight);
+
+            int urlX = left + prefixWidth + (prefixWidth > 0 && contentRight > left + prefixWidth ? gap : 0);
+            int urlWidth = Math.max(0, contentRight - urlX);
+            Dimension urlPreferred = url.getPreferredSize();
+            int urlHeight = Math.min(height, Math.max(0, urlPreferred.height));
+            url.setBounds(urlX, top + (height - urlHeight) / 2, urlWidth, urlHeight);
+        }
     }
 
     /** 一伦优化 v7：构建一条 1×20 浅灰垂直分隔线（保留旧调用）。 */
@@ -1807,13 +1878,13 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 #87：「发起请求」按钮 —— 行内按钮栏的真正按钮组件。
-     * <p>布局归属：在请求配置卡片的接口行中由 BorderLayout.EAST 持有，
+     * 一伦优化 #89：「发起请求」按钮 —— 接口行的主操作组件。
+     * <p>布局归属：由请求行专用布局固定在最右侧，
      * 与方法和 URL 同行 —— 彻底取代 v33-v88 的 JLayeredPane/独立工具栏浮动方案。
      * 点击 forward 到主 {@code sendButton}（doClick）；主按钮请求中切 spinner，本按钮同步 icon，
      * 行为与顶部发送完全一致。</p>
      */
-    private JButton createTabStripSendButton() {
+    private JButton createRequestSendButton() {
         JButton btn = UiStyle.primaryButton("发起请求", AllIcons.Actions.Execute, e -> sendButton.doClick(),
                 UiStyle.parseAccent(RestAutoLabSettingsState.getInstance(project).getAccentColor()));
         btn.setMargin(new Insets(4, 8, 4, 8));

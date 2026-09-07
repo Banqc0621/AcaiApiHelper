@@ -13,6 +13,7 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.*;
 import com.intellij.psi.javadoc.PsiDocComment;
@@ -252,9 +253,16 @@ public final class ApiScannerService {
                 int aliveCount = immutableApis.size();
                 java.util.Set<String> aliveKeys = new java.util.HashSet<>(aliveCount);
                 for (ApiDefinition a : immutableApis) aliveKeys.add(a.uniqueKey());
-                int dropped = StarredFolderService.getInstance(project).dropStaleApiKeys(aliveKeys);
-                if (dropped > 0) {
-                    LOG.info("#66 扫描清理失效收藏: " + dropped + " 个（当前 aliveKeys=" + aliveCount + "）");
+                // 仅全量扫描才能判定接口确实已被删除。右键目录/文件扫描和包过滤扫描
+                // 只返回子集，不能据此清理其它文件夹的接口及依赖关系，否则用户重开依赖
+                // 设置时会看到刚保存的边被“扫描清理”掉。
+                if (isFullScan) {
+                    int dropped = StarredFolderService.getInstance(project).dropStaleApiKeys(aliveKeys);
+                    if (dropped > 0) {
+                        LOG.info("#66 扫描清理失效收藏: " + dropped + " 个（当前 aliveKeys=" + aliveCount + "）");
+                    }
+                } else {
+                    LOG.info("跳过失效收藏清理：本次为范围/包过滤扫描（aliveKeys=" + aliveCount + "）");
                 }
 
                 indicator.setFraction(1.0);
@@ -270,7 +278,8 @@ public final class ApiScannerService {
 
     /**
      * 同步扫描项目中的全部API（内部使用，需在后台线程调用）
-     * 使用 allScope 确保多模块项目和依赖库中的类都能被索引到
+     * 使用项目内容 scope 扫描业务源码，避免 Maven/Gradle 依赖库中的 Controller 被误收录；
+     * 注解类型本身仍从 allScope 解析，以兼容注解来自外部依赖的项目。
      * 使用 ReadAction.nonBlocking().inSmartMode(project) 确保索引就绪（智能模式）后再访问 PSI，
      * 避免项目刚启动时 JavaPsiFacade.findClass 抛出 IndexNotReadyException
      */
@@ -279,15 +288,19 @@ public final class ApiScannerService {
                                                 List<String> packageFilter) {
         return ReadAction.nonBlocking(() -> {
             List<ApiDefinition> apis = new ArrayList<>();
-            // allScope 包含项目源码 + 依赖库，确保注解类能被正确解析
-            GlobalSearchScope scope = GlobalSearchScope.allScope(project);
+            // 候选类只允许来自当前项目内容（生产源码根），避免把 Maven
+            // 本地仓库中的 TemplateController、Swagger/Actuator 等依赖类误报为业务接口。
+            // 注解类仍从 allScope 查找：Spring/JAX-RS 注解通常位于外部依赖 jar 中，
+            // 但 AnnotatedElementsSearch 的结果范围严格使用 projectScope。
+            GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
+            GlobalSearchScope annotationScope = GlobalSearchScope.allScope(project);
             JavaPsiFacade psiFacade = JavaPsiFacade.getInstance(project);
 
             // ── 1. 扫描 Spring MVC 控制器 ──
             List<PsiClass> allControllers = new ArrayList<>();
             for (String annotationFqn : RestAutoLabConstants.SPRING_CONTROLLER_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
-                PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
+                PsiClass annotationClass = psiFacade.findClass(annotationFqn, annotationScope);
                 if (annotationClass != null) {
                     Collection<PsiClass> classes = findAllInReadAction(
                             AnnotatedElementsSearch.searchPsiClasses(annotationClass, scope));
@@ -302,7 +315,7 @@ public final class ApiScannerService {
             // ── 2. 扫描 JAX-RS @Path 注解的类 ──
             for (String annotationFqn : RestAutoLabConstants.JAXRS_CONTROLLER_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
-                PsiClass annotationClass = psiFacade.findClass(annotationFqn, scope);
+                PsiClass annotationClass = psiFacade.findClass(annotationFqn, annotationScope);
                 if (annotationClass != null) {
                     Collection<PsiClass> classes = findAllInReadAction(
                             AnnotatedElementsSearch.searchPsiClasses(annotationClass, scope));
@@ -312,7 +325,7 @@ public final class ApiScannerService {
             }
 
             // ── 3. 扫描 @FeignClient 接口 ──
-            PsiClass feignAnnotation = psiFacade.findClass(RestAutoLabConstants.ANNO_FEIGN_CLIENT, scope);
+            PsiClass feignAnnotation = psiFacade.findClass(RestAutoLabConstants.ANNO_FEIGN_CLIENT, annotationScope);
             if (feignAnnotation != null) {
                 Collection<PsiClass> classes = findAllInReadAction(
                         AnnotatedElementsSearch.searchPsiClasses(feignAnnotation, scope));
@@ -326,7 +339,7 @@ public final class ApiScannerService {
             //    但类级 @RequestMapping 通常仍在，可据此补充发现。
             //    候选类会经过 isFrameworkInternalController 过滤 + parseControllerClass 解析，
             //    无 HTTP 映射方法的类不会产出 API，故安全。
-            PsiClass requestMappingAnno = psiFacade.findClass(RestAutoLabConstants.ANNO_REQUEST_MAPPING, scope);
+            PsiClass requestMappingAnno = psiFacade.findClass(RestAutoLabConstants.ANNO_REQUEST_MAPPING, annotationScope);
             if (requestMappingAnno != null) {
                 Collection<PsiClass> classes = findAllInReadAction(
                         AnnotatedElementsSearch.searchPsiClasses(requestMappingAnno, scope));
@@ -344,7 +357,7 @@ public final class ApiScannerService {
             //    无 HTTP 映射方法的类不会产出 API，故安全。
             for (String mappingFqn : RestAutoLabConstants.SPRING_MAPPING_ANNOTATIONS) {
                 if (indicator != null) indicator.checkCanceled();
-                PsiClass mappingAnno = psiFacade.findClass(mappingFqn, scope);
+                PsiClass mappingAnno = psiFacade.findClass(mappingFqn, annotationScope);
                 if (mappingAnno == null) continue;
                 Collection<PsiMethod> methods = findAllInReadAction(
                         AnnotatedElementsSearch.searchPsiMethods(mappingAnno, scope));
@@ -389,6 +402,22 @@ public final class ApiScannerService {
             }
             if (skippedNullQfn > 0) {
                 LOG.info("控制器去重: " + skippedNullQfn + " 个匿名/lambda 类被跳过（无类名无法稳定解析）");
+            }
+
+            // projectScope 在部分 IDE/索引组合下仍可能返回编译输出或外部库里的 PSI 类。
+            // 再用 ProjectFileIndex 做最后一道边界校验，只有当前项目生产源码内容（通常是
+            // src/main/java、src/main/kotlin 以及模块配置的 production source root）中的
+            // Controller 才允许进入解析阶段。
+            // 这样不会把本机 Maven/Gradle 仓库中的 Controller 当成用户业务接口。
+            ProjectFileIndex projectFileIndex = ProjectFileIndex.getInstance(project);
+            int beforeSourceFilter = uniqueControllers.size();
+            uniqueControllers = uniqueControllers.stream()
+                    .filter(cls -> isProjectSourceController(cls, projectFileIndex))
+                    .collect(Collectors.toList());
+            int skippedExternalControllers = beforeSourceFilter - uniqueControllers.size();
+            if (skippedExternalControllers > 0) {
+                LOG.info("源码内容过滤: 跳过 " + skippedExternalControllers
+                        + " 个项目外/依赖库 Controller");
             }
 
             // ── 3.7 右键范围过滤 ──
@@ -581,6 +610,20 @@ public final class ApiScannerService {
         VirtualFile virtualFile = containingFile == null ? null : containingFile.getVirtualFile();
         if (virtualFile == null) return false;
         return matchesSourcePath(virtualFile.getPath(), selectedPaths);
+    }
+
+    /**
+     * 判断 PSI 类是否来自当前项目的业务 source content。依赖 jar、Maven 本地仓库、
+     * 测试源码和编译输出均不属于业务 source content；没有可定位源文件的 light/compiled
+     * class 也不纳入扫描，避免再次出现“扫描出 Maven 仓库 Controller”的误报。
+     */
+    private static boolean isProjectSourceController(PsiClass cls, ProjectFileIndex projectFileIndex) {
+        if (cls == null || projectFileIndex == null) return false;
+        PsiFile containingFile = cls.getContainingFile();
+        VirtualFile virtualFile = containingFile == null ? null : containingFile.getVirtualFile();
+        return virtualFile != null
+                && projectFileIndex.isInSourceContent(virtualFile)
+                && !projectFileIndex.isInTestSourceContent(virtualFile);
     }
 
     /**

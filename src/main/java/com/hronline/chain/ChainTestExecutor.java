@@ -34,6 +34,14 @@ public final class ChainTestExecutor {
         this.httpExecutor = HttpExecutorService.getInstance(project);
     }
 
+    /**
+     * 用于无 IDE 容器场景（例如集成测试）的构造器；生产代码仍通过项目服务获取执行器。
+     */
+    ChainTestExecutor(HttpExecutorService httpExecutor) {
+        this.project = null;
+        this.httpExecutor = Objects.requireNonNull(httpExecutor, "httpExecutor");
+    }
+
     public static ChainTestExecutor getInstance(Project project) {
         return project.getService(ChainTestExecutor.class);
     }
@@ -65,8 +73,28 @@ public final class ChainTestExecutor {
         report.setTestName("依赖链测试");
         report.setStartTime(System.currentTimeMillis());
 
+        // 依赖配置可能来自较早版本或更大的收藏夹。只保留当前批次中存在的
+        // producer/consumer，避免隐藏节点把当前批次错误地卡在入度队列中。
+        List<ApiDefinition> inputApis = new ArrayList<>();
+        if (apis != null) {
+            for (ApiDefinition api : apis) if (api != null) inputApis.add(api);
+        }
+        Set<String> apiKeys = new LinkedHashSet<>();
+        for (ApiDefinition api : inputApis) {
+            if (api != null) apiKeys.add(api.uniqueKey());
+        }
+        List<ApiDependency> effectiveDependencies = new ArrayList<>();
+        if (dependencies != null) {
+            for (ApiDependency dep : dependencies) {
+                if (dep == null || dep.getProducerKey() == null || dep.getConsumerKey() == null) continue;
+                if (apiKeys.contains(dep.getProducerKey()) && apiKeys.contains(dep.getConsumerKey())) {
+                    effectiveDependencies.add(dep);
+                }
+            }
+        }
+
         // 1. 拓扑排序
-        List<ApiDefinition> orderedApis = topologicalSort(apis, dependencies);
+        List<ApiDefinition> orderedApis = topologicalSort(inputApis, effectiveDependencies);
         int total = orderedApis.size();
 
         // 2. 执行
@@ -90,7 +118,7 @@ public final class ChainTestExecutor {
                 Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
 
                 // 注入依赖值
-                injectDependencies(api, params, dependencies, extractedValues);
+                injectDependencies(api, params, effectiveDependencies, extractedValues);
 
                 // 执行请求
                 result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
@@ -99,13 +127,13 @@ public final class ChainTestExecutor {
 
                 // 失败时标记所有下游
                 if (result.getStatus() != TestStatus.PASSED) {
-                    Set<String> downstream = transitiveConsumers(api.uniqueKey(), dependencies);
+                    Set<String> downstream = transitiveConsumers(api.uniqueKey(), effectiveDependencies);
                     failedKeys.addAll(downstream);
                     LOG.info("接口失败，标记 " + downstream.size() + " 个下游跳过: " + api.displayLabel());
                 }
 
                 // 提取响应值供下游使用
-                extractProducerValues(api, result, dependencies, extractedValues);
+                extractProducerValues(api, result, effectiveDependencies, extractedValues);
             }
 
             report.getResults().add(result);
@@ -210,7 +238,8 @@ public final class ChainTestExecutor {
         Map<String, String> values = new HashMap<>();
         for (ApiDependency dep : deps) {
             if (!api.uniqueKey().equals(dep.getProducerKey())) continue;
-            for (ApiDependency.ValueMapping mapping : dep.getMappings()) {
+            for (ApiDependency.ValueMapping mapping : dep.getMappings() == null
+                    ? Collections.<ApiDependency.ValueMapping>emptyList() : dep.getMappings()) {
                 String val = extractWithFallback(responseBody, mapping.getSourcePath());
                 if (val != null) {
                     values.put(mapping.getSourcePath(), val);
@@ -235,7 +264,8 @@ public final class ChainTestExecutor {
             Map<String, String> producerValues = extractedValues.get(dep.getProducerKey());
             if (producerValues == null) continue;
 
-            for (ApiDependency.ValueMapping mapping : dep.getMappings()) {
+            for (ApiDependency.ValueMapping mapping : dep.getMappings() == null
+                    ? Collections.<ApiDependency.ValueMapping>emptyList() : dep.getMappings()) {
                 String value = producerValues.get(mapping.getSourcePath());
                 if (value != null) {
                     params.put(mapping.getTargetParam(), value);

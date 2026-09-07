@@ -108,10 +108,13 @@ public final class HttpExecutorService {
                                      String bodyFormat, Environment environment,
                                      List<ResponseAssertion> assertions) {
         long startTime = System.currentTimeMillis();
+        // 在构建请求 URL 后即保存快照；网络/解析异常也要把最终 URL写入历史，
+        // 不能退回 /users/{id} 这类模板路径。
+        String fullUrl = null;
 
         try {
             // 1. 构建完整请求URL（含路径参数替换和查询参数拼接）
-            String fullUrl = buildRequestUrl(api, baseUrl, paramValues, environment);
+            fullUrl = buildRequestUrl(api, baseUrl, paramValues, environment);
 
             // 2. 构建请求体
             //    若接口含文件上传参数（@RequestPart + MultipartFile），强制使用 multipart/form-data
@@ -170,6 +173,7 @@ public final class HttpExecutorService {
             boolean passed = true;
             List<ResponseAssertion> assertResults = new ArrayList<>();
             if (assertions != null && !assertions.isEmpty()) {
+                List<String> failureReasons = new ArrayList<>();
                 for (ResponseAssertion a : assertions) {
                     ResponseAssertion copy = new ResponseAssertion();
                     copy.setType(a.getType());
@@ -178,12 +182,21 @@ public final class HttpExecutorService {
                     copy.check(response.statusCode(), response.body(),
                             extractResponseHeaders(response), duration);
                     assertResults.add(copy);
-                    if (!copy.isPassed()) passed = false;
+                    if (!copy.isPassed()) {
+                        passed = false;
+                        failureReasons.add(assertionFailureReason(copy));
+                    }
                 }
                 result.setAssertions(assertResults);
+                if (!failureReasons.isEmpty()) {
+                    result.setErrorMessage(String.join("；", failureReasons));
+                }
             } else {
                 // 默认：使用接口的预期状态码判定
                 passed = api.isStatusCodeExpected(response.statusCode());
+                if (!passed) {
+                    result.setErrorMessage(expectedStatusFailureReason(api, response.statusCode()));
+                }
             }
             // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP 状态码白名单 / JSON 字段白名单）
             if (passed && project != null) {
@@ -210,7 +223,7 @@ public final class HttpExecutorService {
             result.setApiDefinition(api);
             result.setStatus(TestStatus.CANCELLED);
             result.setErrorMessage("请求已取消");
-            result.setRequestUrl(api == null ? "" : api.getUrl());
+            result.setRequestUrl(fullUrl != null ? fullUrl : (api == null ? "" : api.getUrl()));
             result.setRequestBody(requestBody == null ? "" : requestBody);
             result.setRequestParameters(new LinkedHashMap<>(paramValues == null
                     ? Collections.emptyMap() : paramValues));
@@ -218,17 +231,22 @@ public final class HttpExecutorService {
                     ? Collections.emptyMap() : extraHeaders));
             result.setDurationMs(System.currentTimeMillis() - startTime);
             result.setTimestamp(System.currentTimeMillis());
-            log.info("请求已取消: " + api.getHttpMethod() + " " + api.getUrl());
+            if (historyListener != null) {
+                historyListener.onRequestCompleted(result);
+            }
+            log.info("请求已取消: " + (api == null ? "" : api.getHttpMethod()) + " "
+                    + (api == null ? "" : api.getUrl()));
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - startTime;
-            log.warn("请求异常: " + api.getHttpMethod() + " " + api.getUrl() + " - " + e.getMessage());
+            log.warn("请求异常: " + (api == null ? "" : api.getHttpMethod()) + " "
+                    + (api == null ? "" : api.getUrl()) + " - " + e.getMessage());
 
             TestResult result = new TestResult();
             result.setApiDefinition(api);
             result.setStatus(TestStatus.ERROR);
             result.setErrorMessage(e.getClass().getSimpleName() + ": " + e.getMessage());
-            result.setRequestUrl(api == null ? "" : api.getUrl());
+            result.setRequestUrl(fullUrl != null ? fullUrl : (api == null ? "" : api.getUrl()));
             result.setRequestBody(requestBody == null ? "" : requestBody);
             result.setRequestParameters(new LinkedHashMap<>(paramValues == null
                     ? Collections.emptyMap() : paramValues));
@@ -242,6 +260,29 @@ public final class HttpExecutorService {
             }
             return result;
         }
+    }
+
+    /** 为断言失败生成始终可见的中文原因，避免状态码断言只显示一个红色叉号。 */
+    private static String assertionFailureReason(ResponseAssertion assertion) {
+        if (assertion == null) return "响应断言未通过";
+        String detail = assertion.getMessage();
+        if (detail != null && !detail.isBlank()) return detail;
+        String type = assertion.getType() == null ? "响应断言" : assertion.getType().getDisplayName();
+        String expected = assertion.getExpected() == null || assertion.getExpected().isBlank()
+                ? "-" : assertion.getExpected();
+        String actual = assertion.getActual() == null || assertion.getActual().isBlank()
+                ? "-" : assertion.getActual();
+        return type + "未通过：期望 " + expected + "，实际 " + actual;
+    }
+
+    /** 默认接口预期状态码失败时的异常详情（例如预期 200、实际 500）。 */
+    private static String expectedStatusFailureReason(ApiDefinition api, int actual) {
+        if (api == null || api.getExpectedStatusCodes() == null || api.getExpectedStatusCodes().isEmpty()) {
+            return "预期状态码为 2xx，实际为 " + actual;
+        }
+        List<Integer> expected = new ArrayList<>(api.getExpectedStatusCodes());
+        Collections.sort(expected);
+        return "预期状态码为 " + expected + "，实际为 " + actual;
     }
 
     /**

@@ -19,9 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ul>
  *   <li>「发送」替代「重新发送」（v17 重命名）</li>
  *   <li>菜单项 font 加粗</li>
- *   <li>菜单项 padding ≥ 默认 4,14</li>
+ *   <li>菜单项 padding 适中（左右至少 8），避免按钮过长</li>
  *   <li>删除类项染红（JBColor.RED）</li>
- *   <li>icon-text gap ≥ 8px</li>
+ *   <li>icon-text gap ≥ 6px</li>
  * </ul>
  *
  * <p>createStyledMenuItem 是 private static 方法，单测走反射拿不到 —— 这里改成
@@ -63,9 +63,9 @@ class HistoryContextMenuStyleTest {
         JMenuItem item = callCreate("发送", AllIcons.Actions.Execute, false);
         Insets m = item.getMargin();
         assertNotNull(m);
-        // 左右 padding 至少 12，垂直至少 3
-        assertTrue(m.left >= 12, "左 padding 至少 12px（默认 LaF 是 8）: " + m.left);
-        assertTrue(m.right >= 12, "右 padding 至少 12px: " + m.right);
+        // 左右 padding 至少 8，垂直至少 3；在可读性和紧凑度之间取平衡
+        assertTrue(m.left >= 8, "左 padding 至少 8px: " + m.left);
+        assertTrue(m.right >= 8, "右 padding 至少 8px: " + m.right);
         assertTrue(m.top >= 3, "上 padding 至少 3px: " + m.top);
         assertTrue(m.bottom >= 3, "下 padding 至少 3px: " + m.bottom);
     }
@@ -73,9 +73,9 @@ class HistoryContextMenuStyleTest {
     @Test
     void menuItem_iconTextGapIsAtLeastEight() throws Exception {
         JMenuItem item = callCreate("发送", AllIcons.Actions.Execute, false);
-        // iconTextGap 默认 4，看着 icon 跟文字几乎贴一起
-        assertTrue(item.getIconTextGap() >= 8,
-                "icon 跟文字至少 8px 间距（默认 4 太挤）: " + item.getIconTextGap());
+        // iconTextGap 默认 4，看着 icon 跟文字几乎贴一起；6px 足够清晰且更紧凑
+        assertTrue(item.getIconTextGap() >= 6,
+                "icon 跟文字至少 6px 间距: " + item.getIconTextGap());
     }
 
     @Test
@@ -109,5 +109,12 @@ class HistoryContextMenuStyleTest {
         java.awt.Dimension d = item.getPreferredSize();
         assertNotNull(d);
         assertTrue(d.height >= 28, "菜单项最小高度 28px: " + d.height);
+    }
+
+    @Test
+    void menuItem_compactWidthFollowsContent() throws Exception {
+        JMenuItem item = callCreate("发送", AllIcons.Actions.Execute, false);
+        java.awt.Dimension d = item.getPreferredSize();
+        assertTrue(d.width <= 100, "单条历史菜单项不应被固定宽度撑长: " + d.width);
     }
 }

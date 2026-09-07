@@ -38,8 +38,7 @@ class DependencyGraphDialogSaveFlowTest {
 
         @Override
         public Object getCellEditorValue() {
-            Object item = combo.getEditor().getItem();
-            return item == null ? "" : String.valueOf(item).trim();
+            return DependencyGraphDialog.readComboValue(combo);
         }
 
         JComboBox<String> combo() { return combo; }
@@ -158,6 +157,17 @@ class DependencyGraphDialogSaveFlowTest {
 
         assertEquals("data.userId", model.getValueAt(0, 1),
                 "通过 combo.getEditor().setItem 设置的文本必须能 flush 到 model");
+    }
+
+    @Test
+    void editableComboReader_prefersLatestEditorTextOverStaleSelectedItem() {
+        JComboBox<String> combo = new JComboBox<>(new String[]{"", "data.id", "data.token"});
+        combo.setEditable(true);
+        combo.setSelectedItem("data.id");
+        // 某些 LaF 下用户直接键入后 selectedItem 仍保留旧候选，editor 才是最新内容。
+        combo.getEditor().setItem("custom.path");
+
+        assertEquals("custom.path", DependencyGraphDialog.readComboValue(combo));
     }
 
     /**

@@ -1,6 +1,5 @@
 package com.hronline.ui;
 
-import com.hronline.RestAutoLabConstants;
 import com.hronline.chain.ApiDependency;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.ApiParameter;
@@ -22,6 +21,7 @@ import java.awt.*;
 import java.awt.event.MouseEvent;
 import java.util.*;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * 依赖关系配置对话框 - 展示自动检测到的依赖关系，支持用户确认/编辑/删除/添加
@@ -33,11 +33,20 @@ public class DependencyGraphDialog extends DialogWrapper {
     private final Project project;
     private final List<ApiDefinition> apis;
     private List<ApiDependency> dependencies;
+    /**
+     * 可选的草稿保存回调。收藏夹依赖设置传入此回调后，用户编辑表格即会同步到设置，
+     * 即使通过窗口右上角关闭也不会丢失；普通的依赖链测试对话框不传回调，仍保持
+     * “确认后才应用”的一次性编辑语义。
+     */
+    private final Consumer<List<ApiDependency>> autoSaveListener;
+    private boolean autoSaveCompleted;
+    private boolean autoSaveScheduled;
+    private boolean syncingTable;
 
     private DefaultTableModel tableModel;
     private JBTable table;
 
-    /** key = uniqueKey, value = 短接口名称，用于表格展示 */
+    /** key = uniqueKey, value = 接口短名称，用于依赖表格和上下游下拉框展示。 */
     private final Map<String, String> labelByKey = new LinkedHashMap<>();
 
     public DependencyGraphDialog(Project project, List<ApiDefinition> apis,
@@ -51,8 +60,21 @@ public class DependencyGraphDialog extends DialogWrapper {
      */
     public DependencyGraphDialog(Project project, List<ApiDefinition> apis,
                                  List<ApiDependency> dependencies, String title) {
+        this(project, apis, dependencies, title, null);
+    }
+
+    /**
+     * 构造依赖配置窗口，并可选开启草稿自动保存。
+     *
+     * @param autoSaveListener 每次窗口关闭前接收当前表格的深拷贝；传 {@code null}
+     *                         表示仅由调用方在 OK 后读取 {@link #getDependencies()}
+     */
+    public DependencyGraphDialog(Project project, List<ApiDefinition> apis,
+                                 List<ApiDependency> dependencies, String title,
+                                 Consumer<List<ApiDependency>> autoSaveListener) {
         super(project);
         this.project = project;
+        this.autoSaveListener = autoSaveListener;
         this.apis = apis == null ? Collections.emptyList() : new ArrayList<>(apis);
         this.dependencies = new ArrayList<>();
         if (dependencies != null) for (ApiDependency dep : dependencies) {
@@ -65,15 +87,21 @@ public class DependencyGraphDialog extends DialogWrapper {
             }
             this.dependencies.add(copy);
         }
+        // 收藏夹接口顺序、依赖表格以及上下游下拉框统一展示「HTTP 方法 + URL 全路径」，
+        // 便于区分同名接口；长路径通过单元格换行和悬浮提示完整呈现。
         labelByKey.putAll(buildDisplayLabels(this.apis));
-        // 兼容旧配置中暂时找不到接口定义的依赖边：仍保留关系，但只显示 key 的最后路径段，
-        // 避免把完整 METHOD|URL 泄露到界面；接口重新扫描后会通过 key 正常恢复名称。
+        // 兼容旧配置中暂时找不到接口定义的依赖边：仍保留关系，并从 METHOD|URL key
+        // 生成完整方法 + URL 标签；接口重新扫描后会通过 key 正常恢复名称。
         for (ApiDependency dep : this.dependencies) {
             if (dep == null) continue;
             ensureDependencyLabel(dep.getProducerKey());
             ensureDependencyLabel(dep.getConsumerKey());
         }
         setTitle(title == null || title.isBlank() ? "API 依赖链配置" : title);
+        // DialogWrapper 默认按钮文案跟随英文 IDE 环境可能显示为 Cancel；依赖设置页面统一中文。
+        setCancelButtonText("取消");
+        // 明确告诉用户主按钮会把当前表格内容落盘，降低“点关闭后为什么没保存”的歧义。
+        setOKButtonText("保存");
         init();
     }
 
@@ -105,7 +133,8 @@ public class DependencyGraphDialog extends DialogWrapper {
         // 说明
         JBLabel hint = new JBLabel(
                 "<html>接口顺序来自当前收藏夹；执行时按依赖边拓扑排序。<br>" +
-                "可编辑路径、删除误检项或手动添加依赖；同一对接口允许配置多个字段映射。</html>");
+                "可编辑路径、删除误检项或手动添加依赖；同一对接口允许配置多个字段映射。<br>" +
+                "修改会自动保存到当前收藏夹，点击右上角关闭后下次打开仍会恢复。</html>");
         hint.setBorder(JBUI.Borders.empty(0, 0, 4, 0));
 
         JPanel top = new JPanel(new BorderLayout(0, 4));
@@ -117,7 +146,23 @@ public class DependencyGraphDialog extends DialogWrapper {
         for (ApiDefinition api : apis) {
             if (api != null) orderModel.addElement(api);
         }
-        JList<ApiDefinition> orderList = new JList<>(orderModel);
+        JList<ApiDefinition> orderList = new JList<>(orderModel) {
+            @Override
+            public boolean getScrollableTracksViewportWidth() {
+                // 长 URL 不在单元格边界处悄悄截断；允许滚动容器按内容宽度提供水平滚动条。
+                return false;
+            }
+
+            @Override
+            public String getToolTipText(MouseEvent event) {
+                int index = locationToIndex(event.getPoint());
+                if (index < 0 || index >= getModel().getSize()) return null;
+                Rectangle bounds = getCellBounds(index, index);
+                if (bounds == null || !bounds.contains(event.getPoint())) return null;
+                ApiDefinition api = getModel().getElementAt(index);
+                return api == null ? null : fullApiLabel(api);
+            }
+        };
         orderList.setCellRenderer(new OrderListCellRenderer());
         orderList.setFocusable(false);
         orderList.setVisibleRowCount(Math.min(4, Math.max(1, orderModel.size())));
@@ -126,6 +171,8 @@ public class DependencyGraphDialog extends DialogWrapper {
         // 主题感知底色：light = Panel.background / dark = 自动切换
         orderList.setBackground(JBColor.namedColor("Panel.background", new Color(0xFA, 0xFB, 0xFC)));
         JBScrollPane orderScroll = new JBScrollPane(orderList);
+        orderList.setToolTipText("");
+        orderScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         orderScroll.setBorder(BorderFactory.createTitledBorder(
                 BorderFactory.createEtchedBorder(), "收藏夹接口顺序"));
         orderScroll.setPreferredSize(JBUI.size(820, orderModel.isEmpty() ? 56 : 118));
@@ -150,6 +197,13 @@ public class DependencyGraphDialog extends DialogWrapper {
                 int modelColumn = convertColumnIndexToModel(column);
                 Object value = getModel().getValueAt(modelRow, modelColumn);
                 String text = value == null ? "" : String.valueOf(value).trim();
+                // 上游/下游单元格按要求只显示接口短名称，但悬浮时给出完整方法 + URL，
+                // 这样短名称不牺牲同名接口的确认能力。
+                if ((modelColumn == 0 || modelColumn == 2) && !text.isBlank()) {
+                    String key = findKeyByLabel(text);
+                    ApiDefinition api = apiByKey(key);
+                    if (api != null) return fullApiLabel(api);
+                }
                 return text.length() > 20 ? text : null;
             }
 
@@ -173,12 +227,13 @@ public class DependencyGraphDialog extends DialogWrapper {
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         table.setRowHeight(42);
         table.setIntercellSpacing(new Dimension(JBUI.scale(8), JBUI.scale(4)));
-        // 上游/下游接口列放大到 280 容纳完整 URL（如 `GET /admin/box/blindBoxList`）
-        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(280));
-        table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(310));
-        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(280));
-        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(260));
-        // #80：上游/下游接口列走自定义 ApiColumnRenderer（方法徽章 + 主题色 + 交替行底），
+        // 上游/下游接口列显示完整方法 + URL，字段列通过换行与 tooltip 查看完整内容，
+        // 避免长路径或字段被窄列截断。
+        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(210));
+        table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(350));
+        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(210));
+        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(340));
+        // #80：上游/下游接口列走自定义 ApiColumnRenderer（完整方法 + URL + 交替行底），
         // 响应字段/目标参数列保持原 WrappingCellRenderer（长文本换行）。
         table.getColumnModel().getColumn(0).setCellRenderer(new ApiColumnRenderer());
         table.getColumnModel().getColumn(1).setCellRenderer(new WrappingCellRenderer());
@@ -190,6 +245,11 @@ public class DependencyGraphDialog extends DialogWrapper {
         table.getColumnModel().getColumn(3).setCellEditor(new MappingCellEditor(false));
 
         fillTable();
+        if (autoSaveListener != null) {
+            // 编辑器提交值后 DefaultTableModel 会发出事件；合并同一 EDT 回合内的多列
+            // 更新，避免每次键入都重复序列化设置，同时确保关闭前最后一次事件已落盘。
+            tableModel.addTableModelListener(e -> scheduleAutoSave());
+        }
 
         JBScrollPane scrollPane = new JBScrollPane(table);
         panel.add(scrollPane, BorderLayout.CENTER);
@@ -300,15 +360,38 @@ public class DependencyGraphDialog extends DialogWrapper {
         // DialogWrapper 的 OK 动作可能在表格编辑器仍处于激活状态时触发；
         // 必须先把当前正在编辑的单元格值写入 model，否则 dialog dispose 后
         // tableModel 里读到的会是旧值（用户最后输入的响应字段/目标参数会丢）。
-        flushActiveCellEditor();
+        if (syncingTable) return;
+        syncingTable = true;
+        try {
+            flushActiveCellEditor();
 
-        List<String[]> rows = new ArrayList<>(tableModel.getRowCount());
-        for (int r = 0; r < tableModel.getRowCount(); r++) {
-            rows.add(new String[]{
-                    cellText(r, 0), cellText(r, 1), cellText(r, 2), cellText(r, 3)
-            });
+            List<String[]> rows = new ArrayList<>(tableModel.getRowCount());
+            for (int r = 0; r < tableModel.getRowCount(); r++) {
+                rows.add(new String[]{
+                        cellText(r, 0), cellText(r, 1), cellText(r, 2), cellText(r, 3)
+                });
+            }
+            this.dependencies = rebuildFromRows(this.dependencies, rows, this.labelByKey);
+        } finally {
+            syncingTable = false;
         }
-        this.dependencies = rebuildFromRows(this.dependencies, rows, this.labelByKey);
+    }
+
+    private void scheduleAutoSave() {
+        if (autoSaveListener == null || autoSaveCompleted || autoSaveScheduled) return;
+        autoSaveScheduled = true;
+        Runnable save = () -> {
+            autoSaveScheduled = false;
+            if (autoSaveCompleted) return;
+            try {
+                syncFromTable();
+                autoSaveListener.accept(copyDependencies(dependencies));
+            } catch (RuntimeException ignored) {
+                // 保存失败不打断用户继续编辑；关闭时会再尝试一次最终保存。
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) SwingUtilities.invokeLater(save);
+        else SwingUtilities.invokeLater(save);
     }
 
     /**
@@ -437,7 +520,7 @@ public class DependencyGraphDialog extends DialogWrapper {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
-    /** 接口列编辑器：仅显示当前窗口内的短接口名称，避免输入无法解析的未知节点。 */
+    /** 接口列编辑器：仅显示当前窗口内可解析的接口短名称，避免输入未知节点。 */
     private final class ApiCellEditor extends DefaultCellEditor {
         private final JComboBox<String> combo;
 
@@ -526,19 +609,15 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * #82：「收藏夹接口顺序」JList 的行渲染器 —— 序号 + 方法徽章 + URL，
-     * 全部颜色走主题感知：徽章用 {@link RestAutoLabConstants#colorForMethod}
-     * 给的主题色（light/dark 都跟 IDE LaF 协调），URL 文字色取 list 的
-     * 前景色（选中态走 selectionForeground），不再硬编码 #222222 —— dark theme
-     * 下黑字白底就完全看不见了。
+     * #82：「收藏夹接口顺序」JList 的行渲染器 —— 序号 + HTTP 方法 + 完整 URL。
+     * 使用纯文本而不是 Swing HTML/CSS：IntelliJ 不同主题下 HTML 的 inline span
+     * 可能只计算出序号 span 的宽度，导致方法和 URL 在界面中消失。纯文本可稳定计算
+     * 首选宽度，长 URL 由外层滚动条承载，悬浮提示仍提供完整标签。
      */
     static final class OrderListCellRenderer extends JBLabel implements ListCellRenderer<ApiDefinition> {
         // 主题感知行底色：light = 极淡蓝白 / dark = 比 panel 深一档的灰
         private static final JBColor EVEN_BG = new JBColor(new Color(0xFA, 0xFB, 0xFC), new Color(0x2B, 0x2D, 0x30));
         private static final JBColor ODD_BG = new JBColor(new Color(0xF2, 0xF4, 0xF7), new Color(0x31, 0x33, 0x36));
-        // 序号列的灰色：light #888 / dark 中等亮度的灰
-        private static final JBColor INDEX_FG = new JBColor(new Color(0x88, 0x88, 0x88), new Color(0x9A, 0x9A, 0x9A));
-
         OrderListCellRenderer() {
             setOpaque(true);
             setBorder(JBUI.Borders.empty(5, 10));
@@ -559,26 +638,9 @@ public class DependencyGraphDialog extends DialogWrapper {
             if (query >= 0) url = url.substring(0, query);
             while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
 
-            // 文字色跟 list 主题走：选中→白（蓝底），未选中→默认前景（dark/light 自动切换）
-            Color urlColor = isSelected ? list.getSelectionForeground() : list.getForeground();
-            String urlHex = String.format("#%02x%02x%02x", urlColor.getRed(), urlColor.getGreen(), urlColor.getBlue());
-            String indexHex = String.format("#%02x%02x%02x", INDEX_FG.getRed(), INDEX_FG.getGreen(), INDEX_FG.getBlue());
-
-            // 徽章：主题色背景 + 白字（所有 HTTP method 色都够深，白字都看得清）
-            JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
-            String methodHex = String.format("#%02x%02x%02x",
-                    methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
-
-            setText("<html>"
-                    + "<span style='color:" + indexHex + ";width:22px;display:inline-block;'>" + (index + 1) + ".</span> "
-                    + "<span style='background-color:" + methodHex
-                    + ";color:#FFFFFF;padding:1px 7px;border-radius:3px;font-weight:bold;font-size:11px;font-family:monospace;'>"
-                    + (method.isBlank() ? "API" : escapeHtml(method))
-                    + "</span> "
-                    + "<span style='color:" + urlHex + ";'>"
-                    + escapeHtml(url)
-                    + "</span>"
-                    + "</html>");
+            // 纯文本渲染，确保方法和 URL 在所有 IntelliJ LaF 下都可见、可复制。
+            setText((index + 1) + ". " + (method.isBlank() ? "API" : method)
+                    + (url.isBlank() ? " (未命名)" : " " + url));
             setToolTipText(method + " " + url);
             // 选中态用 LaF 主题色，偶数行浅灰，奇数行更浅
             if (isSelected) {
@@ -594,11 +656,12 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * #82：依赖表格里上游/下游接口列的自定义渲染器。沿用 JTextArea 换行（应对超长 URL），
-     * 文本前面加方法徽章，颜色跟 OrderListCellRenderer 保持一致 —— 全部走主题感知，
+     * #82：依赖表格里上游/下游接口列的自定义渲染器。沿用 JTextArea 换行，
+     * 使用完整方法 + URL 纯文本，颜色跟表格主题保持一致 —— 全部走主题感知，
      * 选中态用 selectionForeground，未选中用 table.foreground，dark theme 下不再黑字黑底。
-     * <p>value 是 {@code labelByKey.get(key)}（如 "GET /admin/foo"），需要先把 method
-     * 切出来再渲染；空串 / "(无依赖)" 占位走 fallback 分支，不强行套徽章。</p>
+     * <p>value 是 {@code labelByKey.get(key)}（如 "GET /admin/foo"）。兼容旧配置传入的
+     * "[GET] foo" 格式，仍会先切出 method 渲染；
+     * 空串 / "(无依赖)" 占位走 fallback 分支，不强行套徽章。</p>
      */
     static final class ApiColumnRenderer extends JTextArea implements TableCellRenderer {
         // 主题感知行底色：light 极淡蓝白 / dark 比 table 默认底色深一档，区分交替行
@@ -638,31 +701,12 @@ public class DependencyGraphDialog extends DialogWrapper {
                 }
             }
 
-            // 文字色：选中→白，未选中→table 主题前景（dark/light 自动适配）
-            Color urlColor = isSelected ? table.getSelectionForeground() : table.getForeground();
-            String urlHex = String.format("#%02x%02x%02x", urlColor.getRed(), urlColor.getGreen(), urlColor.getBlue());
-            String placeholderHex = String.format("#%02x%02x%02x",
-                    PLACEHOLDER_FG.getRed(), PLACEHOLDER_FG.getGreen(), PLACEHOLDER_FG.getBlue());
-
-            String prefix;
-            if (method.isBlank()) {
-                // 占位（空串 / "(无依赖)" / 未知接口）：灰字 + italic，让用户一眼看出"这不是真接口"
-                prefix = "<span style='color:" + (isSelected ? urlHex : placeholderHex)
-                        + ";font-style:" + (raw.isBlank() ? "italic" : "normal") + ";'>";
-                StringBuilder html = new StringBuilder("<html>").append(prefix)
-                        .append(escapeHtml(raw.isBlank() ? "—" : raw))
-                        .append("</span></html>");
-                setText(html.toString());
-            } else {
-                JBColor methodColor = RestAutoLabConstants.colorForMethod(method);
-                String methodHex = String.format("#%02x%02x%02x",
-                        methodColor.getRed(), methodColor.getGreen(), methodColor.getBlue());
-                prefix = "<span style='background-color:" + methodHex
-                        + ";color:#FFFFFF;padding:1px 7px;border-radius:3px;font-weight:bold;font-size:11px;font-family:monospace;'>"
-                        + escapeHtml(method) + "</span> "
-                        + "<span style='color:" + urlHex + ";'>" + escapeHtml(body) + "</span>";
-                setText("<html>" + prefix + "</html>");
-            }
+            // JTextArea 不解析 HTML，直接写入 <span style=...> 会把样式代码泄露到界面。
+            // 采用紧凑且可复制的纯文本格式；行背景与焦点边框仍提供清晰层级。
+            String display = method.isBlank()
+                    ? (raw.isBlank() ? "—" : raw)
+                    : "[" + method + "] " + body;
+            setText(display);
             setFont(table.getFont());
             // 选中态用 LaF 主题色，奇偶行交替灰底
             if (isSelected) {
@@ -675,6 +719,7 @@ public class DependencyGraphDialog extends DialogWrapper {
             setToolTipText(raw.length() > 20 ? raw : null);
             return this;
         }
+
     }
 
     private static boolean isHttpMethod(String s) {
@@ -688,17 +733,71 @@ public class DependencyGraphDialog extends DialogWrapper {
         }
     }
 
-    private static String escapeHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                .replace("\"", "&quot;");
-    }
-
-    /** 表格中仅显示接口名称；名称为空时退化为 URL 最后一级。 */
+    /**
+     * 表格和上下游下拉框使用的短标签。优先使用接口名称，但要先清洗历史/导入数据
+     * 中可能已经拼好的完整展示串，例如「[GET] /admin/box/blindBoxList - blindBoxList」；
+     * 这种值不能原样显示，否则用户看到的仍是完整路径。没有可用名称时退化为 URL 最后一级。
+     */
     static String shortApiLabel(ApiDefinition api) {
         if (api == null) return "";
-        if (api.getName() != null && !api.getName().isBlank()) return api.getName().trim();
-        String url = api.getUrl() == null ? "" : api.getUrl().trim();
+        String name = api.getName() == null ? "" : api.getName().trim();
+        String cleanedName = extractEndpointName(name);
+        if (!cleanedName.isBlank()) return cleanedName;
+        return lastPathSegment(api.getUrl());
+    }
+
+    /** 清洗接口名称中的方法、完整 URL 及展示分隔符，只保留最终接口名称。 */
+    private static String extractEndpointName(String rawName) {
+        if (rawName == null || rawName.isBlank()) return "";
+        String value = rawName.trim();
+
+        // 兼容 ApiDefinition.displayLabel() / 旧版本收藏数据的「... - name」格式。
+        int separator = value.indexOf(" - ");
+        if (separator >= 0 && separator + 3 < value.length()
+                && looksLikeEndpointDisplayPrefix(value.substring(0, separator))) {
+            String suffix = value.substring(separator + 3).trim();
+            if (!suffix.isBlank()) value = suffix;
+        } else {
+            // 也兼容导出数据使用的长破折号分隔格式。
+            for (String delimiter : new String[]{" — ", " – "}) {
+                int pos = value.indexOf(delimiter);
+                if (pos >= 0 && pos + delimiter.length() < value.length()
+                        && looksLikeEndpointDisplayPrefix(value.substring(0, pos))) {
+                    String suffix = value.substring(pos + delimiter.length()).trim();
+                    if (!suffix.isBlank()) value = suffix;
+                    break;
+                }
+            }
+        }
+
+        // 去掉展示串前缀 [GET] / GET，再判断剩余内容是否为路径。
+        if (value.matches("^\\[[A-Za-z]+\\]\\s+.*")) {
+            value = value.substring(value.indexOf(']') + 1).trim();
+        } else {
+            int space = value.indexOf(' ');
+            if (space > 0 && isHttpMethod(value.substring(0, space))) {
+                value = value.substring(space + 1).trim();
+            }
+        }
+
+        // 只要剩余值是路径/URL，就取最后一级；普通中文 summary（无斜杠）原样保留。
+        if (value.contains("/")) return lastPathSegment(value);
+        return value;
+    }
+
+    private static boolean looksLikeEndpointDisplayPrefix(String prefix) {
+        if (prefix == null) return false;
+        String value = prefix.trim();
+        return value.contains("/")
+                || value.matches("^\\[[A-Za-z]+\\]\\s+.*")
+                || (value.indexOf(' ') > 0 && isHttpMethod(value.substring(0, value.indexOf(' '))));
+    }
+
+    /** 从 URL 或旧 uniqueKey 中提取最后一级路径名称。 */
+    private static String lastPathSegment(String rawUrl) {
+        String url = rawUrl == null ? "" : rawUrl.trim();
+        int separator = url.indexOf('|');
+        if (separator >= 0) url = url.substring(separator + 1).trim();
         int query = url.indexOf('?');
         if (query >= 0) url = url.substring(0, query);
         while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
@@ -710,9 +809,9 @@ public class DependencyGraphDialog extends DialogWrapper {
 
     /**
      * 接口全路径显示标签：{@code METHOD /path/{id}}。
-     * <p>用于「依赖设置」弹框的上游/下拉接口、接口顺序等区域，让用户能直接看到接口的完整 URL，
-     * 不必再回查接口名后猜是哪个同名方法。method 缺失时退化为 {@code API}，
-     * URL 缺失时退化为 {@code METHOD (未命名)}。</p>
+     * <p>收藏夹接口顺序、依赖表格和上下游下拉框统一使用该完整标签，悬浮提示提供
+     * 同一完整内容。
+     * method 缺失时退化为 {@code API}，URL 缺失时退化为 {@code METHOD (未命名)}。</p>
      */
     static String fullApiLabel(ApiDefinition api) {
         if (api == null) return "";
@@ -758,21 +857,56 @@ public class DependencyGraphDialog extends DialogWrapper {
         return result;
     }
 
+    /** 依赖设置 UI 使用的短名称标签；同名接口仅补充序号，始终不显示方法或完整路径。 */
+    static Map<String, String> buildShortDisplayLabels(List<ApiDefinition> apis) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (apis == null || apis.isEmpty()) return result;
+        Map<String, Integer> counts = new HashMap<>();
+        for (ApiDefinition api : apis) {
+            if (api == null || api.uniqueKey() == null || api.uniqueKey().isBlank()) continue;
+            counts.merge(shortApiLabel(api), 1, Integer::sum);
+        }
+        Set<String> used = new HashSet<>();
+        Map<String, Integer> next = new HashMap<>();
+        for (ApiDefinition api : apis) {
+            if (api == null || api.uniqueKey() == null || api.uniqueKey().isBlank()
+                    || result.containsKey(api.uniqueKey())) continue;
+            String shortName = shortApiLabel(api);
+            String label = shortName;
+            // 同名接口也只展示最后名称，使用轻量序号消歧，避免 [GET] 或 URL 再次泄露到下拉框。
+            if (counts.getOrDefault(shortName, 0) > 1) {
+                int occurrence = 1;
+                for (ApiDefinition previous : apis) {
+                    if (previous == api) break;
+                    if (previous != null && shortName.equals(shortApiLabel(previous))) occurrence++;
+                }
+                if (occurrence > 1) label = shortName + " (" + occurrence + ")";
+            }
+            if (used.contains(label)) {
+                int suffix = next.getOrDefault(label, 2);
+                String candidate;
+                do { candidate = label + " (" + suffix++ + ")"; }
+                while (used.contains(candidate));
+                next.put(label, suffix);
+                label = candidate;
+            }
+            used.add(label);
+            result.put(api.uniqueKey(), label);
+        }
+        return result;
+    }
+
     private String displayLabelForApi(ApiDefinition api) {
         if (api == null) return "";
-        return labelByKey.getOrDefault(api.uniqueKey(), shortApiLabel(api));
+        return labelByKey.getOrDefault(api.uniqueKey(), fullApiLabel(api));
     }
 
     private void ensureDependencyLabel(String key) {
         if (key == null || key.isBlank() || labelByKey.containsKey(key)) return;
-        String base = shortDependencyKeyLabel(key);
+        String base = fullDependencyKeyLabel(key);
         if (base.isBlank()) base = key;
         String label = base;
-        if (labelByKey.containsValue(label)) {
-            String method = key.contains("|") ? key.substring(0, key.indexOf('|')).trim() : "API";
-            if (method.isBlank()) method = "API";
-            label = "[" + method.toUpperCase(Locale.ROOT) + "] " + base;
-        }
+        if (labelByKey.containsValue(label)) label = base + " (2)";
         int suffix = 2;
         String candidate = label;
         while (labelByKey.containsValue(candidate)) candidate = label + " (" + suffix++ + ")";
@@ -791,6 +925,21 @@ public class DependencyGraphDialog extends DialogWrapper {
         String last = slash >= 0 ? url.substring(slash + 1) : url;
         if (last.startsWith("{") && last.endsWith("}")) last = last.substring(1, last.length() - 1);
         return last.isBlank() ? (url.isBlank() ? "未命名接口" : url) : last;
+    }
+
+    /** 从 METHOD|/path/to/api 形式的旧 key 中生成完整方法 + URL 标签。 */
+    static String fullDependencyKeyLabel(String key) {
+        if (key == null || key.isBlank()) return "";
+        int separator = key.indexOf('|');
+        if (separator < 0) return key.trim();
+        String method = key.substring(0, separator).trim();
+        String url = key.substring(separator + 1).trim();
+        int query = url.indexOf('?');
+        if (query >= 0) url = url.substring(0, query);
+        while (url.length() > 1 && url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        if (method.isBlank()) method = "API";
+        return url.isBlank() ? method.toUpperCase(Locale.ROOT) + " (未命名)"
+                : method.toUpperCase(Locale.ROOT) + " " + url;
     }
 
     /** 检测方式内部枚举到中文显示文本的映射。 */
@@ -882,9 +1031,23 @@ public class DependencyGraphDialog extends DialogWrapper {
 
         @Override
         public Object getCellEditorValue() {
-            Object item = combo.getEditor().getItem();
-            return item == null ? "" : String.valueOf(item).trim();
+            return readComboValue(combo);
         }
+    }
+
+    /**
+     * 读取可编辑 JComboBox 的最终文本。用户直接键入时，selectedItem 仍可能是上一次
+     * 选中的候选值，只有 editor item 才是最新文本；选择候选时 editor item 也会同步，
+     * 因而统一优先 editor，再以 selectedItem 兜底。
+     */
+    static String readComboValue(JComboBox<?> combo) {
+        if (combo == null) return "";
+        Object item = null;
+        if (combo.isEditable() && combo.getEditor() != null) {
+            item = combo.getEditor().getItem();
+        }
+        if (item == null) item = combo.getSelectedItem();
+        return item == null ? "" : String.valueOf(item).trim();
     }
 
     /**
@@ -899,5 +1062,45 @@ public class DependencyGraphDialog extends DialogWrapper {
     protected void doOKAction() {
         syncFromTable();
         super.doOKAction();
+    }
+
+    /**
+     * DialogWrapper 的右上角关闭、取消和 ESC 最终都会走 dispose；在这里做最后一次
+     * flush，覆盖“用户正在编辑字段时直接点 X”的场景。回调接收深拷贝，避免窗口销毁
+     * 后外部仍持有可变表格数据。
+     */
+    @Override
+    protected void dispose() {
+        if (autoSaveListener != null && !autoSaveCompleted) {
+            try {
+                syncFromTable();
+                autoSaveListener.accept(copyDependencies(dependencies));
+                autoSaveCompleted = true;
+            } catch (RuntimeException ignored) {
+                // 关闭流程不能因持久化回调异常被阻塞；保留未完成标记，若框架再次
+                // 触发 dispose 或调用方在 OK 后显式保存，仍有机会完成持久化。
+            }
+        }
+        super.dispose();
+    }
+
+    private static List<ApiDependency> copyDependencies(List<ApiDependency> source) {
+        List<ApiDependency> result = new ArrayList<>();
+        if (source == null) return result;
+        for (ApiDependency dep : source) {
+            if (dep == null) continue;
+            ApiDependency copy = new ApiDependency(dep.getProducerKey(), dep.getConsumerKey(),
+                    dep.getDetectionType());
+            if (dep.getMappings() != null) {
+                for (ApiDependency.ValueMapping mapping : dep.getMappings()) {
+                    if (mapping != null) {
+                        copy.getMappings().add(new ApiDependency.ValueMapping(
+                                mapping.getSourcePath(), mapping.getTargetParam()));
+                    }
+                }
+            }
+            result.add(copy);
+        }
+        return result;
     }
 }

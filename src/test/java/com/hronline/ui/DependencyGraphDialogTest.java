@@ -58,6 +58,43 @@ class DependencyGraphDialogTest {
     }
 
     @Test
+    void shortApiLabel_cleansLegacyFullDisplayName() {
+        ApiDefinition legacy = api("GET", "/admin/box/blindBoxList",
+                "[GET] /admin/box/blindBoxList - blindBoxList");
+        ApiDefinition methodPath = api("POST", "/admin/box/create", "POST /admin/box/create");
+        ApiDefinition bracketPath = api("GET", "/admin/box/detail", "[GET] /admin/box/detail");
+        ApiDefinition ordinaryName = api("GET", "/admin/box/list", "列表 - 查询");
+
+        assertEquals("blindBoxList", DependencyGraphDialog.shortApiLabel(legacy));
+        assertEquals("create", DependencyGraphDialog.shortApiLabel(methodPath));
+        assertEquals("detail", DependencyGraphDialog.shortApiLabel(bracketPath));
+        assertEquals("列表 - 查询", DependencyGraphDialog.shortApiLabel(ordinaryName));
+    }
+
+    @Test
+    void fullDependencyKeyLabel_keepsMethodAndCompletePath() {
+        assertEquals("GET /admin/box/blindBoxList",
+                DependencyGraphDialog.fullDependencyKeyLabel(
+                        "GET|/admin/box/blindBoxList?tenant=1"));
+    }
+
+    @Test
+    void dependencyDisplayLabels_useCompleteMethodAndPath() {
+        ApiDefinition named = api("GET", "/admin/box/blindBoxList", "blindBoxList");
+        ApiDefinition unnamed = api("POST", "/admin/other/blindBoxList", "");
+        ApiDefinition other = api("GET", "/admin/box/detail", "detail");
+
+        Map<String, String> labels = DependencyGraphDialog.buildDisplayLabels(
+                List.of(named, unnamed, other));
+
+        assertEquals("GET /admin/box/blindBoxList", labels.get(named.uniqueKey()));
+        assertEquals("POST /admin/other/blindBoxList", labels.get(unnamed.uniqueKey()));
+        assertEquals("GET /admin/box/detail", labels.get(other.uniqueKey()));
+        assertTrue(labels.values().stream().allMatch(label -> label.contains("/")),
+                "上游/下游标签必须显示完整 URL 路径");
+    }
+
+    @Test
     void duplicateFullPathsDisambiguateWithSuffixAndShowCompleteUrl() {
         // 收藏夹里三个同名接口（name 都是 "list"），但 URL 各不相同；
         // labelByKey 现在直接走 fullApiLabel，用户在「依赖设置」里看到完整 URL + 必要时的 #2/#3 序号。

@@ -49,7 +49,28 @@ public final class StarredFolderService {
 
     /** 加载全部文件夹（保证「未分类」在首位） */
     public List<StarredFolder> loadFolders() {
-        return settings().loadStarredFolders();
+        List<StarredFolder> folders = settings().loadStarredFolders();
+        // 旧版本/手工导入数据可能缺少 folderId。依赖关系以 folderId 为索引，
+        // 若继续返回空 id，用户在依赖设置中保存后下次打开会被当成“首次配置”。
+        // 首次加载时补齐稳定 UUID 并立即持久化，后续重命名/重启均能准确回读。
+        boolean changed = false;
+        Set<String> used = new HashSet<>();
+        for (StarredFolder folder : folders) {
+            if (folder == null) continue;
+            String id = folder.getId();
+            if (id == null || id.isBlank() || !used.add(id)) {
+                String generated;
+                do { generated = UUID.randomUUID().toString(); } while (!used.add(generated));
+                folder.setId(generated);
+                changed = true;
+            }
+            if (folder.getApiKeys() == null) {
+                folder.setApiKeys(new ArrayList<>());
+                changed = true;
+            }
+        }
+        if (changed) settings().saveStarredFolders(folders);
+        return folders;
     }
 
     /**
