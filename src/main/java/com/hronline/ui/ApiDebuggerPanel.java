@@ -235,22 +235,13 @@ public class ApiDebuggerPanel extends JPanel {
 
         JPanel responsePanel = createResponsePanel();
 
-        // 一伦优化 #88：去掉 JLayeredPane 浮动覆盖层 —— 「发起请求」按钮改为顶部独立一行（右对齐），
-        // 不再悬浮覆盖在 tab 条右缘上。原 v35/v37 方案导致按钮看起来"飘在内容上"，和 tabs 不像是一体。
-        // 现在按钮是请求编辑区域顶部的常规工具栏元素，视觉上与 tabs 解耦、布局上稳定。
-        JPanel sendButtonBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
-        sendButtonBar.setOpaque(false);
-        sendButtonBar.setBorder(JBUI.Borders.empty(2, 4, 2, 4));
-        sendButtonBar.add(createTabStripSendButton());
-
-        JPanel requestContainer = new JPanel(new BorderLayout());
-        requestContainer.setOpaque(false);
-        requestContainer.add(sendButtonBar, BorderLayout.NORTH);
-        requestContainer.add(requestScroll, BorderLayout.CENTER);
+        // 一伦优化 #89：发送按钮归属接口行（方法 + URL），使用正常 BorderLayout.EAST 布局。
+        // 按钮不再悬浮在 tabs 上方或单独占一行，始终贴合当前请求上下文的最右侧，
+        // 同时为 URL 文本框保留可收缩的 CENTER 区域，窗口缩放时不会把按钮推到左侧。
 
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
-        splitter.setFirstComponent(requestContainer);
+        splitter.setFirstComponent(requestScroll);
         splitter.setSecondComponent(responsePanel);
         // 解除子组件最小尺寸限制，使分割条可自由上下拖动
         splitter.setHonorComponentsMinimumSize(false);
@@ -590,19 +581,25 @@ public class ApiDebuggerPanel extends JPanel {
 
     /** 一伦优化 v10：构建「接口路径」行 —— 接口 [方法] [urlField] [发送] [停止]。 */
     private JPanel createApiRow() {
-        JPanel row = new JPanel();
-        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        JPanel row = new JPanel(new BorderLayout(8, 0));
         row.setOpaque(false);
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+
+        // 左侧请求定位区可收缩；发送按钮独立放在 EAST，避免 BoxLayout 的 glue/最大尺寸
+        // 在窄窗口或滚动条出现时把按钮错误地挤到中间或左侧。
+        JPanel requestFields = new JPanel();
+        requestFields.setLayout(new BoxLayout(requestFields, BoxLayout.X_AXIS));
+        requestFields.setOpaque(false);
+        requestFields.setAlignmentY(Component.CENTER_ALIGNMENT);
 
         // "接口"小标签
         JBLabel apiLabel = new JBLabel("接口");
         apiLabel.setFont(apiLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         apiLabel.setForeground(JBColor.GRAY);
         apiLabel.setAlignmentY(Component.CENTER_ALIGNMENT);
-        row.add(apiLabel);
-        row.add(Box.createHorizontalStrut(6));
+        requestFields.add(apiLabel);
+        requestFields.add(Box.createHorizontalStrut(6));
 
         // 方法彩色 chip
         // 一伦优化 v26：methodCombo 与 envCombo 等宽 100×28，4 重保险锁死。
@@ -635,8 +632,8 @@ public class ApiDebuggerPanel extends JPanel {
 
             statusLabel.setText("● 已切换方法: " + newMethod + " - " + currentApi.displayLabel());
         });
-        row.add(methodCombo);
-        row.add(Box.createHorizontalStrut(6));
+        requestFields.add(methodCombo);
+        requestFields.add(Box.createHorizontalStrut(6));
 
         // urlField（圆角描边美化 + focus 主色 + 等宽字体）
         urlField.setEditable(false);
@@ -648,11 +645,20 @@ public class ApiDebuggerPanel extends JPanel {
         urlField.setMinimumSize(new Dimension(220, 28));
         urlField.setPreferredSize(new Dimension(460, 28));
         urlField.setMaximumSize(new Dimension(460, 28));
-        row.add(urlField);
-        row.add(Box.createHorizontalGlue());
+        requestFields.add(urlField);
+        requestFields.add(Box.createHorizontalGlue());
+        row.add(requestFields, BorderLayout.CENTER);
 
-        // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮
-        // 一伦优化 #87：发送入口独立到下方顶部按钮栏（NORTH 独立行），不再悬浮覆盖在 tabs 上。
+        // v16 修复 1：顶部行不再放 sendButton，否则会出现两个发送按钮。
+        // 一伦优化 #89：当前请求的主操作与方法/URL 同行，硬贴接口行右缘。
+        JButton rowSendButton = createTabStripSendButton();
+        rowSendButton.setAlignmentY(Component.CENTER_ALIGNMENT);
+        Dimension sendSize = rowSendButton.getPreferredSize();
+        sendSize.height = 28;
+        rowSendButton.setPreferredSize(sendSize);
+        rowSendButton.setMinimumSize(sendSize);
+        rowSendButton.setMaximumSize(sendSize);
+        row.add(rowSendButton, BorderLayout.EAST);
         return row;
     }
 
@@ -741,11 +747,12 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private JPanel createPreRequestPanel() {
-        JPanel panel = new JPanel(new BorderLayout(0, 4));
-        panel.setBorder(UiStyle.cardBorder(4, 6));
+        JPanel panel = new JPanel(new BorderLayout(0, 6));
+        panel.setBorder(UiStyle.cardBorder(6, 8));
 
+        // 一伦优化 #88：顶部环境行 —— 字号提到 FONT_BODY + 加粗，scope hint 用更柔和的灰色
         JPanel envRow = new JPanel(new BorderLayout());
-        activeEnvInfoLabel.setFont(activeEnvInfoLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_HINT));
+        activeEnvInfoLabel.setFont(activeEnvInfoLabel.getFont().deriveFont(Font.BOLD, UiStyle.FONT_BODY));
         Environment active = RestAutoLabSettingsState.getInstance(project).getActiveEnvironmentObj();
         if (active != null) {
             activeEnvInfoLabel.setText("当前环境: " + active.getName() + "  ·  " + active.getBaseUrl());
@@ -756,31 +763,68 @@ public class ApiDebuggerPanel extends JPanel {
         envRow.add(scopeHint, BorderLayout.EAST);
         panel.add(envRow, BorderLayout.NORTH);
 
-        JPanel scriptPanel = new JPanel(new BorderLayout(0, 3));
-        scriptPanel.setBorder(JBUI.Borders.emptyRight(4));
-        JBLabel scriptLabel = new JBLabel("前置脚本");
-        scriptLabel.setToolTipText("安全 DSL：set/param/header name=value；支持 # 或 // 注释");
-        scriptPanel.add(scriptLabel, BorderLayout.NORTH);
+        // 一伦优化 #88：左侧脚本区 ——
+        // 标题行：section 标题 + 右侧 toolbar（清空 / 示例）
+        // 编辑器高度从 78 提到 160，给脚本真正可写的空间
+        // 编辑器下方加 hint 描述 DSL 语法
+        JPanel scriptPanel = new JPanel(new BorderLayout(0, 6));
+        scriptPanel.setBorder(JBUI.Borders.emptyRight(6));
+
+        JPanel scriptHeaderRow = new JPanel(new BorderLayout());
+        scriptHeaderRow.setOpaque(false);
+        JBLabel scriptTitle = new JBLabel("前置脚本");
+        scriptTitle.setFont(scriptTitle.getFont().deriveFont(Font.BOLD, UiStyle.FONT_SECTION));
+        scriptTitle.setToolTipText("安全 DSL：set/param/header name=value；支持 # 或 // 注释");
+        scriptHeaderRow.add(scriptTitle, BorderLayout.WEST);
+
+        JPanel scriptToolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        scriptToolbar.setOpaque(false);
+        scriptToolbar.add(UiStyle.ghostButton("清空", AllIcons.Actions.GC, e -> preRequestScriptArea.setText("")));
+        scriptToolbar.add(UiStyle.ghostButton("示例", AllIcons.Actions.IntentionBulb, e -> preRequestScriptArea.setText(
+                "set token=abc123\nheader X-Trace={{traceId}}\nparam userId=42")));
+        scriptHeaderRow.add(scriptToolbar, BorderLayout.EAST);
+        scriptPanel.add(scriptHeaderRow, BorderLayout.NORTH);
+
         preRequestScriptArea.getEmptyText().setText("示例：set token=abc  ·  header X-Trace={{traceId}}");
-        preRequestScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_HINT));
+        preRequestScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
         JBScrollPane scriptScroll = new JBScrollPane(preRequestScriptArea);
-        scriptScroll.setPreferredSize(new Dimension(320, 78));
+        scriptScroll.setPreferredSize(new Dimension(320, 160));
         scriptPanel.add(scriptScroll, BorderLayout.CENTER);
 
-        JPanel variablesPanel = new JPanel(new BorderLayout(0, 3));
-        variablesPanel.setBorder(JBUI.Borders.emptyLeft(4));
-        variablesPanel.add(new JBLabel("变量覆盖"), BorderLayout.NORTH);
-        UiStyle.styleTable(variableOverrideTable);
-        variableOverrideTable.setRowHeight(24);
-        variablesPanel.add(new JBScrollPane(variableOverrideTable), BorderLayout.CENTER);
-        JPanel variableButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        variableButtons.add(UiStyle.button("添加", AllIcons.General.Add,
+        JBLabel scriptHint = new JBLabel("支持 set / param / header 三类命令，# 或 // 注释");
+        UiStyle.hint(scriptHint);
+        scriptPanel.add(scriptHint, BorderLayout.SOUTH);
+
+        // 一伦优化 #88：右侧变量覆盖区 ——
+        // 标题行：section 标题 + 右侧 toolbar（添加 / 删除），不再悬空放在表格下方
+        // 表格下方加 hint 描述语义
+        JPanel variablesPanel = new JPanel(new BorderLayout(0, 6));
+        variablesPanel.setBorder(JBUI.Borders.emptyLeft(6));
+
+        JPanel variablesHeaderRow = new JPanel(new BorderLayout());
+        variablesHeaderRow.setOpaque(false);
+        JBLabel variablesTitle = new JBLabel("变量覆盖");
+        variablesTitle.setFont(variablesTitle.getFont().deriveFont(Font.BOLD, UiStyle.FONT_SECTION));
+        variablesHeaderRow.add(variablesTitle, BorderLayout.WEST);
+
+        JPanel variablesToolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        variablesToolbar.setOpaque(false);
+        variablesToolbar.add(UiStyle.button("添加", AllIcons.General.Add,
                 e -> variableOverrideModel.addRow(new Object[]{"", ""})));
-        variableButtons.add(UiStyle.button("删除", AllIcons.General.Remove, e -> {
+        variablesToolbar.add(UiStyle.button("删除", AllIcons.General.Remove, e -> {
             int row = variableOverrideTable.getSelectedRow();
             if (row >= 0) variableOverrideModel.removeRow(row);
         }));
-        variablesPanel.add(variableButtons, BorderLayout.SOUTH);
+        variablesHeaderRow.add(variablesToolbar, BorderLayout.EAST);
+        variablesPanel.add(variablesHeaderRow, BorderLayout.NORTH);
+
+        UiStyle.styleTable(variableOverrideTable);
+        variableOverrideTable.setRowHeight(26);
+        variablesPanel.add(new JBScrollPane(variableOverrideTable), BorderLayout.CENTER);
+
+        JBLabel variablesHint = new JBLabel("覆盖运行时变量，作用于本次请求");
+        UiStyle.hint(variablesHint);
+        variablesPanel.add(variablesHint, BorderLayout.SOUTH);
 
         JBSplitter configSplitter = new JBSplitter(false, 0.55f);
         configSplitter.setFirstComponent(scriptPanel);
@@ -1764,8 +1808,8 @@ public class ApiDebuggerPanel extends JPanel {
 
     /**
      * 一伦优化 #87：「发起请求」按钮 —— 行内按钮栏的真正按钮组件。
-     * <p>布局归属：在 {@link ApiDebuggerPanel} 构造函数中，sendButtonBar（NORTH, FlowLayout.RIGHT）
-     * 持有本按钮实例，requestScroll 在 CENTER —— 彻底取代 v33-v86 的 JLayeredPane 浮动覆盖层方案。
+     * <p>布局归属：在请求配置卡片的接口行中由 BorderLayout.EAST 持有，
+     * 与方法和 URL 同行 —— 彻底取代 v33-v88 的 JLayeredPane/独立工具栏浮动方案。
      * 点击 forward 到主 {@code sendButton}（doClick）；主按钮请求中切 spinner，本按钮同步 icon，
      * 行为与顶部发送完全一致。</p>
      */
