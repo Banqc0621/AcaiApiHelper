@@ -142,6 +142,12 @@ public class ApiDebuggerPanel extends JPanel {
     private JPanel responseBodyContainer;
     /** 顶部状态行（toggle 行），始终挂在 BorderLayout.NORTH，整行可点击切换折叠。 */
     private JPanel responseStatusPanel;
+    /** 一伦优化 #96：保存调试器垂直 splitter 的引用，展开/收起时联动调整比例。 */
+    private JBSplitter debuggerSplitter;
+    /** 用户主动拖动 splitter 的比例（用于展开时尊重用户的偏好，不强制写死）。 */
+    private float userSplitterProportion = 0.6f;
+    /** 标记程序自身正在调整 proportion（避免回调时把程序值当作用户偏好记下）。 */
+    private boolean duringAutoProportionChange = false;
 
     private final JBTextArea testResultArea = new JBTextArea();
     
@@ -259,6 +265,16 @@ public class ApiDebuggerPanel extends JPanel {
         // Round 4：分割线视觉强化 —— 主题色 + 加宽命中区 + 方向正确的拖动光标
         installSplitterHint(splitter);
         add(splitter, BorderLayout.CENTER);
+
+        // 一伦优化 #96：保留 splitter 引用，展开/收起时联动调整比例。
+        // 监听用户拖动，记录「用户偏好比例」用于下次展开时参考。
+        this.debuggerSplitter = splitter;
+        splitter.addPropertyChangeListener("proportion", evt -> {
+            // 用户拖动比例 → 记下来，下次展开时按这个比例给响应区空间
+            if (!duringAutoProportionChange && splitter.isShowing()) {
+                userSplitterProportion = splitter.getProportion();
+            }
+        });
 
         // 底部状态栏
         JPanel bottomPanel = new JPanel(new BorderLayout());
@@ -1653,7 +1669,7 @@ public class ApiDebuggerPanel extends JPanel {
         applyResponseCollapsedState();
     }
 
-    /** 一伦优化 #95：根据 {@link #responseContentCollapsed} 同步主体可见性 + 按钮图标。 */
+    /** 一伦优化 #95/96：根据 {@link #responseContentCollapsed} 同步主体可见性 + 按钮图标 + 联动 splitter 比例。 */
     private void applyResponseCollapsedState() {
         if (responseBodyContainer != null) {
             responseBodyContainer.setVisible(!responseContentCollapsed);
@@ -1663,6 +1679,30 @@ public class ApiDebuggerPanel extends JPanel {
         }
         if (responseCollapseBtn != null) {
             responseCollapseBtn.setVisible(!responseContentCollapsed);
+        }
+        // 一伦优化 #96：联动调整 splitter 比例。折叠时把响应区压到最小（~10%），让上半部分占满；
+        // 展开时恢复到用户最近一次拖动记录的比例（默认 0.6）。这样拖动过的位置不会被无视，
+        // 但折叠态始终给请求编辑层让出最大空间。
+        if (debuggerSplitter != null) {
+            float target = responseContentCollapsed
+                    ? Math.min(userSplitterProportion, 0.5f) // 折叠态：响应区最多 50%（实际更小，因为还有状态行撑底）
+                    : userSplitterProportion;
+            // 折叠时给一个接近"只露状态行"的最小比例 —— 取 splitter 高度的 ~10%
+            if (responseContentCollapsed) {
+                int totalHeight = debuggerSplitter.getHeight();
+                int minHeight = responseStatusPanel != null
+                        ? responseStatusPanel.getPreferredSize().height + 8 : 28;
+                if (totalHeight > 0 && minHeight > 0 && minHeight < totalHeight) {
+                    target = 1f - (float) minHeight / totalHeight;
+                }
+            }
+            target = Math.max(0.05f, Math.min(0.95f, target));
+            duringAutoProportionChange = true;
+            try {
+                debuggerSplitter.setProportion(target);
+            } finally {
+                duringAutoProportionChange = false;
+            }
         }
         if (responseBodyContainer != null && responseBodyContainer.getParent() != null) {
             responseBodyContainer.getParent().revalidate();
