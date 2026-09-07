@@ -111,8 +111,8 @@ public class ApiTreePanel extends JPanel {
 
     /** 统计标签 */
     private final JBLabel statsLabel = new JBLabel("");
-    /** 收藏夹批量测试的可视化进度，避免仅靠状态文字难以判断整体进度。 */
-    private final JProgressBar starredBatchProgress = new JProgressBar();
+    // 一伦优化 #90：移除 starredBatchProgress JProgressBar —— 批量测试进度通过 statsLabel
+    // 文字展示（"测试中（当前/总数）… · ✓成功 N · ✗失败 M"），无需独立进度条组件。
 
     /** API选中回调 - 通知调试面板更新 */
     private Consumer<ApiDefinition> onApiSelected = null;
@@ -512,15 +512,8 @@ public class ApiTreePanel extends JPanel {
         statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_TINY));
         statsLabel.setForeground(JBColor.GRAY);
         bottomPanel.add(statsLabel, BorderLayout.WEST);
-        // 一伦优化 #89：批量测试进度条前景/背景改成主题中性色，去掉 LaF 默认刺眼蓝色填充
-        starredBatchProgress.setBackground(JBColor.namedColor("Panel.background", new JBColor(new Color(0xF7, 0xF8, 0xFA), new Color(0x3C, 0x3F, 0x41))));
-        starredBatchProgress.setForeground(JBColor.namedColor("Component.borderColor", new JBColor(new Color(0xC4, 0xC8, 0xCE), new Color(0x49, 0x4D, 0x53))));
-        starredBatchProgress.setVisible(false);
-        starredBatchProgress.setStringPainted(true);
-        starredBatchProgress.setPreferredSize(new Dimension(132, 16));
-        starredBatchProgress.setMinimum(0);
-        starredBatchProgress.getAccessibleContext().setAccessibleName("收藏夹批量测试进度");
-        bottomPanel.add(starredBatchProgress, BorderLayout.EAST);
+        // 一伦优化 #90：彻底移除 starredBatchProgress JProgressBar —— 进度通过 statsLabel
+        // 文字展示，不再需要独立进度条组件（避免 LaF 蓝色背景，也省去一处隐藏控件）。
         add(bottomPanel, BorderLayout.SOUTH);
 
         // 保存 centerPanel 引用以便切换
@@ -587,7 +580,6 @@ public class ApiTreePanel extends JPanel {
         btnAll.setSelected(true);
         btnAll.addActionListener(e -> {
             currentFilter = FILTER_ALL;
-            starredBatchProgress.setVisible(false);
             updateExpandCollapseButtons();
             // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
             // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
@@ -632,7 +624,6 @@ public class ApiTreePanel extends JPanel {
         // 等持久化字段从旧 key 改写到新 key，完成后收藏视图会自动反映最新接口信息。
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
-            starredBatchProgress.setVisible(false);
             updateExpandCollapseButtons();
             // 「最新」点击时若缓存为空，主动触发扫描（triggerLatestFilter 内部会异步重算）
             triggerScanIfNeeded("最新");
@@ -2244,10 +2235,6 @@ public class ApiTreePanel extends JPanel {
         }
         final List<ApiDependency> deps = dependencies == null ? Collections.emptyList() : dependencies;
         final int total = apis.size();
-        starredBatchProgress.setMaximum(total);
-        starredBatchProgress.setValue(0);
-        starredBatchProgress.setString("0/" + total);
-        starredBatchProgress.setVisible(true);
         statsLabel.setText(operationName + "中（0/" + total + "）…");
 
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
@@ -2262,9 +2249,6 @@ public class ApiTreePanel extends JPanel {
                                 : result.getStatus() == TestStatus.ERROR ? "异常" : "失败";
                         String label = result.getApiDefinition() == null ? "接口" : result.getApiDefinition().displayLabel();
                         SwingUtilities.invokeLater(() -> {
-                            starredBatchProgress.setMaximum(count);
-                            starredBatchProgress.setValue(current);
-                            starredBatchProgress.setString(current + "/" + count);
                             statsLabel.setText(operationName + "中（" + current + "/" + count + "）· " + state + " · " + label);
                         });
                     });
@@ -2277,9 +2261,6 @@ public class ApiTreePanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
                 if (debuggerPanel != null) debuggerPanel.showAllHistory();
-                starredBatchProgress.setMaximum(total);
-                starredBatchProgress.setValue(total);
-                starredBatchProgress.setString(total + "/" + total);
                 statsLabel.setText(operationName + "完成：通过 " + passed + " · 失败 " + failed
                         + (skipped > 0 ? " · 跳过 " + skipped : "")
                         + " · 已记录 " + recorded + " 条历史");
@@ -2582,10 +2563,6 @@ public class ApiTreePanel extends JPanel {
         for (FolderApiTarget target : targetPairs) {
             statusTargets.putIfAbsent(target.api.uniqueKey(), target);
         }
-        starredBatchProgress.setMaximum(total);
-        starredBatchProgress.setValue(0);
-        starredBatchProgress.setString("0/" + total);
-        starredBatchProgress.setVisible(true);
         statsLabel.setText("依赖链测试中（0/" + total + "）…");
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             ChainTestExecutor chain =
@@ -2598,9 +2575,6 @@ public class ApiTreePanel extends JPanel {
                                 : result.getStatus() == TestStatus.SKIPPED ? "⊘"
                                 : result.getStatus() == TestStatus.ERROR ? "⚠" : "❌";
                         SwingUtilities.invokeLater(() -> {
-                            starredBatchProgress.setMaximum(t);
-                            starredBatchProgress.setValue(cur);
-                            starredBatchProgress.setString(cur + "/" + t);
                             statsLabel.setText("依赖链测试中（" + cur + "/" + t + "）… " + icon + " " +
                                     result.getApiDefinition().displayLabel());
                         });
@@ -2614,8 +2588,6 @@ public class ApiTreePanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
                 if (debuggerPanel != null) debuggerPanel.showAllHistory();
-                starredBatchProgress.setValue(total);
-                starredBatchProgress.setString(total + "/" + total);
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
                         + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
             });

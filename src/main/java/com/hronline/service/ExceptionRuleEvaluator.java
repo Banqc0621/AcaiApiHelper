@@ -12,8 +12,8 @@ import java.util.List;
  * Round 7（重构）+ 一伦优化 #67：异常自定义规则判定器。
  * <p>规则对项目内所有接口生效，两种类型语义相反：
  * <ul>
- *   <li>{@link ExceptionRule.RuleType#HTTP_VALUE}：HTTP 状态码白名单 —— 落在白名单 = 正常，
- *       不在白名单 = 异常。</li>
+ *   <li>{@link ExceptionRule.RuleType#HTTP_VALUE}：字段名为空时是 HTTP 状态码白名单；填写字段名时是
+ *       响应 JSON 字段白名单。落在白名单 = 正常，不在白名单 = 异常。</li>
  *   <li>{@link ExceptionRule.RuleType#FIELD_VALUE}：JSON 字段值黑名单 —— 出现在黑名单 = 异常，
  *       不在黑名单 = 正常。</li>
  * </ul>
@@ -28,8 +28,8 @@ public final class ExceptionRuleEvaluator {
      * 对当前请求跑全局异常规则判定。
      *
      * @param project      当前 project（用于拿到 settings 实例）
-     * @param statusCode   HTTP 响应状态码（{@code HTTP_VALUE} 规则会用）
-     * @param responseBody 响应 body（{@code FIELD_VALUE} 规则会用，可为 null）
+     * @param statusCode   HTTP 响应状态码（{@code HTTP_VALUE} 且字段名为空时使用）
+     * @param responseBody 响应 body（字段规则使用，可为 null）
      * @return {@link Result#isPassed()} == true 表示规则全部通过；
      *         否则 {@link Result#reason()} 给出第一条失败原因（用于测试结果 message）。
      */
@@ -63,22 +63,51 @@ public final class ExceptionRuleEvaluator {
 
             switch (r.getType()) {
                 case HTTP_VALUE: {
-                    // 白名单语义：值在白名单 = 正常；不在白名单 = 异常
-                    String actual = String.valueOf(statusCode);
-                    if (!contains(expected, actual)) {
-                        return Result.failed("HTTP 状态码 [" + actual + "] 不在白名单 " + expected + " 中");
+                    String fname = normalizeFieldName(r.getFieldName());
+                    if (fname.isEmpty()) {
+                        // 一伦优化 #90：字段名留空 → HTTP 状态码白名单。
+                        // 历史 JSON 里可能混入了非整数字面量（如 "SYSTEM_ERROR"），
+                        // 评估时只保留能解析为 100-599 整数的项，跳过其他项避免
+                        // 「HTTP 状态码 [200] 不在白名单 [SYSTEM_ERROR] 中」这种歧义错误。
+                        java.util.List<String> intWhitelist = new java.util.ArrayList<>();
+                        for (String v : expected) {
+                            try {
+                                int code = Integer.parseInt(v.trim());
+                                if (code >= 100 && code <= 599) intWhitelist.add(v.trim());
+                            } catch (NumberFormatException ignored) {
+                                // 跳过非整数字面量（如 "SYSTEM_ERROR"）
+                            }
+                        }
+                        if (intWhitelist.isEmpty()) break; // 空白名单 = 该条规则不限制
+                        String actual = String.valueOf(statusCode);
+                        if (!contains(intWhitelist, actual)) {
+                            return Result.failed("HTTP 状态码 [" + actual + "] 不在白名单 " + intWhitelist + " 中");
+                        }
+                    } else {
+                        // 字段名不为空：按响应 JSON 字段白名单处理。这样 HTTP 200 + code=301
+                        // 可以明确表示业务成功，避免把字段规则误拿去和 HTTP 状态码比较。
+                        if (parsed == null || !parsed.isJsonObject()) {
+                            return Result.failed("接口响应不是 JSON 对象，规则 [字段=" + fname + "] 无法校验");
+                        }
+                        String actual = extractJsonPathValue(parsed, fname);
+                        if (actual == null) {
+                            return Result.failed("响应字段 [" + fname + "] 缺失，不在白名单 " + expected + " 中");
+                        }
+                        if (!contains(expected, actual)) {
+                            return Result.failed("响应字段 [" + fname + "]=" + actual
+                                    + " 不在白名单 " + expected + " 中");
+                        }
                     }
                     break;
                 }
                 case FIELD_VALUE: {
                     // 黑名单语义（#67）：值在黑名单 = 异常；不在黑名单 = 正常
-                    String fname = r.getFieldName();
-                    if (fname == null || fname.isBlank()) continue;
+                    String fname = normalizeFieldName(r.getFieldName());
+                    if (fname.isEmpty()) continue;
                     if (parsed == null || !parsed.isJsonObject()) {
                         return Result.failed("接口响应不是 JSON 对象，规则 [字段=" + fname + "] 无法校验");
                     }
-                    com.google.gson.JsonElement val = parsed.getAsJsonObject().get(fname);
-                    String actual = extractActualValue(val, fname);
+                    String actual = extractJsonPathValue(parsed, fname);
                     if (actual == null) {
                         // 字段缺失 = 不在黑名单 = 通过（黑名单语义下缺失值不算命中）
                         break;
@@ -91,6 +120,21 @@ public final class ExceptionRuleEvaluator {
             }
         }
         return Result.passed();
+    }
+
+    private static String normalizeFieldName(String fieldName) {
+        return fieldName == null ? "" : fieldName.trim();
+    }
+
+    /** 读取顶层或点号路径字段（如 {@code data.code}），供两类响应字段规则复用。 */
+    private static String extractJsonPathValue(com.google.gson.JsonElement parsed, String path) {
+        if (parsed == null || path == null || path.isBlank()) return null;
+        com.google.gson.JsonElement current = parsed;
+        for (String segment : path.split("\\.")) {
+            if (segment == null || segment.isBlank() || current == null || !current.isJsonObject()) return null;
+            current = current.getAsJsonObject().get(segment);
+        }
+        return extractActualValue(current, path);
     }
 
     /**
@@ -120,7 +164,7 @@ public final class ExceptionRuleEvaluator {
         if (list == null) return false;
         for (String s : list) {
             if (s == null) continue;
-            if (s.equals(key)) return true;
+            if (s.trim().equals(key)) return true;
         }
         return false;
     }

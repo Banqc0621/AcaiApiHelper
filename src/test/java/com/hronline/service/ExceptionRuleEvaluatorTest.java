@@ -140,6 +140,40 @@ class ExceptionRuleEvaluatorTest {
     }
 
     @Test
+    void httpValueWhitelist_canMatchResponseFieldInsteadOfHttpStatus() {
+        // 用户配置：HTTP_VALUE + 字段 code + 301。HTTP 200 只是传输层状态，业务 code=301 才是白名单值。
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "code", List.of("301"), true);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":301}").isPassed());
+        ExceptionRuleEvaluator.Result failed = ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":500}");
+        assertFalse(failed.isPassed());
+        assertTrue(failed.reason().contains("响应字段"));
+        assertTrue(failed.reason().contains("301"));
+    }
+
+    @Test
+    void httpValueWhitelist_responseFieldSupportsStringValues() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "code", List.of("SYSTEM_ERROR"), true);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":\"SYSTEM_ERROR\"}").isPassed());
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":\"OK\"}").isPassed());
+    }
+
+    @Test
+    void httpValueWhitelist_responseFieldMissingFails() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "code", List.of("200"), true);
+        ExceptionRuleEvaluator.Result result = ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 200, "{}");
+        assertFalse(result.isPassed());
+        assertTrue(result.reason().contains("缺失"));
+    }
+
+    @Test
     void httpValueEmptyListMeansNoConstraint() {
         // 空白名单 = 该规则不限制（用户可能临时清空）
         ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
@@ -167,6 +201,26 @@ class ExceptionRuleEvaluatorTest {
         assertTrue(r.reason().contains("code"));
         assertTrue(r.reason().contains("500"));
         assertTrue(r.reason().contains("黑名单"), "失败原因必须明示是黑名单语义，避免用户混淆");
+    }
+
+    @Test
+    void fieldValueBlacklist_matchesConfiguredFailureValues500And501() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.FIELD_VALUE,
+                "code", List.of("500", "501"), true);
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":500}").isPassed());
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":501}").isPassed());
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":200}").isPassed(), "code=200 不在告警值黑名单，应正常");
+    }
+
+    @Test
+    void fieldValueBlacklist_supportsStringFailureValue() {
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.FIELD_VALUE,
+                "code", List.of("SYSTEM_ERROR"), true);
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(List.of(rule), 200,
+                "{\"code\":\"SYSTEM_ERROR\"}").isPassed());
     }
 
     @Test
@@ -303,5 +357,48 @@ class ExceptionRuleEvaluatorTest {
                 "HTTP 500 应爆红（不在白名单）");
         assertFalse(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":500}").isPassed(),
                 "code=500 应爆红（命中黑名单）");
+    }
+
+    // ---------- 一伦优化 #90：HTTP_VALUE 历史数据混入非整数项时静默跳过 ----------
+
+    @Test
+    void httpValueWhitelist_skipsNonIntegerEntriesSilently() {
+        // 关键场景：历史 JSON 里白名单混入了 "SYSTEM_ERROR"（业务字段值当成状态码用了）
+        // 评估时只保留 200 这种合法整数，跳过 SYSTEM_ERROR 等非数字项。
+        // 整条规则等价于白名单 [200] → HTTP 200 通过，HTTP 500 爆红。
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("SYSTEM_ERROR", "200"), true);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 200, "{}").isPassed(),
+                "200 在清洗后的白名单里 → 通过");
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 500, "{}").isPassed(),
+                "500 不在白名单 → 爆红（不再出现『不在白名单 [SYSTEM_ERROR] 中』的歧义）");
+    }
+
+    @Test
+    void httpValueWhitelist_emptyAfterCleaningMeansNoConstraint() {
+        // 白名单全是「SYSTEM_ERROR」「BUSY」这种非整数 → 清洗后空白名单 = 该规则不限制
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("SYSTEM_ERROR", "BUSY"), true);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 500, "{}").isPassed(),
+                "空白名单等同不限制，HTTP 500 不应爆红");
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 200, "{}").isPassed(),
+                "空白名单等同不限制，HTTP 200 通过");
+    }
+
+    @Test
+    void httpValueWhitelist_filtersOutOfRangeIntegers() {
+        // 历史数据里混入 50 这种无效范围整数 → 跳过（不在 100-599）
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("50", "200"), true);
+        // 清洗后只剩 [200]；HTTP 200 通过；HTTP 50 仍然爆红（不在清洗后的白名单）
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 200, "{}").isPassed());
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 50, "{}").isPassed(),
+                "50 不在清洗后的白名单 [200] → 爆红");
     }
 }
