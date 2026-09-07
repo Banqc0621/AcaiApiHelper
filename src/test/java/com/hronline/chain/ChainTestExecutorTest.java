@@ -121,6 +121,50 @@ class ChainTestExecutorTest {
         }
     }
 
+    @Test
+    void skipsDownstreamWhenMappedResponseFieldIsMissing() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger downstreamHits = new AtomicInteger();
+        server.createContext("/login", exchange -> {
+            byte[] body = "{\"data\":{}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/boxes/42", exchange -> {
+            downstreamHits.incrementAndGet();
+            byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            ApiDefinition login = api("GET", "/login");
+            ApiDefinition boxes = api("GET", "/boxes/{id}");
+            boxes.setParameters(new ArrayList<>(List.of(parameter("id", ParameterLocation.PATH))));
+            ApiDependency dependency = new ApiDependency(login.uniqueKey(), boxes.uniqueKey());
+            dependency.getMappings().add(new ApiDependency.ValueMapping("data.id", "id"));
+
+            TestProfile profile = new TestProfile("收藏夹", baseUrl(server));
+            profile.setParams(login.uniqueKey(), Map.of());
+            profile.setParams(boxes.uniqueKey(), Map.of("id", "fallback"));
+            List<TestResult> results = new ArrayList<>();
+
+            new ChainTestExecutor(new HttpExecutorService(null)).execute(
+                    List.of(login, boxes), List.of(dependency), profile, null,
+                    (result, current, total) -> results.add(result));
+
+            assertEquals(0, downstreamHits.get(), "映射字段缺失时不得发送下游请求");
+            assertEquals(TestStatus.PASSED, results.get(0).getStatus());
+            assertEquals(TestStatus.SKIPPED, results.get(1).getStatus());
+            assertTrue(results.get(1).getErrorMessage().contains("依赖字段未找到"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private static ApiDefinition api(String method, String url) {
         ApiDefinition api = new ApiDefinition();
         api.setHttpMethod(method);

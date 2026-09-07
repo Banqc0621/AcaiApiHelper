@@ -77,3 +77,14 @@
 3. **报错先定位根因再修**：#47→#49 三轮按钮配色迭代证明，绕过 LaF 自绘会持续产生新 bug，收敛到平台默认才是稳态。
 4. **修复必须配回归测试**：#50 配 13 项、#48/#49 配像素级双主题断言、#26 配无头布局三宽度定位测试。
 5. **用户报错截图里的堆栈要核对构建时间**：旧构建残留堆栈不代表当前代码（#52 复核经验）。
+
+## 七、2026-09-07 异常自定义规则歧义修复（#90–#92）
+
+| 异常现象 | 根因 | 修复与最终语义 | 回归证据 |
+|---|---|---|---|
+| `HTTP 状态码 [200] 不在白名单 [500] 中`，实际想校验响应体 `code` | 旧界面把 `HTTP_VALUE` 固定解释成 HTTP 状态码，字段名被隐藏，业务 code 与 HTTP status 共用一列 | `HTTP_VALUE` 字段名留空才校验 HTTP 状态码；填写 `code`/`data.code` 时校验响应字段白名单 | `ExceptionRuleEvaluatorTest.httpValueWhitelist_canMatchResponseFieldInsteadOfHttpStatus` |
+| 保存 `SYSTEM_ERROR` 报“HTTP 状态码必须是整数” | 旧版允许无字段 `HTTP_VALUE` 保存字符串，升级后仍按 HTTP status 校验 | 响应字段规则允许数字和字符串；无字段且全为非状态码字符串的旧规则自动迁移为 `code` 字段；混合歧义配置不自动猜测 | `legacyStringHttpValueMigratesToCodeFieldWithoutRejectingValidStatusRules`、`httpValueWhitelist_responseFieldSupportsStringValues` |
+| `FIELD_VALUE code=500/501` 未按预期爆红 | 黑白名单语义和 UI 文案多次反转，执行与展示容易错位 | `FIELD_VALUE` 固定为告警值黑名单：命中即失败；`HTTP_VALUE` 固定为白名单：命中通过、不命中失败 | `fieldValueBlacklist_matchesConfiguredFailureValues500And501` |
+| 首次打开没有通用规则参考 | 仅加载空列表，用户必须从零配置 | 预置 HTTP `200/201/204`、告警值 `code=500/501/9999`，并提供默认关闭的 `HTTP_VALUE code=200` 白名单模板 | `defaultRulesContainStandardHttpAndFieldRules`、`defaultRulesProtectAgainstCommonFailureResponses` |
+
+执行顺序约束：接口自身预期状态码/断言先判定；通过后再执行全局异常规则。业务字段规则支持点号路径，错误原因必须显示字段、实际值和白/黑名单语义，供历史记录与收藏树标红复用。

@@ -136,7 +136,6 @@ public class ApiDebuggerPanel extends JPanel {
     private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
 
     private final JBTextArea testResultArea = new JBTextArea();
-    private final JProgressBar testProgressBar = new JProgressBar();
     
     // 批量测试状态控制
     private volatile boolean batchTestRunning = false;
@@ -237,9 +236,9 @@ public class ApiDebuggerPanel extends JPanel {
 
         JPanel responsePanel = createResponsePanel();
 
-        // 一伦优化 #89：发送按钮归属接口行（方法 + URL），使用正常 BorderLayout.EAST 布局。
-        // 按钮不再悬浮在 tabs 上方或单独占一行，始终贴合当前请求上下文的最右侧，
-        // 同时为 URL 文本框保留可收缩的 CENTER 区域，窗口缩放时不会把按钮推到左侧。
+        // 一伦优化 #89：发送按钮归属接口行（方法 + URL），由请求行布局固定在右侧操作槽。
+        // 按钮不再悬浮在 tabs 上方或单独占一行，始终贴合当前请求上下文；
+        // URL 区域优先收缩，窗口缩放时不会把按钮推到左侧或覆盖其他控件。
 
         // 垂直分割：true=垂直方向（上下），0.6=请求编辑层占 60%
         JBSplitter splitter = new JBSplitter(true, 0.6f);
@@ -1715,9 +1714,8 @@ public class ApiDebuggerPanel extends JPanel {
 
         // ── 中部：测试结果 ──
         JPanel center = new JPanel(new BorderLayout(0, 2));
-        // 进度通过底部状态栏和结果区逐项文本展示。隐藏旧 JProgressBar，避免在
-        // IntelliJ LaF 下出现刺眼的整块蓝色填充，且不会额外占用响应区高度。
-        testProgressBar.setVisible(false);
+        // 进度只通过底部状态栏和结果区逐项文本展示，不创建 JProgressBar，避免在
+        // IntelliJ LaF 下出现刺眼的整块蓝色填充或额外占用响应区高度。
 
         testResultArea.setFont(new Font("Monospaced", Font.PLAIN, (int) UiStyle.FONT_MONO));
         testResultArea.setEditable(false);
@@ -2968,8 +2966,6 @@ public class ApiDebuggerPanel extends JPanel {
             return;
         }
         
-        testProgressBar.setVisible(false);
-        testProgressBar.setIndeterminate(true);
         testResultArea.setText("");
         statusLabel.setText("● 正在测试: " + currentApi.getName());
 
@@ -2982,8 +2978,6 @@ public class ApiDebuggerPanel extends JPanel {
                     bodyEditor.getText(), testBodyFormat,
                     getCurrentEnvironment(), new ArrayList<>(currentAssertions));
             ApplicationManager.getApplication().invokeLater(() -> {
-                testProgressBar.setVisible(false);
-                
                 // 执行器极端情况下可能返回 null（例如线程被取消或适配器未返回结果）。
                 // 统一转成错误结果，确保异常仍显示在右侧响应区域，并结束“处理中”状态。
                 final TestResult result = r == null
@@ -3049,7 +3043,6 @@ public class ApiDebuggerPanel extends JPanel {
         batchTestBtn.setText("⏹ 停止测试");
         batchTestBtn.setToolTipText("点击停止正在进行的批量测试");
         
-        testProgressBar.setVisible(false);
         testResultArea.setText("");
         statusLabel.setText("● 批量测试开始 (" + apis.size() + " 个API)");
 

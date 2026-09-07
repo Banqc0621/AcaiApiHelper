@@ -46,7 +46,7 @@ public class DependencyGraphDialog extends DialogWrapper {
     private DefaultTableModel tableModel;
     private JBTable table;
 
-    /** key = uniqueKey, value = 接口短名称，用于依赖表格和上下游下拉框展示。 */
+    /** key = uniqueKey, value = METHOD + URL 全路径，用于依赖表格和上下游下拉框展示。 */
     private final Map<String, String> labelByKey = new LinkedHashMap<>();
 
     public DependencyGraphDialog(Project project, List<ApiDefinition> apis,
@@ -197,8 +197,8 @@ public class DependencyGraphDialog extends DialogWrapper {
                 int modelColumn = convertColumnIndexToModel(column);
                 Object value = getModel().getValueAt(modelRow, modelColumn);
                 String text = value == null ? "" : String.valueOf(value).trim();
-                // 上游/下游单元格按要求只显示接口短名称，但悬浮时给出完整方法 + URL，
-                // 这样短名称不牺牲同名接口的确认能力。
+                // 上游/下游单元格直接显示完整方法 + URL；悬浮提示再次提供完整内容，
+                // 便于窄列或超长路径场景核对。
                 if ((modelColumn == 0 || modelColumn == 2) && !text.isBlank()) {
                     String key = findKeyByLabel(text);
                     ApiDefinition api = apiByKey(key);
@@ -430,7 +430,7 @@ public class DependencyGraphDialog extends DialogWrapper {
      * 把表格行重建为 ApiDependency 列表。抽出来的纯函数，单测可直接覆盖。
      * <p>输入行格式：每行 [producerLabel, sourcePath, consumerLabel, targetParam]，
      * 对应表头「上游接口 | 响应字段 | 下游接口 | 目标参数」。
-     * {@code labelByKey} 是 uniqueKey → 短显示名的映射，用于反向解析。</p>
+     * {@code labelByKey} 是 uniqueKey → METHOD + URL 全路径标签的映射，用于反向解析。</p>
      *
      * <p>规则：
      * <ul>
@@ -520,7 +520,7 @@ public class DependencyGraphDialog extends DialogWrapper {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
-    /** 接口列编辑器：仅显示当前窗口内可解析的接口短名称，避免输入未知节点。 */
+    /** 接口列编辑器：仅显示当前窗口内可解析的 METHOD + URL 全路径，避免输入未知节点。 */
     private final class ApiCellEditor extends DefaultCellEditor {
         private final JComboBox<String> combo;
 
@@ -857,7 +857,10 @@ public class DependencyGraphDialog extends DialogWrapper {
         return result;
     }
 
-    /** 依赖设置 UI 使用的短名称标签；同名接口仅补充序号，始终不显示方法或完整路径。 */
+    /**
+     * 旧版本短名称标签生成器，仅保留给历史数据兼容测试；当前依赖设置 UI 不再调用，
+     * 表格、顺序列表和上下游下拉框统一使用 {@link #buildDisplayLabels(List)} 的完整路径。
+     */
     static Map<String, String> buildShortDisplayLabels(List<ApiDefinition> apis) {
         Map<String, String> result = new LinkedHashMap<>();
         if (apis == null || apis.isEmpty()) return result;

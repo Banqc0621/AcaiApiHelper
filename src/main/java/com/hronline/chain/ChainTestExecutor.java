@@ -117,23 +117,37 @@ public final class ChainTestExecutor {
                 // 取参数副本
                 Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
 
-                // 注入依赖值
-                injectDependencies(api, params, effectiveDependencies, extractedValues);
-
-                // 执行请求
-                result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
-                        profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
-                        environment, null);
-
-                // 失败时标记所有下游
-                if (result.getStatus() != TestStatus.PASSED) {
+                // 映射关系未能解析出全部值时不能把未替换的占位参数发给下游。
+                // 这类节点按“依赖未满足”跳过，并继续阻断其后续下游，保证依赖链
+                // 的请求顺序和数据契约都成立。
+                String dependencyError = dependencyResolutionError(api, effectiveDependencies, extractedValues);
+                if (dependencyError != null) {
+                    result = new TestResult(api);
+                    result.setStatus(TestStatus.SKIPPED);
+                    result.setErrorMessage(dependencyError);
+                    result.setTimestamp(System.currentTimeMillis());
                     Set<String> downstream = transitiveConsumers(api.uniqueKey(), effectiveDependencies);
                     failedKeys.addAll(downstream);
-                    LOG.info("接口失败，标记 " + downstream.size() + " 个下游跳过: " + api.displayLabel());
-                }
+                    LOG.info("依赖字段未满足，跳过接口并标记 " + downstream.size() + " 个下游: " + api.displayLabel());
+                } else {
+                    // 注入依赖值
+                    injectDependencies(api, params, effectiveDependencies, extractedValues);
 
-                // 提取响应值供下游使用
-                extractProducerValues(api, result, effectiveDependencies, extractedValues);
+                    // 执行请求
+                    result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
+                            profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
+                            environment, null);
+
+                    // 失败时标记所有下游
+                    if (result.getStatus() != TestStatus.PASSED) {
+                        Set<String> downstream = transitiveConsumers(api.uniqueKey(), effectiveDependencies);
+                        failedKeys.addAll(downstream);
+                        LOG.info("接口失败，标记 " + downstream.size() + " 个下游跳过: " + api.displayLabel());
+                    }
+
+                    // 提取响应值供下游使用
+                    extractProducerValues(api, result, effectiveDependencies, extractedValues);
+                }
             }
 
             report.getResults().add(result);
@@ -273,6 +287,31 @@ public final class ChainTestExecutor {
                 }
             }
         }
+    }
+
+    /**
+     * 检查 consumer 的所有字段映射是否已有上游响应值。
+     * 空映射边只表达“先后顺序”，无需提取字段；有映射的边必须逐条满足。
+     */
+    private String dependencyResolutionError(ApiDefinition consumer,
+                                             List<ApiDependency> deps,
+                                             Map<String, Map<String, String>> extractedValues) {
+        if (consumer == null || deps == null) return null;
+        for (ApiDependency dep : deps) {
+            if (dep == null || !consumer.uniqueKey().equals(dep.getConsumerKey())) continue;
+            List<ApiDependency.ValueMapping> mappings = dep.getMappings();
+            if (mappings == null || mappings.isEmpty()) continue;
+            Map<String, String> producerValues = extractedValues.get(dep.getProducerKey());
+            for (ApiDependency.ValueMapping mapping : mappings) {
+                if (mapping == null) continue;
+                String source = mapping.getSourcePath() == null ? "" : mapping.getSourcePath().trim();
+                if (source.isBlank() || producerValues == null || producerValues.get(source) == null) {
+                    return "依赖字段未找到（上游 " + dep.getProducerKey() + " → "
+                            + mapping.getTargetParam() + "），已跳过";
+                }
+            }
+        }
+        return null;
     }
 
     /**

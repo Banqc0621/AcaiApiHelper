@@ -32,8 +32,9 @@ import java.util.List;
  *
  * <p><b>全局规则</b>：本面板配置的是项目级异常判定规则，对项目内所有接口生效。规则分为两类（语义相反）：
  * <ul>
- *   <li>HTTP_VALUE（白名单）：自定义"哪些 HTTP 状态码算正常"；不在白名单 = 异常</li>
- *   <li>FIELD_VALUE（黑名单）：响应 JSON 第一级字段值命中黑名单 = 异常（不在黑名单 = 正常）</li>
+ *   <li>HTTP_VALUE（白名单）：字段名留空时校验 HTTP 状态码，填写字段名时校验响应 JSON 字段；
+ *       不在白名单 = 异常</li>
+ *   <li>FIELD_VALUE（告警值）：响应 JSON 字段值命中即异常（未命中 = 正常）</li>
  * </ul>
  * 判定细节见 {@link com.hronline.service.ExceptionRuleEvaluator}。</p>
  */
@@ -73,7 +74,8 @@ public class ExceptionRulesDialog extends DialogWrapper {
         private final Project project;
 
         private static final String[] HEADERS = {
-            "类型", "字段名（仅 FIELD_VALUE）", "取值（逗号分隔：HTTP_VALUE=白名单 / FIELD_VALUE=黑名单）", "启用", "操作"};
+            "类型", "字段名（HTTP_VALUE 可填；留空=HTTP状态码）",
+            "取值（逗号分隔：HTTP_VALUE=白名单 / FIELD_VALUE=告警值）", "启用", "操作"};
         private static final int COL_TYPE = 0;
         private static final int COL_FIELD = 1;
         private static final int COL_EXPECTED = 2;
@@ -112,7 +114,8 @@ public class ExceptionRulesDialog extends DialogWrapper {
             JLabel header = new JLabel("<html>"
                     + "<b>异常自定义规则（全局，对所有接口生效）</b><br>"
                     + "判定流程：HTTP 通过 → 跑本表规则；任一不通过 = 异常<br>"
-                    + "<b>HTTP_VALUE</b>：白名单，状态码命中 = 正常；<b>FIELD_VALUE</b>：黑名单，响应 JSON 顶层字段值命中 = 异常（留空 = 不限）。"
+                    + "<b>HTTP_VALUE</b>：字段名留空时校验 HTTP 状态码白名单；填写字段名时校验响应字段白名单。<br>"
+                    + "<b>FIELD_VALUE</b>：响应字段命中告警值 = 失败。示例：FIELD_VALUE code=500/501 告警；HTTP_VALUE code=301 且响应 code=301 通过。"
                     + "</html>");
             header.setBorder(JBUI.Borders.empty(0, 0, 6, 0));
             return header;
@@ -166,14 +169,44 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
         private void configureTable() {
             table.setRowHeight(28);
-            table.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(110);
-            table.getColumnModel().getColumn(COL_FIELD).setPreferredWidth(140);
+            Color gridColor = JBColor.namedColor("Table.gridColor",
+                    new JBColor(new Color(0xB8, 0xBE, 0xC6), new Color(0x60, 0x66, 0x6E)));
+            table.setShowGrid(true);
+            table.setGridColor(gridColor);
+            table.setIntercellSpacing(JBUI.size(1, 1));
+            table.getColumnModel().getColumn(COL_TYPE).setPreferredWidth(170);
+            table.getColumnModel().getColumn(COL_FIELD).setPreferredWidth(230);
             table.getColumnModel().getColumn(COL_EXPECTED).setPreferredWidth(280);
             table.getColumnModel().getColumn(COL_ENABLED).setPreferredWidth(60);
 
             // 类型列：JComboBox 直接编辑
             JComboBox<ExceptionRule.RuleType> typeCombo = new JComboBox<>(ExceptionRule.RuleType.values());
+            typeCombo.setRenderer(new DefaultListCellRenderer() {
+                @Override
+                public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                              boolean isSelected, boolean cellHasFocus) {
+                    super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                    if (value == ExceptionRule.RuleType.HTTP_VALUE) {
+                        setText("HTTP_VALUE（白名单）");
+                    } else if (value == ExceptionRule.RuleType.FIELD_VALUE) {
+                        setText("FIELD_VALUE（告警值）");
+                    }
+                    return this;
+                }
+            });
             table.getColumnModel().getColumn(COL_TYPE).setCellEditor(new DefaultCellEditor(typeCombo));
+            table.getColumnModel().getColumn(COL_TYPE).setCellRenderer(new DefaultTableCellRenderer() {
+                @Override
+                protected void setValue(Object value) {
+                    if (value == ExceptionRule.RuleType.HTTP_VALUE) {
+                        setText("HTTP_VALUE（白名单）");
+                    } else if (value == ExceptionRule.RuleType.FIELD_VALUE) {
+                        setText("FIELD_VALUE（告警值）");
+                    } else {
+                        super.setValue(value);
+                    }
+                }
+            });
 
             // 操作列：renderer 渲染为按钮样式；点击由 mouseListener 直接响应
             TableColumn action = table.getColumnModel().getColumn(COL_ACTION);
@@ -259,10 +292,8 @@ public class ExceptionRulesDialog extends DialogWrapper {
                     showValidationError(i, "FIELD_VALUE 规则必须填写字段名，例如 code");
                     return false;
                 }
-                if (type == ExceptionRule.RuleType.HTTP_VALUE) {
-                    // 一伦优化 #89：HTTP_VALUE 不强制要求是 100-599 整数 ——
-                    // 部分业务接口 OK 响应里 code 字段为字符串（如 "SYSTEM_ERROR"），按字面量精确匹配即可。
-                    // 若值能解析为整数，仅做 100-599 范围校验；解析不了视为合法字符串字面量。
+                if (type == ExceptionRule.RuleType.HTTP_VALUE && field.isBlank()) {
+                    // 字段名留空时才是 HTTP 状态码白名单，必须是 100-599 整数。
                     for (String value : values) {
                         try {
                             int code = Integer.parseInt(value);
@@ -271,7 +302,9 @@ public class ExceptionRulesDialog extends DialogWrapper {
                                 return false;
                             }
                         } catch (NumberFormatException ignored) {
-                            // 非数字字面量，按字符串匹配规则保留
+                            showValidationError(i, "HTTP 状态码必须是整数：" + value
+                                    + "（如果是 code 等响应字段，请填写字段名后再保存）");
+                            return false;
                         }
                     }
                 }

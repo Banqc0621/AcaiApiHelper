@@ -387,7 +387,13 @@ public class RestAutoLabSettingsState implements PersistentStateComponent<RestAu
         try {
             Type t = new TypeToken<List<ExceptionRule>>(){}.getType();
             List<ExceptionRule> v = gson.fromJson(myState.exceptionRulesJson, t);
-            return v != null ? v : new ArrayList<>();
+            if (v == null) return new ArrayList<>();
+            boolean migrated = false;
+            for (ExceptionRule rule : v) {
+                if (rule != null && rule.migrateLegacyStringHttpValuesToCodeField()) migrated = true;
+            }
+            if (migrated) myState.exceptionRulesJson = gson.toJson(v);
+            return v;
         } catch (Exception ignored) {
             return new ArrayList<>();
         }

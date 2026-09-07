@@ -90,6 +90,24 @@ class ExceptionRuleEvaluatorTest {
         assertEquals(1, r.getExpectedValues().size(), "setter 也应拷贝");
     }
 
+    @Test
+    void legacyStringHttpValueMigratesToCodeFieldWithoutRejectingValidStatusRules() {
+        ExceptionRule legacyString = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("SYSTEM_ERROR"), true);
+        assertTrue(legacyString.migrateLegacyStringHttpValuesToCodeField());
+        assertEquals("code", legacyString.getFieldName());
+
+        ExceptionRule validStatus = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("200", "201"), true);
+        assertFalse(validStatus.migrateLegacyStringHttpValuesToCodeField());
+        assertEquals("", validStatus.getFieldName());
+
+        ExceptionRule mixed = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "", List.of("200", "SYSTEM_ERROR"), true);
+        assertFalse(mixed.migrateLegacyStringHttpValuesToCodeField(),
+                "混合配置存在歧义，不应猜测成响应字段规则");
+    }
+
     // ---------- R7 完善：evaluator 内部取值 / 匹配逻辑 ----------
 
     @Test
@@ -332,18 +350,24 @@ class ExceptionRuleEvaluatorTest {
     void defaultRulesContainStandardHttpAndFieldRules() {
         // 默认规则包含 HTTP_VALUE 白名单 + FIELD_VALUE 黑名单
         List<ExceptionRule> defaults = ExceptionRule.defaultRules();
-        assertEquals(2, defaults.size(), "默认应注入 2 条规则");
+        assertEquals(3, defaults.size(), "默认应注入 3 条通用规则/模板");
         // 第一条：HTTP_VALUE 白名单 200/201/204
         ExceptionRule httpRule = defaults.get(0);
         assertEquals(ExceptionRule.RuleType.HTTP_VALUE, httpRule.getType());
         assertEquals(List.of("200", "201", "204"), httpRule.getExpectedValues());
         assertTrue(httpRule.isEnabled());
-        // 第二条：FIELD_VALUE code 黑名单 500/9999
+        // 第二条：FIELD_VALUE code 告警值 500/501/9999
         ExceptionRule fieldRule = defaults.get(1);
         assertEquals(ExceptionRule.RuleType.FIELD_VALUE, fieldRule.getType());
         assertEquals("code", fieldRule.getFieldName());
-        assertEquals(List.of("500", "9999"), fieldRule.getExpectedValues());
+        assertEquals(List.of("500", "501", "9999"), fieldRule.getExpectedValues());
         assertTrue(fieldRule.isEnabled());
+        // 第三条：code=200 响应字段白名单示例。默认关闭，避免误伤无 code 字段的接口。
+        ExceptionRule code200Template = defaults.get(2);
+        assertEquals(ExceptionRule.RuleType.HTTP_VALUE, code200Template.getType());
+        assertEquals("code", code200Template.getFieldName());
+        assertEquals(List.of("200"), code200Template.getExpectedValues());
+        assertFalse(code200Template.isEnabled());
     }
 
     @Test
@@ -357,6 +381,10 @@ class ExceptionRuleEvaluatorTest {
                 "HTTP 500 应爆红（不在白名单）");
         assertFalse(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":500}").isPassed(),
                 "code=500 应爆红（命中黑名单）");
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":501}").isPassed(),
+                "code=501 应爆红（命中告警值）");
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(defaults, 200, "{\"code\":200}").isPassed(),
+                "code=200 未命中告警值，应正常");
     }
 
     // ---------- 一伦优化 #90：HTTP_VALUE 历史数据混入非整数项时静默跳过 ----------

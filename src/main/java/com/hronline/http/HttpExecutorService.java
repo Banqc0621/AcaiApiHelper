@@ -198,7 +198,8 @@ public final class HttpExecutorService {
                     result.setErrorMessage(expectedStatusFailureReason(api, response.statusCode()));
                 }
             }
-            // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP 状态码白名单 / JSON 字段白名单）
+            // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP_VALUE 字段留空=状态码白名单，
+            // 填写字段=响应字段白名单；FIELD_VALUE=响应字段告警值黑名单）
             if (passed && project != null) {
                 ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluate(
                         project, response.statusCode(), result.getResponseBody());
