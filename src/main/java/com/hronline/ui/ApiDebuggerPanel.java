@@ -4657,24 +4657,13 @@ public class ApiDebuggerPanel extends JPanel {
                 else keep.add(h);
             }
             if (batch.isEmpty()) return;
-            // 块内顺序：优先用 apiKeyOrder（收藏夹顺序），缺失/相同时用 timestamp 兜底
-            java.util.Map<String, Integer> orderIndex = new java.util.HashMap<>();
-            if (apiKeyOrder != null) {
-                for (int i = 0; i < apiKeyOrder.size(); i++) {
-                    String key = apiKeyOrder.get(i);
-                    if (key != null) orderIndex.putIfAbsent(key, i);
-                }
-            }
-            batch.sort((a, b) -> {
-                Integer ia = a.getApiKey() == null ? null : orderIndex.get(a.getApiKey());
-                Integer ib = b.getApiKey() == null ? null : orderIndex.get(b.getApiKey());
-                if (ia != null && ib != null && !ia.equals(ib)) return Integer.compare(ia, ib);
-                // 一个有顺序一个没有：有的在前
-                if (ia != null) return -1;
-                if (ib != null) return 1;
-                // 都没有就按 timestamp 升序（同一秒内仍可能乱，但至少不会跟收藏夹冲突）
-                return Long.compare(a.getTimestamp(), b.getTimestamp());
-            });
+            // 一伦优化 #93：直接按 apiKeyOrder 顺序重组 batch（不依赖比较器/TimSort 稳定性）。
+            // 步骤：
+            //   1. 把 batch 按 apiKey 索引成 map
+            //   2. 按 apiKeyOrder 顺序取条目，得到有序的 batch
+            //   3. 不在 apiKeyOrder 里的条目按 timestamp 升序追加
+            // 这样无论 timestamp 是否同秒都能严格按收藏夹顺序排，逻辑透明。
+            batch = reorderBatchByKeyOrder(batch, apiKeyOrder);
             java.util.List<RequestHistory> next = new java.util.ArrayList<>(batch.size() + keep.size());
             next.addAll(batch);
             next.addAll(keep);
@@ -4684,6 +4673,45 @@ public class ApiDebuggerPanel extends JPanel {
         };
         if (ApplicationManager.getApplication().isDispatchThread()) reorder.run();
         else ApplicationManager.getApplication().invokeLater(reorder);
+    }
+
+    /**
+     * 一伦优化 #93：按 {@code apiKeyOrder} 重新排列 {@code batch}。
+     * <p>逻辑等价于"按 apiKeyOrder 列表顺序取出匹配条目 + 剩余按 timestamp 升序追加"，
+     * 不依赖 sort 比较器 / TimSort 稳定性，避免被同一秒多次请求把顺序搞乱。</p>
+     *
+     * <p>package-private 供单元测试直接覆盖（{@code ApiDebuggerPanelReorderTest}）。</p>
+     */
+    static java.util.List<RequestHistory> reorderBatchByKeyOrder(java.util.List<RequestHistory> batch,
+                                                                java.util.List<String> apiKeyOrder) {
+        if (batch == null || batch.isEmpty()) return new java.util.ArrayList<>();
+        java.util.Map<String, RequestHistory> byKey = new java.util.HashMap<>();
+        for (RequestHistory h : batch) {
+            if (h != null && h.getApiKey() != null && !h.getApiKey().isEmpty()) {
+                byKey.put(h.getApiKey(), h);
+            }
+        }
+        java.util.List<RequestHistory> reordered = new java.util.ArrayList<>(batch.size());
+        java.util.Set<String> consumed = new java.util.HashSet<>();
+        if (apiKeyOrder != null) {
+            for (String key : apiKeyOrder) {
+                RequestHistory h = byKey.get(key);
+                if (h != null) {
+                    reordered.add(h);
+                    consumed.add(key);
+                }
+            }
+        }
+        // 不在 apiKeyOrder 里的条目（理论上不会发生，兜底）按 timestamp 升序追加
+        java.util.List<RequestHistory> rest = new java.util.ArrayList<>();
+        for (RequestHistory h : batch) {
+            if (h == null) continue;
+            String k = h.getApiKey();
+            if (k == null || k.isEmpty() || !consumed.contains(k)) rest.add(h);
+        }
+        rest.sort((a, b) -> Long.compare(a.getTimestamp(), b.getTimestamp()));
+        reordered.addAll(rest);
+        return reordered;
     }
 
     /** 兼容旧签名：没有 apiKeyOrder 时退化为按 timestamp 升序（不推荐，参考上一条注释） */
