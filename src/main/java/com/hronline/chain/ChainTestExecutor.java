@@ -110,6 +110,12 @@ public final class ChainTestExecutor {
         }
         LOG.info("[ChainTestExecutor] 执行顺序（" + orderedApis.size() + " 个）：" + seq);
 
+        // 一伦优化 #93 补充：本次批次的 batchId，写到每条 TestResult.batchId，
+        // ApiDebuggerPanel 的 historyListener 复制到 RequestHistory.batchId，
+        // reorderBatchHistoryToFront 按 batchId 把整批作为"最新事件块"移到历史区最前。
+        final String batchId = "batch-" + System.currentTimeMillis() + "-"
+                + Integer.toHexString(new java.util.Random().nextInt());
+
         for (int i = 0; i < orderedApis.size(); i++) {
             ApiDefinition api = orderedApis.get(i);
             LOG.info("[ChainTestExecutor] 第 " + (i + 1) + "/" + total + " 个：" + api.displayLabel());
@@ -124,6 +130,7 @@ public final class ChainTestExecutor {
             TestResult result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
                     profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
                     environment, null);
+            result.setBatchId(batchId);
 
             // 提取响应值供下游使用（成功才提取）
             extractProducerValues(api, result, effectiveDependencies, extractedValues);

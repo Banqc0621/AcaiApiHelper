@@ -4629,6 +4629,43 @@ public class ApiDebuggerPanel extends JPanel {
         else ApplicationManager.getApplication().invokeLater(refresh);
     }
 
+    /**
+     * 一伦优化 #93：批量测试完成后把同一 {@code batchId} 的所有历史条目作为一个”最新事件块”
+     * 整体移到历史区最前，块内按 timestamp 升序（执行顺序 = 收藏夹从上到下）。
+     * <p>语义：</p>
+     * <ul>
+     *   <li>整体历史区保持”最新在最上”baseline（{@code addToHistory} 走 {@code add(0, h)}）；
+     *       任何单接口请求会被插到块之前，块永远只在”它确实是最新事件”时停在最前。</li>
+     *   <li>块内严格按 timestamp 升序 = 收藏夹接口从上到下的执行顺序，
+     *       满足”批量测试那 N 条要按收藏夹顺序展示”。</li>
+     * </ul>
+     *
+     * @param batchId 批量测试批次 ID；为 null/空 时 no-op
+     */
+    public void reorderBatchHistoryToFront(String batchId) {
+        if (batchId == null || batchId.isEmpty()) return;
+        Runnable reorder = () -> {
+            if (requestHistory == null || requestHistory.isEmpty()) return;
+            java.util.List<RequestHistory> batch = new java.util.ArrayList<>();
+            java.util.List<RequestHistory> keep = new java.util.ArrayList<>();
+            for (RequestHistory h : requestHistory) {
+                if (h != null && batchId.equals(h.getBatchId())) batch.add(h);
+                else keep.add(h);
+            }
+            if (batch.isEmpty()) return;
+            // 块内按真实执行顺序（timestamp 升序 = 收藏夹从上到下）排列
+            batch.sort((a, b) -> Long.compare(a.getTimestamp(), b.getTimestamp()));
+            java.util.List<RequestHistory> next = new java.util.ArrayList<>(batch.size() + keep.size());
+            next.addAll(batch);
+            next.addAll(keep);
+            requestHistory = next;
+            refreshHistoryList();
+            persistHistory();
+        };
+        if (ApplicationManager.getApplication().isDispatchThread()) reorder.run();
+        else ApplicationManager.getApplication().invokeLater(reorder);
+    }
+
     /** 清除响应区当前展示，保持”清空当前接口历史”后的结果区语义一致。 */
     private void clearDisplayedResponse() {
         lastResult = null;
@@ -4783,6 +4820,10 @@ public class ApiDebuggerPanel extends JPanel {
         );
         h.setResponseHeaders(result.getResponseHeaders());
         h.setErrorMessage(result.getErrorMessage());
+        // 一伦优化 #93：批量测试期间 ChainTestExecutor 给 TestResult.batchId 打上批次标签，
+        // 这里复制到 RequestHistory.batchId 持久化；reorderBatchHistoryToFront 按 batchId
+        // 找整批条目，把它们按 timestamp 升序作为"最新事件块"移到历史区最前。
+        h.setBatchId(result.getBatchId());
         requestHistory.add(0, h);
         // 限制历史记录数量
         while (requestHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {

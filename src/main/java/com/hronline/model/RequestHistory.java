@@ -27,6 +27,13 @@ public class RequestHistory {
     private String errorMessage = "";
     private long durationMs = 0;
     private String apiName = "";
+    /**
+     * 一伦优化 #93：本条历史所属的批量测试批次 ID（ChainTestExecutor.execute 生成），
+     * 持久化到 settings 用于历史区按"最新事件块"展示：单条 add(0) 的最新在最上 baseline
+     * 与批量块内按执行顺序正序展示两个规则可同时成立。
+     * <p>单接口请求时为 null，跟旧记录完全兼容。</p>
+     */
+    private String batchId = null;
 
     public RequestHistory() {}
 
@@ -106,4 +113,6 @@ public class RequestHistory {
     public void setApiName(String apiName) { this.apiName = apiName; }
     public long getTimestamp() { return timestamp; }
     public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
+    public String getBatchId() { return batchId; }
+    public void setBatchId(String batchId) { this.batchId = batchId; }
 }
