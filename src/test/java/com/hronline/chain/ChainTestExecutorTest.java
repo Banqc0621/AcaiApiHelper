@@ -78,8 +78,13 @@ class ChainTestExecutorTest {
         }
     }
 
+    /**
+     * 一伦优化 #93：上游失败不跳过下游，收藏接口列表里每个接口都按顺序请求。
+     * <p>这里 login 响应是 500（业务失败），boxes 用 profile 里的原占位参数 id=42 照样发出请求，
+     * 没有 SKIPPED 状态。</p>
+     */
     @Test
-    void skipsDownstreamAfterUpstreamFailureAndDoesNotSendRequest() throws Exception {
+    void upstreamFailureDoesNotBlockDownstream() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger downstreamHits = new AtomicInteger();
         server.createContext("/login", exchange -> {
@@ -113,16 +118,21 @@ class ChainTestExecutorTest {
                     List.of(login, boxes), List.of(dependency), profile, null,
                     (result, current, total) -> results.add(result));
 
-            assertEquals(0, downstreamHits.get());
+            assertEquals(1, downstreamHits.get(), "上游失败不影响下游请求");
             assertEquals(TestStatus.FAILED, results.get(0).getStatus());
-            assertEquals(TestStatus.SKIPPED, results.get(1).getStatus());
+            assertEquals(TestStatus.PASSED, results.get(1).getStatus());
+            assertTrue(pathOnly(results.get(1).getRequestUrl()).endsWith("/boxes/42"));
         } finally {
             server.stop(0);
         }
     }
 
+    /**
+     * 一伦优化 #93：上游成功但响应里没有声明的字段时，下游继续请求，使用 profile 原占位参数。
+     * 旧版会跳过下游，新版跟用户预期一致 —— 每一行接口都请求一遍。
+     */
     @Test
-    void skipsDownstreamWhenMappedResponseFieldIsMissing() throws Exception {
+    void upstreamSuccessWithMissingMappedFieldStillRequestsDownstream() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger downstreamHits = new AtomicInteger();
         server.createContext("/login", exchange -> {
@@ -131,7 +141,7 @@ class ChainTestExecutorTest {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
-        server.createContext("/boxes/42", exchange -> {
+        server.createContext("/boxes/fallback", exchange -> {
             downstreamHits.incrementAndGet();
             byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
@@ -156,10 +166,11 @@ class ChainTestExecutorTest {
                     List.of(login, boxes), List.of(dependency), profile, null,
                     (result, current, total) -> results.add(result));
 
-            assertEquals(0, downstreamHits.get(), "映射字段缺失时不得发送下游请求");
+            assertEquals(1, downstreamHits.get(), "上游字段缺失仍要请求下游");
             assertEquals(TestStatus.PASSED, results.get(0).getStatus());
-            assertEquals(TestStatus.SKIPPED, results.get(1).getStatus());
-            assertTrue(results.get(1).getErrorMessage().contains("依赖字段未找到"));
+            assertEquals(TestStatus.PASSED, results.get(1).getStatus());
+            assertTrue(pathOnly(results.get(1).getRequestUrl()).endsWith("/boxes/fallback"),
+                    "未拿到依赖值时使用 profile 原占位参数");
         } finally {
             server.stop(0);
         }

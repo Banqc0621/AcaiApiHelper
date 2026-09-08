@@ -2,6 +2,7 @@ package com.hronline.ui;
 
 import com.hronline.RestAutoLabConstants;
 import com.hronline.ai.AiParameterService;
+import com.hronline.chain.LastResponseCache;
 import com.hronline.http.HttpExecutorService;
 import com.hronline.http.PreRequestProcessor;
 import com.hronline.model.*;
@@ -4298,7 +4299,11 @@ public class ApiDebuggerPanel extends JPanel {
         JButton clearBtn = iconButton("清空历史", AllIcons.Actions.GC, e -> {
             int cleared = requestHistory.size();
             requestHistory.clear();
-            for (String key : affectedKeys) lastResponseByApi.remove(key);
+            for (String key : affectedKeys) {
+                lastResponseByApi.remove(key);
+                // 一伦优化 #94：清历史时也清掉共享缓存，避免依赖设置拿到陈旧 body
+                LastResponseCache.remove(key);
+            }
             persistHistory();
             refreshHistoryList();
             clearDisplayedResponse();
@@ -4817,6 +4822,15 @@ public class ApiDebuggerPanel extends JPanel {
         lastResult = result;
         // 缓存该接口自己的最近响应 —— 切回此接口时能立刻恢复展示
         lastResponseByApi.put(result.getApiDefinition().uniqueKey(), result);
+
+        // 一伦优化 #94：把最近响应 body 同步到跨面板共享缓存，依赖设置弹窗从
+        // 这里递归生成嵌套字段候选（data.user.name 之类），不再依赖手工维护的
+        // responseSchema。
+        if (result.getStatus() == TestStatus.PASSED) {
+            LastResponseCache.put(result.getApiDefinition().uniqueKey(), result.getResponseBody());
+        } else {
+            LastResponseCache.remove(result.getApiDefinition().uniqueKey());
+        }
 
         // 更新断言结果
         updateAssertionResults(result);

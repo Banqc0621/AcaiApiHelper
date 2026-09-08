@@ -9,14 +9,15 @@ import com.intellij.openapi.project.Project;
 import java.util.*;
 
 /**
- * 依赖链批量测试执行器 - 按拓扑排序执行 API，自动传递响应值
+ * 依赖链批量测试执行器 - 按依赖顺序执行 API，自动传递响应值
  *
  * <p>核心能力：</p>
  * <ol>
- *   <li>拓扑排序：按依赖关系排列执行顺序，上游先执行</li>
- *   <li>值提取：上游执行后从响应中提取 JSON 字段值</li>
+ *   <li>拓扑排序：按依赖关系排列执行顺序，无依赖时按入参原顺序</li>
+ *   <li>值提取：上游执行后从响应中按用户配置的点号路径提取 JSON 字段值</li>
  *   <li>值注入：下游执行前将提取值注入参数 Map</li>
- *   <li>失败跳过：上游失败时，所有直接和间接下游标记为 SKIPPED</li>
+ *   <li>失败不跳过（#93）：上游失败不阻塞下游请求，每个接口都会被执行；缺失依赖值时
+ *       下游参数保留原占位，由 HTTP 自然失败暴露问题</li>
  * </ol>
  *
  * <p>不修改 {@link HttpExecutorService}，直接调用其 {@code executeRequest()} 方法。</p>
@@ -62,7 +63,7 @@ public final class ChainTestExecutor {
      * @param profile      测试配置（含参数、baseUrl、全局请求头）
      * @param environment  环境变量（可为 null）
      * @param listener     进度回调（可为 null）
-     * @return 测试报告（含 SKIPPED 结果）
+     * @return 测试报告（每个接口都会包含一条结果，不存在 SKIPPED）
      */
     public TestReport execute(List<ApiDefinition> apis,
                               List<ApiDependency> dependencies,
@@ -93,62 +94,29 @@ public final class ChainTestExecutor {
             }
         }
 
-        // 1. 拓扑排序
+        // 1. 拓扑排序（无依赖时退化为原顺序）
         List<ApiDefinition> orderedApis = topologicalSort(inputApis, effectiveDependencies);
         int total = orderedApis.size();
 
-        // 2. 执行
-        Set<String> failedKeys = new HashSet<>();
-        // producerKey -> {sourcePath -> extracted value}
+        // 2. 执行：一伦优化 #93，上游失败不跳过下游，每个接口都请求
         Map<String, Map<String, String>> extractedValues = new HashMap<>();
 
         for (int i = 0; i < orderedApis.size(); i++) {
             ApiDefinition api = orderedApis.get(i);
-            TestResult result;
 
-            if (failedKeys.contains(api.uniqueKey())) {
-                // 上游失败，跳过
-                result = new TestResult(api);
-                result.setStatus(TestStatus.SKIPPED);
-                result.setErrorMessage("依赖接口失败，已跳过");
-                result.setTimestamp(System.currentTimeMillis());
-                LOG.info("跳过依赖接口: " + api.displayLabel());
-            } else {
-                // 取参数副本
-                Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
+            // 取参数副本
+            Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
 
-                // 映射关系未能解析出全部值时不能把未替换的占位参数发给下游。
-                // 这类节点按“依赖未满足”跳过，并继续阻断其后续下游，保证依赖链
-                // 的请求顺序和数据契约都成立。
-                String dependencyError = dependencyResolutionError(api, effectiveDependencies, extractedValues);
-                if (dependencyError != null) {
-                    result = new TestResult(api);
-                    result.setStatus(TestStatus.SKIPPED);
-                    result.setErrorMessage(dependencyError);
-                    result.setTimestamp(System.currentTimeMillis());
-                    Set<String> downstream = transitiveConsumers(api.uniqueKey(), effectiveDependencies);
-                    failedKeys.addAll(downstream);
-                    LOG.info("依赖字段未满足，跳过接口并标记 " + downstream.size() + " 个下游: " + api.displayLabel());
-                } else {
-                    // 注入依赖值
-                    injectDependencies(api, params, effectiveDependencies, extractedValues);
+            // 注入依赖值（上游字段缺失则参数保留原占位，请求自然失败）
+            injectDependencies(api, params, effectiveDependencies, extractedValues);
 
-                    // 执行请求
-                    result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
-                            profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
-                            environment, null);
+            // 执行请求
+            TestResult result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
+                    profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
+                    environment, null);
 
-                    // 失败时标记所有下游
-                    if (result.getStatus() != TestStatus.PASSED) {
-                        Set<String> downstream = transitiveConsumers(api.uniqueKey(), effectiveDependencies);
-                        failedKeys.addAll(downstream);
-                        LOG.info("接口失败，标记 " + downstream.size() + " 个下游跳过: " + api.displayLabel());
-                    }
-
-                    // 提取响应值供下游使用
-                    extractProducerValues(api, result, effectiveDependencies, extractedValues);
-                }
-            }
+            // 提取响应值供下游使用（成功才提取）
+            extractProducerValues(api, result, effectiveDependencies, extractedValues);
 
             report.getResults().add(result);
             if (listener != null) {
@@ -168,7 +136,7 @@ public final class ChainTestExecutor {
      * 按依赖关系拓扑排序 API 列表
      *
      * <p>使用 Kahn 算法：反复移除入度为 0 的节点。
-     * 有环节点按原列表顺序追加，不会死循环。</p>
+     * 有环节点按原列表顺序追加，不会死循环。无依赖时严格保持入参顺序。</p>
      */
     private List<ApiDefinition> topologicalSort(List<ApiDefinition> apis,
                                                 List<ApiDependency> deps) {
@@ -241,11 +209,13 @@ public final class ChainTestExecutor {
 
     /**
      * 从执行结果中提取所有以该 API 为 producer 的响应值
+     * 一伦优化 #94：按用户配置的点号路径直接抽取，不再做硬编码 data./result. 前缀猜测。
+     * 嵌套路径（如 {@code data.user.name}）通过 ResponseAssertion 的点号解析器直接走通。
      */
     private void extractProducerValues(ApiDefinition api, TestResult result,
                                        List<ApiDependency> deps,
                                        Map<String, Map<String, String>> extractedValues) {
-        if (result.getStatus() != TestStatus.PASSED) return;
+        if (result == null || result.getStatus() != TestStatus.PASSED) return;
         String responseBody = result.getResponseBody();
         if (responseBody == null || responseBody.isEmpty()) return;
 
@@ -254,10 +224,12 @@ public final class ChainTestExecutor {
             if (!api.uniqueKey().equals(dep.getProducerKey())) continue;
             for (ApiDependency.ValueMapping mapping : dep.getMappings() == null
                     ? Collections.<ApiDependency.ValueMapping>emptyList() : dep.getMappings()) {
-                String val = extractWithFallback(responseBody, mapping.getSourcePath());
-                if (val != null) {
-                    values.put(mapping.getSourcePath(), val);
-                    LOG.info("提取依赖值: " + api.uniqueKey() + " ." + mapping.getSourcePath() + " = " + val);
+                String path = mapping.getSourcePath();
+                if (path == null || path.isBlank()) continue;
+                String val = ResponseAssertion.extractJsonValue(responseBody, path.trim());
+                if (val != null && !val.equals("null") && !val.isEmpty()) {
+                    values.put(path.trim(), val);
+                    LOG.info("提取依赖值: " + api.uniqueKey() + " ." + path + " = " + val);
                 }
             }
         }
@@ -280,75 +252,14 @@ public final class ChainTestExecutor {
 
             for (ApiDependency.ValueMapping mapping : dep.getMappings() == null
                     ? Collections.<ApiDependency.ValueMapping>emptyList() : dep.getMappings()) {
-                String value = producerValues.get(mapping.getSourcePath());
+                String key = mapping.getSourcePath() == null ? "" : mapping.getSourcePath().trim();
+                if (key.isEmpty()) continue;
+                String value = producerValues.get(key);
                 if (value != null) {
                     params.put(mapping.getTargetParam(), value);
                     LOG.info("注入依赖值: " + consumer.uniqueKey() + " ." + mapping.getTargetParam() + " = " + value);
                 }
             }
         }
-    }
-
-    /**
-     * 检查 consumer 的所有字段映射是否已有上游响应值。
-     * 空映射边只表达“先后顺序”，无需提取字段；有映射的边必须逐条满足。
-     */
-    private String dependencyResolutionError(ApiDefinition consumer,
-                                             List<ApiDependency> deps,
-                                             Map<String, Map<String, String>> extractedValues) {
-        if (consumer == null || deps == null) return null;
-        for (ApiDependency dep : deps) {
-            if (dep == null || !consumer.uniqueKey().equals(dep.getConsumerKey())) continue;
-            List<ApiDependency.ValueMapping> mappings = dep.getMappings();
-            if (mappings == null || mappings.isEmpty()) continue;
-            Map<String, String> producerValues = extractedValues.get(dep.getProducerKey());
-            for (ApiDependency.ValueMapping mapping : mappings) {
-                if (mapping == null) continue;
-                String source = mapping.getSourcePath() == null ? "" : mapping.getSourcePath().trim();
-                if (source.isBlank() || producerValues == null || producerValues.get(source) == null) {
-                    return "依赖字段未找到（上游 " + dep.getProducerKey() + " → "
-                            + mapping.getTargetParam() + "），已跳过";
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 从 JSON 响应中提取值，自动尝试常见的数据包层级前缀
-     *
-     * <p>依次尝试：原路径、data.前缀、result.前缀、data.data.前缀。
-     * 复用 {@link ResponseAssertion#extractJsonValue(String, String)}。</p>
-     */
-    static String extractWithFallback(String responseBody, String sourcePath) {
-        if (responseBody == null || sourcePath == null) return null;
-        String[] prefixes = {"", "data.", "result.", "data.data."};
-        for (String prefix : prefixes) {
-            String val = ResponseAssertion.extractJsonValue(responseBody, prefix + sourcePath);
-            if (val != null && !val.equals("null") && !val.isEmpty()) {
-                return val;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * BFS 遍历依赖图，收集失败节点的所有直接和间接下游 consumer
-     */
-    private Set<String> transitiveConsumers(String failedKey, List<ApiDependency> deps) {
-        Set<String> result = new HashSet<>();
-        Queue<String> queue = new LinkedList<>();
-        queue.add(failedKey);
-
-        while (!queue.isEmpty()) {
-            String current = queue.poll();
-            for (ApiDependency dep : deps) {
-                if (dep.getProducerKey().equals(current) && !result.contains(dep.getConsumerKey())) {
-                    result.add(dep.getConsumerKey());
-                    queue.add(dep.getConsumerKey());
-                }
-            }
-        }
-        return result;
     }
 }

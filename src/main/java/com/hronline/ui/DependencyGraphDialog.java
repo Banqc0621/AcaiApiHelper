@@ -1,6 +1,7 @@
 package com.hronline.ui;
 
 import com.hronline.chain.ApiDependency;
+import com.hronline.chain.LastResponseCache;
 import com.hronline.model.ApiDefinition;
 import com.hronline.model.ApiParameter;
 import com.intellij.icons.AllIcons;
@@ -993,12 +994,67 @@ public class DependencyGraphDialog extends DialogWrapper {
         }
     }
 
+    /**
+     * 收集候选字段路径。
+     * <ul>
+     *   <li>非响应字段（入参）：直接走手工维护的 {@code ApiDefinition.getParameters()}。</li>
+     *   <li>响应字段：优先用手工维护的 {@code responseSchema}；若为空则回退到 {@link LastResponseCache}
+     *       里该接口最近一次响应 body，递归遍历所有字段生成点号路径（如
+     *       {@code data}、{@code data.id}、{@code data.user.name}）。</li>
+     * </ul>
+     */
     static List<String> fieldPaths(ApiDefinition api, boolean response) {
         List<String> result = new ArrayList<>();
         if (api == null) return result;
         List<ApiParameter> roots = response ? api.getResponseSchema() : api.getParameters();
-        if (roots != null) for (ApiParameter parameter : roots) collectFieldPaths(parameter, "", result);
+        if (roots != null) {
+            for (ApiParameter parameter : roots) collectFieldPaths(parameter, "", result);
+        }
+        if (response && result.isEmpty()) {
+            // 一伦优化 #94：responseSchema 通常不维护嵌套对象，从最近响应 body 递归出全部候选
+            String body = LastResponseCache.get(api.uniqueKey());
+            if (body != null && !body.isBlank()) {
+                com.google.gson.JsonElement parsed = null;
+                try {
+                    parsed = com.google.gson.JsonParser.parseString(body);
+                } catch (Exception ignored) {
+                    parsed = null;
+                }
+                if (parsed != null) collectBodyFieldPaths(parsed, "", result);
+            }
+        }
         return result;
+    }
+
+    /**
+     * 递归遍历 JSON body，生成所有点号路径。
+     * 数组按首元素展开（{@code data.list[0].name}），跳过 null 元素以避免误导。
+     */
+    private static void collectBodyFieldPaths(com.google.gson.JsonElement element,
+                                             String prefix, List<String> result) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonObject()) {
+            for (Map.Entry<String, com.google.gson.JsonElement> e : element.getAsJsonObject().entrySet()) {
+                String name = e.getKey();
+                if (name == null || name.isBlank()) continue;
+                String current = prefix.isEmpty() ? name : prefix + "." + name;
+                if (!result.contains(current)) result.add(current);
+                collectBodyFieldPaths(e.getValue(), current, result);
+            }
+            return;
+        }
+        if (element.isJsonArray()) {
+            com.google.gson.JsonArray arr = element.getAsJsonArray();
+            if (arr.size() == 0) return;
+            // 数组本身可作为整体路径（复杂对象用其 toString），同时给出首元素的递归路径
+            com.google.gson.JsonElement first = null;
+            for (com.google.gson.JsonElement v : arr) {
+                if (v != null && !v.isJsonNull()) { first = v; break; }
+            }
+            if (first != null) {
+                collectBodyFieldPaths(first, prefix + "[0]", result);
+            }
+        }
     }
 
     /** 动态候选字段编辑器：producer 的响应字段或 consumer 的请求参数。 */
