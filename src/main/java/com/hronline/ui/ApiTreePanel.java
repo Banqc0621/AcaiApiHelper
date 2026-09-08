@@ -2272,12 +2272,7 @@ public class ApiTreePanel extends JPanel {
                     .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
-                if (debuggerPanel != null) {
-                    debuggerPanel.showAllHistory();
-                    // 把本次批次写入的历史按真实执行顺序（timestamp 升序）
-                    // 插到列表最前，让历史区顶部 N 条对应该次批量从第一个到最后一个。
-                    debuggerPanel.reorderBatchHistoryToFront(batchStartTime);
-                }
+                if (debuggerPanel != null) debuggerPanel.showAllHistory();
                 statsLabel.setText(operationName + "完成：通过 " + passed + " · 失败 " + failed
                         + (skipped > 0 ? " · 跳过 " + skipped : "")
                         + " · 已记录 " + recorded + " 条历史");
@@ -2430,8 +2425,6 @@ public class ApiTreePanel extends JPanel {
         final int total = apis.size();
 
         statsLabel.setText("依赖链测试中（0/" + total + "）…");
-        // 一伦优化 #93 补充：本次批次开始时间，结束后重排历史区
-        final long batchStartTime = System.currentTimeMillis();
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             ChainTestExecutor chain =
                     ChainTestExecutor.getInstance(project);
@@ -2453,10 +2446,7 @@ public class ApiTreePanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
                         + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
-                if (debuggerPanel != null) {
-                    debuggerPanel.showAllHistory();
-                    debuggerPanel.reorderBatchHistoryToFront(batchStartTime);
-                }
+                if (debuggerPanel != null) debuggerPanel.showAllHistory();
                 String summary = report.generateSummary();
                 Messages.showInfoMessage(project, summary, "依赖链测试报告");
             });
@@ -2587,8 +2577,6 @@ public class ApiTreePanel extends JPanel {
             statusTargets.putIfAbsent(target.api.uniqueKey(), target);
         }
         statsLabel.setText("依赖链测试中（0/" + total + "）…");
-        // 一伦优化 #93 补充：本次批次开始时间，结束后重排历史区
-        final long batchStartTime = System.currentTimeMillis();
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             ChainTestExecutor chain =
                     ChainTestExecutor.getInstance(project);
@@ -2612,10 +2600,7 @@ public class ApiTreePanel extends JPanel {
                     .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
-                if (debuggerPanel != null) {
-                    debuggerPanel.showAllHistory();
-                    debuggerPanel.reorderBatchHistoryToFront(batchStartTime);
-                }
+                if (debuggerPanel != null) debuggerPanel.showAllHistory();
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
                         + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
             });
