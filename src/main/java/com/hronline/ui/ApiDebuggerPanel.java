@@ -4630,19 +4630,23 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 一伦优化 #93：批量测试完成后把同一 {@code batchId} 的所有历史条目作为一个”最新事件块”
-     * 整体移到历史区最前，块内按 timestamp 升序（执行顺序 = 收藏夹从上到下）。
+     * 一伦优化 #93：批量测试完成后把同一 {@code batchId} 的所有历史条目作为一个"最新事件块"
+     * 整体移到历史区最前，块内按 {@code apiKeyOrder} 给定的顺序（即收藏夹从上到下）
+     * 展示。
      * <p>语义：</p>
      * <ul>
-     *   <li>整体历史区保持”最新在最上”baseline（{@code addToHistory} 走 {@code add(0, h)}）；
-     *       任何单接口请求会被插到块之前，块永远只在”它确实是最新事件”时停在最前。</li>
-     *   <li>块内严格按 timestamp 升序 = 收藏夹接口从上到下的执行顺序，
-     *       满足”批量测试那 N 条要按收藏夹顺序展示”。</li>
+     *   <li>整体历史区保持"最新在最上"baseline（{@code addToHistory} 走 {@code add(0, h)}）；
+     *       任何单接口请求会被插到块之前，块永远只在"它确实是最新事件"时停在最前。</li>
+     *   <li>块内严格按 {@code apiKeyOrder} 顺序 = 收藏夹接口从上到下的执行顺序。
+     *       同一秒内多次请求 timestamp 完全相同时也能保证排序稳定。</li>
      * </ul>
      *
-     * @param batchId 批量测试批次 ID；为 null/空 时 no-op
+     * @param batchId    批量测试批次 ID；为 null/空 时 no-op
+     * @param apiKeyOrder 收藏夹从上到下的 apiKey 列表，决定块内条目顺序；
+     *                    为 null/空时退化为按 timestamp 升序（依赖 timestamp 精度，
+     *                    同一秒多次调用会出现顺序错乱——这就是 #93 第二轮复现的现象）
      */
-    public void reorderBatchHistoryToFront(String batchId) {
+    public void reorderBatchHistoryToFront(String batchId, java.util.List<String> apiKeyOrder) {
         if (batchId == null || batchId.isEmpty()) return;
         Runnable reorder = () -> {
             if (requestHistory == null || requestHistory.isEmpty()) return;
@@ -4653,8 +4657,24 @@ public class ApiDebuggerPanel extends JPanel {
                 else keep.add(h);
             }
             if (batch.isEmpty()) return;
-            // 块内按真实执行顺序（timestamp 升序 = 收藏夹从上到下）排列
-            batch.sort((a, b) -> Long.compare(a.getTimestamp(), b.getTimestamp()));
+            // 块内顺序：优先用 apiKeyOrder（收藏夹顺序），缺失/相同时用 timestamp 兜底
+            java.util.Map<String, Integer> orderIndex = new java.util.HashMap<>();
+            if (apiKeyOrder != null) {
+                for (int i = 0; i < apiKeyOrder.size(); i++) {
+                    String key = apiKeyOrder.get(i);
+                    if (key != null) orderIndex.putIfAbsent(key, i);
+                }
+            }
+            batch.sort((a, b) -> {
+                Integer ia = a.getApiKey() == null ? null : orderIndex.get(a.getApiKey());
+                Integer ib = b.getApiKey() == null ? null : orderIndex.get(b.getApiKey());
+                if (ia != null && ib != null && !ia.equals(ib)) return Integer.compare(ia, ib);
+                // 一个有顺序一个没有：有的在前
+                if (ia != null) return -1;
+                if (ib != null) return 1;
+                // 都没有就按 timestamp 升序（同一秒内仍可能乱，但至少不会跟收藏夹冲突）
+                return Long.compare(a.getTimestamp(), b.getTimestamp());
+            });
             java.util.List<RequestHistory> next = new java.util.ArrayList<>(batch.size() + keep.size());
             next.addAll(batch);
             next.addAll(keep);
@@ -4664,6 +4684,11 @@ public class ApiDebuggerPanel extends JPanel {
         };
         if (ApplicationManager.getApplication().isDispatchThread()) reorder.run();
         else ApplicationManager.getApplication().invokeLater(reorder);
+    }
+
+    /** 兼容旧签名：没有 apiKeyOrder 时退化为按 timestamp 升序（不推荐，参考上一条注释） */
+    public void reorderBatchHistoryToFront(String batchId) {
+        reorderBatchHistoryToFront(batchId, null);
     }
 
     /** 清除响应区当前展示，保持”清空当前接口历史”后的结果区语义一致。 */
@@ -4824,6 +4849,10 @@ public class ApiDebuggerPanel extends JPanel {
         // 这里复制到 RequestHistory.batchId 持久化；reorderBatchHistoryToFront 按 batchId
         // 找整批条目，把它们按 timestamp 升序作为"最新事件块"移到历史区最前。
         h.setBatchId(result.getBatchId());
+        // 一伦优化 #93 补充：历史区展示的时间应该是"请求完成时间"而不是
+        // addToHistory 调用时间，否则同一秒内多次请求 4 条都是同一秒值，
+        // 用 timestamp 作 tiebreaker 永远不稳定。
+        h.setTimestamp(result.getTimestamp());
         requestHistory.add(0, h);
         // 限制历史记录数量
         while (requestHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {

@@ -2272,13 +2272,19 @@ public class ApiTreePanel extends JPanel {
                     .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
             // 一伦优化 #93：从 report 中取本次批量 batchId，传给 reorderBatchHistoryToFront
             // 把整批历史作为一个块按收藏夹执行顺序展示在历史区顶部，不破坏"最新在最上" baseline。
+            // 同时把 firstTargetByKey 的 apiKey 顺序也传过去 —— 同一秒内多次请求 timestamp
+            // 完全相同，必须用收藏夹顺序作为终极 source of truth 才能稳定排序。
             final String batchId = report.getResults().isEmpty() ? null
                     : report.getResults().get(0).getBatchId();
+            final java.util.List<String> apiKeyOrder = new java.util.ArrayList<>();
+            for (FolderApiTarget t : firstTargetByKey.values()) {
+                if (t != null && t.api != null) apiKeyOrder.add(t.api.uniqueKey());
+            }
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
                 if (debuggerPanel != null) {
                     debuggerPanel.showAllHistory();
-                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId);
+                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId, apiKeyOrder);
                 }
                 statsLabel.setText(operationName + "完成：通过 " + passed + " · 失败 " + failed
                         + (skipped > 0 ? " · 跳过 " + skipped : "")
@@ -2450,15 +2456,17 @@ public class ApiTreePanel extends JPanel {
             final int skipped = report.getSkippedCount();
             final int recorded = (int) report.getResults().stream()
                     .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
-            // 一伦优化 #93：从 report 取本次批量 batchId
+            // 一伦优化 #93：从 report 取本次批量 batchId + apis 顺序（apiKeyOrder）
             final String batchId = report.getResults().isEmpty() ? null
                     : report.getResults().get(0).getBatchId();
+            final java.util.List<String> apiKeyOrder = new java.util.ArrayList<>();
+            for (ApiDefinition a : apis) if (a != null) apiKeyOrder.add(a.uniqueKey());
             SwingUtilities.invokeLater(() -> {
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
                         + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
                 if (debuggerPanel != null) {
                     debuggerPanel.showAllHistory();
-                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId);
+                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId, apiKeyOrder);
                 }
                 String summary = report.generateSummary();
                 Messages.showInfoMessage(project, summary, "依赖链测试报告");
@@ -2611,14 +2619,16 @@ public class ApiTreePanel extends JPanel {
             final int skipped = report.getSkippedCount();
             final int recorded = (int) report.getResults().stream()
                     .filter(result -> result.getStatus() != TestStatus.SKIPPED).count();
-            // 一伦优化 #93：从 report 取本次批量 batchId
+            // 一伦优化 #93：从 report 取本次批量 batchId + apis 顺序（apiKeyOrder）
             final String batchId = report.getResults().isEmpty() ? null
                     : report.getResults().get(0).getBatchId();
+            final java.util.List<String> apiKeyOrder = new java.util.ArrayList<>();
+            for (ApiDefinition a : apis) if (a != null) apiKeyOrder.add(a.uniqueKey());
             SwingUtilities.invokeLater(() -> {
                 buildStarredTree();
                 if (debuggerPanel != null) {
                     debuggerPanel.showAllHistory();
-                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId);
+                    if (batchId != null) debuggerPanel.reorderBatchHistoryToFront(batchId, apiKeyOrder);
                 }
                 statsLabel.setText("依赖链测试完成: 通过 " + passed + " · 失败 " + failed
                         + " · 跳过 " + skipped + " · 已记录 " + recorded + " 条历史");
