@@ -192,6 +192,21 @@ class ExceptionRuleEvaluatorTest {
     }
 
     @Test
+    void httpValueWhitelist_codeFieldPassesEvenWhenHttpStatusIs500() {
+        // 一伦优化 #91 用户反馈场景：用户配 HTTP_VALUE + 字段=code + 白名单=[500]，
+        // HTTP 500 + body.code=500 应判通过（业务码说了算，HTTP 500 不再被写死的 2xx 短路）。
+        // evaluator 层验证规则语义；HttpExecutorService 接线层另覆盖。
+        ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,
+                "code", List.of("500"), true);
+        assertTrue(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 500, "{\"code\":500}").isPassed(),
+                "业务码命中字段白名单 = 通过，不应被 HTTP 500 短路");
+        assertFalse(ExceptionRuleEvaluator.evaluateRules(
+                List.of(rule), 500, "{\"code\":200}").isPassed(),
+                "业务码不在白名单 = 失败");
+    }
+
+    @Test
     void httpValueEmptyListMeansNoConstraint() {
         // 空白名单 = 该规则不限制（用户可能临时清空）
         ExceptionRule rule = new ExceptionRule(ExceptionRule.RuleType.HTTP_VALUE,

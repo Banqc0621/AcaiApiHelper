@@ -192,20 +192,45 @@ public final class HttpExecutorService {
                     result.setErrorMessage(String.join("；", failureReasons));
                 }
             } else {
-                // 默认：使用接口的预期状态码判定
-                passed = api.isStatusCodeExpected(response.statusCode());
-                if (!passed) {
-                    result.setErrorMessage(expectedStatusFailureReason(api, response.statusCode()));
+                // 默认：HTTP_VALUE 规则 → 跑自定义 HTTP 层判定；否则走接口预期状态码
+                // 一伦优化 #91：HTTP_VALUE 规则覆盖默认 2xx 判定。
+                // 用户配置 HTTP_VALUE + 字段=code + 白名单=[500] 时，HTTP 500 + body.code=500
+                // 应判通过（业务码说了算），不应被写死的 2xx 杀在 HTTP 层。
+                List<ExceptionRule> allRules = project == null
+                        ? Collections.emptyList()
+                        : com.hronline.settings.RestAutoLabSettingsState
+                                .getInstance(project).loadExceptionRules();
+                List<ExceptionRule> httpRules = allRules.stream()
+                        .filter(r -> r != null && r.isEnabled()
+                                && r.getType() == ExceptionRule.RuleType.HTTP_VALUE)
+                        .collect(Collectors.toList());
+                if (!httpRules.isEmpty()) {
+                    ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluateRules(
+                            httpRules, response.statusCode(), result.getResponseBody());
+                    passed = er.isPassed();
+                    if (!passed) {
+                        result.setErrorMessage(er.reason());
+                    }
+                } else {
+                    passed = api.isStatusCodeExpected(response.statusCode());
+                    if (!passed) {
+                        result.setErrorMessage(expectedStatusFailureReason(api, response.statusCode()));
+                    }
                 }
-            }
-            // Round 7：HTTP 通过后再跑全局异常自定义规则判定（HTTP_VALUE 字段留空=状态码白名单，
-            // 填写字段=响应字段白名单；FIELD_VALUE=响应字段告警值黑名单）
-            if (passed && project != null) {
-                ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluate(
-                        project, response.statusCode(), result.getResponseBody());
-                if (!er.isPassed()) {
-                    passed = false;
-                    result.setErrorMessage(er.reason());
+                // Round 7：HTTP 通过后再跑 FIELD_VALUE 黑名单（业务字段告警值）
+                if (passed && project != null) {
+                    List<ExceptionRule> fieldRules = allRules.stream()
+                            .filter(r -> r != null && r.isEnabled()
+                                    && r.getType() == ExceptionRule.RuleType.FIELD_VALUE)
+                            .collect(Collectors.toList());
+                    if (!fieldRules.isEmpty()) {
+                        ExceptionRuleEvaluator.Result er = ExceptionRuleEvaluator.evaluateRules(
+                                fieldRules, response.statusCode(), result.getResponseBody());
+                        if (!er.isPassed()) {
+                            passed = false;
+                            result.setErrorMessage(er.reason());
+                        }
+                    }
                 }
             }
             result.setStatus(passed ? TestStatus.PASSED : TestStatus.FAILED);

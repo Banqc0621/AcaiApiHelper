@@ -4679,15 +4679,26 @@ public class ApiDebuggerPanel extends JPanel {
 
         JTabbedPane details = new JTabbedPane();
         details.addTab("请求头", createHistoryTextPane(formatMap(h.getHeaders(), "（无请求头记录）")));
-        details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
-        details.addTab("请求体", createHistoryTextPane(
-                h.getRequestBody() == null || h.getRequestBody().isBlank() ? "（无请求体）" : h.getRequestBody()));
+        // 一伦优化 #92：按 HTTP method 分流展示「入参 / 请求体」—— GET/HEAD/DELETE 只显示入参，
+        // POST/PUT/PATCH 只显示请求体。另一边直接不出现 tab，避免出现「无参数记录 / 无请求体」
+        // 占位造成「看到的不是保存的请求数据」错觉。
+        String reqMethod = h.getMethod() == null ? "" : h.getMethod();
+        boolean bodyMethod = isBodyMethod(reqMethod);
+        if (bodyMethod) {
+            // POST/PUT/PATCH：请求体才是当时实际发出去的数据，入参 tab 不出现
+            details.addTab("请求体", createHistoryTextPane(
+                    h.getRequestBody() == null || h.getRequestBody().isBlank()
+                            ? "（无请求体）" : h.getRequestBody()));
+        } else {
+            // GET/HEAD/DELETE 等：参数走 query/path，是当时实际发出去的数据，请求体 tab 不出现
+            details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
+        }
         // Round 4：补「响应」tab —— 显示当时那次的完整响应（状态、响应头、响应体及异常文本），
         // 不截断 body；网络/JSON 异常也要把用户可见的原始描述保留下来。
         details.addTab("响应", createHistoryTextPane(formatHistoryResponse(h)));
-        // 历史详情默认打开「入参」tab，便于先核对当时实际发送的参数；响应仍可切换查看。
-        int requestParamsTab = details.indexOfTab("入参");
-        if (requestParamsTab >= 0) details.setSelectedIndex(requestParamsTab);
+        // 默认打开「入参 / 请求体」中能展示的那个 tab（请求头 / 响应 之后）
+        int preferred = bodyMethod ? details.indexOfTab("请求体") : details.indexOfTab("入参");
+        if (preferred >= 0) details.setSelectedIndex(preferred);
         content.add(details, BorderLayout.CENTER);
 
         JButton close = iconButton("关闭", AllIcons.Actions.Close, e -> dialog.dispose());
