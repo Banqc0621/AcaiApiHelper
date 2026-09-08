@@ -4563,17 +4563,17 @@ public class ApiDebuggerPanel extends JPanel {
         refreshHistoryList();
     }
 
-    /** 当前接口对应的历史记录；未选择接口时保留全量历史。 */
+    /**
+     * 一伦优化 #93：历史区永远展示全部接口的请求历史，不按 currentApi 过滤。
+     * <p>用户需求：批量测试后切到任意接口都能看到之前批量那 N 条记录，
+     * 否则按接口过滤会让那批记录"看起来不存在"。新行为：永远全量展示，
+     * 顺序由 {@link #addToHistory} 的 {@code add(0, h)} 决定（最新在最上）。</p>
+     */
     private List<RequestHistory> getVisibleHistory() {
-        if (currentApi == null || historyAllScope) return new ArrayList<>(requestHistory);
-        List<RequestHistory> visible = new ArrayList<>();
-        for (RequestHistory h : requestHistory) {
-            if (historyBelongsToCurrentApi(h)) visible.add(h);
-        }
-        return visible;
+        return new ArrayList<>(requestHistory);
     }
 
-    /** 兼容旧版没有 apiKey 的记录，按方法 + 路径做一次安全回退匹配。 */
+    /** 兼容旧版没有 apiKey 的记录，按方法 + 路径做一次安全回退匹配（仅用于响应区按接口恢复，不影响历史区展示）。 */
     private boolean historyBelongsToCurrentApi(RequestHistory h) {
         if (h == null || currentApi == null) return false;
         String apiKey = h.getApiKey();
@@ -4604,122 +4604,29 @@ public class ApiDebuggerPanel extends JPanel {
         return value;
     }
 
-    /** 用全局历史对象刷新当前过滤后的列表，避免可见索引与持久化索引错位。 */
+    /** 历史区永远展示全量记录；标题固定为"全部接口"，方便用户理解"按接口过滤"已被取消。 */
     private void refreshHistoryList() {
         if (historyListModel == null) return;
         historyListModel.clear();
         List<RequestHistory> visible = getVisibleHistory();
         for (RequestHistory h : visible) historyListModel.addElement(h);
         if (historyTitleLabel != null) {
-            String scope = currentApi == null || historyAllScope ? "全部接口" : currentApi.displayLabel();
-            historyTitleLabel.setText("请求历史 · " + scope + "（" + visible.size() + " 条），双击查看请求详情");
+            historyTitleLabel.setText("请求历史 · 全部接口（" + visible.size() + " 条），双击查看请求详情");
         }
     }
 
     /**
-     * 批量测试完成后展示全部请求历史。保留当前接口和响应上下文，
-     * 仅解除历史列表的接口过滤，确保用户能看到批量执行产生的每一条记录。
+     * 兼容旧调用方（{@code ApiTreePanel} 批量测试入口）的 no-op：
+     * 历史区不再按 currentApi 过滤，这里不再需要切换范围。
+     * 保留方法签名避免编译失败。
      */
     public void showAllHistory() {
-        Runnable refresh = () -> {
-            historyAllScope = true;
-            refreshHistoryList();
-        };
+        Runnable refresh = this::refreshHistoryList;
         if (ApplicationManager.getApplication().isDispatchThread()) refresh.run();
         else ApplicationManager.getApplication().invokeLater(refresh);
     }
 
-    /**
-     * 一伦优化 #93：批量测试完成后把同一 {@code batchId} 的所有历史条目作为一个"最新事件块"
-     * 整体移到历史区最前，块内按 {@code apiKeyOrder} 给定的顺序（即收藏夹从上到下）
-     * 展示。
-     * <p>语义：</p>
-     * <ul>
-     *   <li>整体历史区保持"最新在最上"baseline（{@code addToHistory} 走 {@code add(0, h)}）；
-     *       任何单接口请求会被插到块之前，块永远只在"它确实是最新事件"时停在最前。</li>
-     *   <li>块内严格按 {@code apiKeyOrder} 顺序 = 收藏夹接口从上到下的执行顺序。
-     *       同一秒内多次请求 timestamp 完全相同时也能保证排序稳定。</li>
-     * </ul>
-     *
-     * @param batchId    批量测试批次 ID；为 null/空 时 no-op
-     * @param apiKeyOrder 收藏夹从上到下的 apiKey 列表，决定块内条目顺序；
-     *                    为 null/空时退化为按 timestamp 升序（依赖 timestamp 精度，
-     *                    同一秒多次调用会出现顺序错乱——这就是 #93 第二轮复现的现象）
-     */
-    public void reorderBatchHistoryToFront(String batchId, java.util.List<String> apiKeyOrder) {
-        if (batchId == null || batchId.isEmpty()) return;
-        Runnable reorder = () -> {
-            if (requestHistory == null || requestHistory.isEmpty()) return;
-            java.util.List<RequestHistory> batch = new java.util.ArrayList<>();
-            java.util.List<RequestHistory> keep = new java.util.ArrayList<>();
-            for (RequestHistory h : requestHistory) {
-                if (h != null && batchId.equals(h.getBatchId())) batch.add(h);
-                else keep.add(h);
-            }
-            if (batch.isEmpty()) return;
-            // 一伦优化 #93：直接按 apiKeyOrder 顺序重组 batch（不依赖比较器/TimSort 稳定性）。
-            // 步骤：
-            //   1. 把 batch 按 apiKey 索引成 map
-            //   2. 按 apiKeyOrder 顺序取条目，得到有序的 batch
-            //   3. 不在 apiKeyOrder 里的条目按 timestamp 升序追加
-            // 这样无论 timestamp 是否同秒都能严格按收藏夹顺序排，逻辑透明。
-            batch = reorderBatchByKeyOrder(batch, apiKeyOrder);
-            java.util.List<RequestHistory> next = new java.util.ArrayList<>(batch.size() + keep.size());
-            next.addAll(batch);
-            next.addAll(keep);
-            requestHistory = next;
-            refreshHistoryList();
-            persistHistory();
-        };
-        if (ApplicationManager.getApplication().isDispatchThread()) reorder.run();
-        else ApplicationManager.getApplication().invokeLater(reorder);
-    }
-
-    /**
-     * 一伦优化 #93：按 {@code apiKeyOrder} 重新排列 {@code batch}。
-     * <p>逻辑等价于"按 apiKeyOrder 列表顺序取出匹配条目 + 剩余按 timestamp 升序追加"，
-     * 不依赖 sort 比较器 / TimSort 稳定性，避免被同一秒多次请求把顺序搞乱。</p>
-     *
-     * <p>package-private 供单元测试直接覆盖（{@code ApiDebuggerPanelReorderTest}）。</p>
-     */
-    static java.util.List<RequestHistory> reorderBatchByKeyOrder(java.util.List<RequestHistory> batch,
-                                                                java.util.List<String> apiKeyOrder) {
-        if (batch == null || batch.isEmpty()) return new java.util.ArrayList<>();
-        java.util.Map<String, RequestHistory> byKey = new java.util.HashMap<>();
-        for (RequestHistory h : batch) {
-            if (h != null && h.getApiKey() != null && !h.getApiKey().isEmpty()) {
-                byKey.put(h.getApiKey(), h);
-            }
-        }
-        java.util.List<RequestHistory> reordered = new java.util.ArrayList<>(batch.size());
-        java.util.Set<String> consumed = new java.util.HashSet<>();
-        if (apiKeyOrder != null) {
-            for (String key : apiKeyOrder) {
-                RequestHistory h = byKey.get(key);
-                if (h != null) {
-                    reordered.add(h);
-                    consumed.add(key);
-                }
-            }
-        }
-        // 不在 apiKeyOrder 里的条目（理论上不会发生，兜底）按 timestamp 升序追加
-        java.util.List<RequestHistory> rest = new java.util.ArrayList<>();
-        for (RequestHistory h : batch) {
-            if (h == null) continue;
-            String k = h.getApiKey();
-            if (k == null || k.isEmpty() || !consumed.contains(k)) rest.add(h);
-        }
-        rest.sort((a, b) -> Long.compare(a.getTimestamp(), b.getTimestamp()));
-        reordered.addAll(rest);
-        return reordered;
-    }
-
-    /** 兼容旧签名：没有 apiKeyOrder 时退化为按 timestamp 升序（不推荐，参考上一条注释） */
-    public void reorderBatchHistoryToFront(String batchId) {
-        reorderBatchHistoryToFront(batchId, null);
-    }
-
-    /** 清除响应区当前展示，保持”清空当前接口历史”后的结果区语义一致。 */
+    /** 清除响应区当前展示，保持"清空当前接口历史"后的结果区语义一致。 */
     private void clearDisplayedResponse() {
         lastResult = null;
         responseArea.setText("");
@@ -4873,13 +4780,7 @@ public class ApiDebuggerPanel extends JPanel {
         );
         h.setResponseHeaders(result.getResponseHeaders());
         h.setErrorMessage(result.getErrorMessage());
-        // 一伦优化 #93：批量测试期间 ChainTestExecutor 给 TestResult.batchId 打上批次标签，
-        // 这里复制到 RequestHistory.batchId 持久化；reorderBatchHistoryToFront 按 batchId
-        // 找整批条目，把它们按 timestamp 升序作为"最新事件块"移到历史区最前。
-        h.setBatchId(result.getBatchId());
-        // 一伦优化 #93 补充：历史区展示的时间应该是"请求完成时间"而不是
-        // addToHistory 调用时间，否则同一秒内多次请求 4 条都是同一秒值，
-        // 用 timestamp 作 tiebreaker 永远不稳定。
+        // 一伦优化 #93：历史区展示的时间应该是"请求完成时间"，addToHistory 调用时刻不准。
         h.setTimestamp(result.getTimestamp());
         requestHistory.add(0, h);
         // 限制历史记录数量

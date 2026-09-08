@@ -40,12 +40,6 @@ public class TestResult {
     private String errorMessage = "";
     /** 测试执行时间戳 */
     private long timestamp = System.currentTimeMillis();
-    /**
-     * 一伦优化 #93：本结果所属的批量测试批次 ID（ChainTestExecutor.execute 生成），
-     * 通过 historyListener 复制到 RequestHistory.batchId，让历史区能按批次块展示。
-     * <p>transient 避免污染 TestDataExporter 导出的测试报告 JSON。</p>
-     */
-    private transient String batchId = null;
     /** 断言结果列表 */
     private List<ResponseAssertion> assertions = new ArrayList<>();
 
@@ -114,9 +108,6 @@ public class TestResult {
 
     public long getTimestamp() { return timestamp; }
     public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
-
-    public String getBatchId() { return batchId; }
-    public void setBatchId(String batchId) { this.batchId = batchId; }
 
     public List<ResponseAssertion> getAssertions() { return assertions; }
     public void setAssertions(List<ResponseAssertion> assertions) { this.assertions = assertions != null ? assertions : new ArrayList<>(); }
