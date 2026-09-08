@@ -101,8 +101,18 @@ public final class ChainTestExecutor {
         // 2. 执行：一伦优化 #93，上游失败不跳过下游，每个接口都请求
         Map<String, Map<String, String>> extractedValues = new HashMap<>();
 
+        // 一伦优化：把本次实际执行顺序一次性打印出来，方便用户从 IDE log 核对
+        // 收藏文件夹从上到下的接口顺序是否被正确传递到执行器。
+        StringBuilder seq = new StringBuilder();
+        for (int k = 0; k < orderedApis.size(); k++) {
+            if (k > 0) seq.append(" -> ");
+            seq.append(orderedApis.get(k).displayLabel());
+        }
+        LOG.info("[ChainTestExecutor] 执行顺序（" + orderedApis.size() + " 个）：" + seq);
+
         for (int i = 0; i < orderedApis.size(); i++) {
             ApiDefinition api = orderedApis.get(i);
+            LOG.info("[ChainTestExecutor] 第 " + (i + 1) + "/" + total + " 个：" + api.displayLabel());
 
             // 取参数副本
             Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));

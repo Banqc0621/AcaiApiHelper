@@ -4629,6 +4629,40 @@ public class ApiDebuggerPanel extends JPanel {
         else ApplicationManager.getApplication().invokeLater(refresh);
     }
 
+    /**
+     * 一伦优化 #93 补充：批量测试完成后把"本次批次的历史"按 timestamp 升序
+     * （即真实执行顺序）插到列表最前面。
+     * <p>{@link #addToHistory} 是 {@code add(0, h)}，按"调用时间倒序"展示——
+     * 单接口调试合理，但批量测试 N 个接口时用户期望从收藏文件夹自上而下看结果，
+     * 这里把本次新写入的条目重新排到顶部并按真实执行时间正序，让历史区顶部 N 条
+     * 恰好对应该次批量执行从第一个到最后一个。</p>
+     *
+     * @param sinceMillis 批量测试开始的 epoch 毫秒；{@code requestHistory} 中
+     *                    {@code timestamp >= sinceMillis} 的条目视为本次批次
+     */
+    public void reorderBatchHistoryToFront(long sinceMillis) {
+        Runnable reorder = () -> {
+            if (requestHistory == null || requestHistory.isEmpty()) return;
+            java.util.List<RequestHistory> batch = new java.util.ArrayList<>();
+            java.util.List<RequestHistory> keep = new java.util.ArrayList<>();
+            for (RequestHistory h : requestHistory) {
+                if (h != null && h.getTimestamp() >= sinceMillis) batch.add(h);
+                else keep.add(h);
+            }
+            if (batch.isEmpty()) return;
+            // 本次批次按真实执行顺序（timestamp 升序）排列
+            batch.sort((a, b) -> Long.compare(a.getTimestamp(), b.getTimestamp()));
+            java.util.List<RequestHistory> next = new java.util.ArrayList<>(batch.size() + keep.size());
+            next.addAll(batch);
+            next.addAll(keep);
+            requestHistory = next;
+            refreshHistoryList();
+            persistHistory();
+        };
+        if (ApplicationManager.getApplication().isDispatchThread()) reorder.run();
+        else ApplicationManager.getApplication().invokeLater(reorder);
+    }
+
     /** 清除响应区当前展示，保持“清空当前接口历史”后的结果区语义一致。 */
     private void clearDisplayedResponse() {
         lastResult = null;
