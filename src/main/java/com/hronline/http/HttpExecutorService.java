@@ -374,8 +374,11 @@ public final class HttpExecutorService {
         for (int i = 0; i < apis.size(); i++) {
             ApiDefinition api = apis.get(i);
             Map<String, String> params = profile.getParams(api.uniqueKey());
+            // 使用配置中保存的请求体；GET 时 executeRequest 内部会忽略请求体
+            String savedBody = profile.getRequestBody(api.uniqueKey());
             TestResult result = executeRequest(api, profile.getBaseUrl(), params,
-                    profile.getGlobalHeaders(), null, BODY_FORMAT_JSON, environment, null);
+                    profile.getGlobalHeaders(), savedBody.isBlank() ? null : savedBody,
+                    BODY_FORMAT_JSON, environment, null);
             report.getResults().add(result);
 
             if (listener != null) {

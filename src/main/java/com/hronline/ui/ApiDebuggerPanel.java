@@ -4744,7 +4744,7 @@ public class ApiDebuggerPanel extends JPanel {
             // POST/PUT/PATCH：请求体才是当时实际发出去的数据，入参 tab 不出现
             details.addTab("请求体", createHistoryTextPane(
                     h.getRequestBody() == null || h.getRequestBody().isBlank()
-                            ? "（无请求体）" : h.getRequestBody()));
+                            ? "（无请求体）" : prettyPrintBody(h.getRequestBody())));
         } else {
             // GET/HEAD/DELETE 等：参数走 query/path，是当时实际发出去的数据，请求体 tab 不出现
             details.addTab("入参", createHistoryTextPane(formatMap(h.getRequestParameters(), "（无参数记录）")));
@@ -4778,6 +4778,16 @@ public class ApiDebuggerPanel extends JPanel {
     private String formatMap(Map<String, String> values, String emptyText) {
         if (values == null || values.isEmpty()) return emptyText;
         return gson.toJson(values);
+    }
+
+    /** 请求体展示格式化：合法 JSON 美化为多行缩进，非 JSON（RAW/FORM 等）原样返回。 */
+    private String prettyPrintBody(String body) {
+        if (body == null || body.isBlank()) return body;
+        try {
+            return gson.toJson(JsonParser.parseString(body));
+        } catch (Exception e) {
+            return body;
+        }
     }
 
     private String formatHistoryResponse(RequestHistory h) {

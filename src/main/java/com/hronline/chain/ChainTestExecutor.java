@@ -16,8 +16,8 @@ import java.util.*;
  *   <li>收藏夹顺序：严格按调用方传入的收藏夹顺序执行，不做拓扑排序</li>
  *   <li>值提取：上游执行后从响应中按用户配置的点号路径提取 JSON 字段值</li>
  *   <li>值注入：下游执行前将提取值注入参数 Map</li>
- *   <li>发送门禁：上游未执行、失败、字段缺失/为空或目标参数不存在时，下游标记
- *       {@link TestStatus#SKIPPED}，不发送 HTTP 请求</li>
+ *   <li>从不跳过：无论上游是否失败、依赖字段是否缺失，下游接口都照常发送真实
+ *       请求；已成功提取的值会注入参数，提取不到的参数保留用户保存的原值</li>
  * </ol>
  *
  * <p>不修改 {@link HttpExecutorService}，直接调用其 {@code executeRequest()} 方法。</p>
@@ -63,7 +63,7 @@ public final class ChainTestExecutor {
      * @param profile      测试配置（含参数、baseUrl、全局请求头）
      * @param environment  环境变量（可为 null）
      * @param listener     进度回调（可为 null）
-     * @return 测试报告（每个收藏夹接口都包含一条结果，未满足依赖门禁的接口为 SKIPPED）
+     * @return 测试报告（每个收藏夹接口都包含一条结果，任何接口都不会被跳过）
      */
     public TestReport execute(List<ApiDefinition> apis,
                               List<ApiDependency> dependencies,
@@ -97,13 +97,12 @@ public final class ChainTestExecutor {
             }
         }
 
-        // 1. 收藏夹顺序就是执行顺序。依赖关系只负责值映射和下游发送门禁。
+        // 1. 收藏夹顺序就是执行顺序。依赖关系只负责值映射，不再决定接口是否执行。
         List<ApiDefinition> orderedApis = inputApis;
         int total = orderedApis.size();
 
-        // 2. 记录已经处理的结果和成功提取的值。未出现在 executionResults 中的
-        // producer 说明它在收藏夹中尚未执行，consumer 必须跳过。
-        Map<String, TestResult> executionResults = new LinkedHashMap<>();
+        // 2. 记录已成功提取的依赖值。下游接口无条件执行；依赖值只作为
+        // 「能拿到就注入、拿不到就用保存的原值」的增强，不再作为发送门禁。
         Map<String, Map<String, String>> extractedValues = new HashMap<>();
 
         // 一伦优化：把本次实际执行顺序一次性打印出来，方便用户从 IDE log 核对
@@ -122,26 +121,23 @@ public final class ChainTestExecutor {
             Map<String, String> params = profile == null
                     ? new LinkedHashMap<>()
                     : new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
-            String gateReason = dependencyGateReason(api, effectiveDependencies, executionResults,
-                    extractedValues);
-            TestResult result;
-            if (gateReason != null) {
-                result = skippedResult(api, batchId, gateReason);
-                LOG.info("[ChainTestExecutor] 跳过 " + api.displayLabel() + "：" + gateReason);
-            } else {
-                injectDependencies(api, params, effectiveDependencies, extractedValues);
-                result = httpExecutor.executeRequest(api,
-                        profile == null ? "" : profile.getBaseUrl(), params,
-                        profile == null ? Collections.emptyMap() : profile.getGlobalHeaders(),
-                        null, HttpExecutorService.BODY_FORMAT_JSON, environment, null);
-            }
+            // 不做任何跳过判断：每个接口都发送真实请求。已提取到的上游依赖值
+            // 会注入参数，提取不到（上游失败/字段缺失）则保留用户保存的原值。
+            Set<String> injectedParams = injectDependencies(api, params, effectiveDependencies, extractedValues);
+            // 非 GET 接口优先使用保存的请求体（GET 时 executeRequest 内部会忽略 body）。
+            // 保存的请求体是用户编辑时定稿的静态内容，注入的依赖值必须合并进去，
+            // 否则下游历史记录里看到的入参永远不是上游响应的真实内容。
+            String savedBody = profile == null ? "" : profile.getRequestBody(api.uniqueKey());
+            savedBody = mergeInjectedValuesIntoBody(savedBody, injectedParams, params);
+            TestResult result = httpExecutor.executeRequest(api,
+                    profile == null ? "" : profile.getBaseUrl(), params,
+                    profile == null ? Collections.emptyMap() : profile.getGlobalHeaders(),
+                    savedBody.isBlank() ? null : savedBody,
+                    HttpExecutorService.BODY_FORMAT_JSON, environment, null);
             result.setBatchId(batchId);
-            executionResults.put(api.uniqueKey(), result);
 
-            // 提取响应值供后续收藏夹接口使用（只有真实成功才提取）
-            if (gateReason == null) {
-                extractProducerValues(api, result, effectiveDependencies, extractedValues);
-            }
+            // 提取响应值供后续收藏夹接口使用（内部只在 PASSED 时提取）
+            extractProducerValues(api, result, effectiveDependencies, extractedValues);
 
             report.getResults().add(result);
             if (listener != null) {
@@ -156,98 +152,6 @@ public final class ChainTestExecutor {
     // ═══════════════════════════════════════════════════════════
     // 响应值提取与注入
     // ═══════════════════════════════════════════════════════════
-
-    /**
-     * 检查一个 consumer 的所有依赖。返回 null 表示可以发送；否则返回用户可读的跳过原因。
-     */
-    private String dependencyGateReason(ApiDefinition consumer,
-                                        List<ApiDependency> deps,
-                                        Map<String, TestResult> executionResults,
-                                        Map<String, Map<String, String>> extractedValues) {
-        for (ApiDependency dep : deps) {
-            if (!consumer.uniqueKey().equals(dep.getConsumerKey())) continue;
-            String producerKey = dep.getProducerKey();
-            TestResult producerResult = executionResults.get(producerKey);
-            if (producerResult == null) {
-                return "依赖上游尚未按收藏夹顺序执行（" + producerKey + "）";
-            }
-            if (producerResult.getStatus() != TestStatus.PASSED) {
-                return "依赖上游未成功（" + producerKey + "：" + producerResult.getStatus() + "）";
-            }
-
-            List<ApiDependency.ValueMapping> mappings = dep.getMappings() == null
-                    ? Collections.emptyList() : dep.getMappings();
-            if (mappings.isEmpty()) continue;
-            Map<String, String> producerValues = extractedValues.get(producerKey);
-            for (ApiDependency.ValueMapping mapping : mappings) {
-                if (mapping == null || mapping.getSourcePath() == null || mapping.getSourcePath().isBlank()) {
-                    return "依赖映射缺少上游响应字段路径";
-                }
-                String target = mapping.getTargetParam() == null ? "" : mapping.getTargetParam().trim();
-                if (target.isEmpty()) return "依赖映射缺少下游目标参数";
-                if (!containsParameterPath(consumer, target)) {
-                    return "下游参数不存在（" + target + "）";
-                }
-                String source = mapping.getSourcePath().trim();
-                String value = producerValues == null ? null : producerValues.get(source);
-                if (value == null || value.isBlank() || "null".equalsIgnoreCase(value.trim())) {
-                    return "上游响应字段缺失或为空（" + source + "）";
-                }
-            }
-        }
-        return null;
-    }
-
-    /** 递归判断目标参数是否存在，兼容 request.id 这类嵌套参数路径。 */
-    private boolean containsParameterPath(ApiDefinition api, String targetPath) {
-        if (api == null || targetPath == null || targetPath.isBlank()) return false;
-        String normalized = targetPath.trim();
-        if (api.getParameters() == null) return false;
-        for (ApiParameter root : api.getParameters()) {
-            if (root == null || root.getName() == null) continue;
-            String rootName = root.getName().trim();
-            if (normalized.equals(rootName)) return true;
-            String prefix = rootName + ".";
-            if (normalized.startsWith(prefix)
-                    && containsChildPath(root, normalized.substring(prefix.length()))) return true;
-            // 兼容配置里直接保存 child.path 而不带复杂对象根名的旧格式。
-            if (containsChildPath(root, normalized)) return true;
-        }
-        return false;
-    }
-
-    private boolean containsChildPath(ApiParameter parent, String path) {
-        if (parent == null || path == null || path.isBlank() || parent.getChildren() == null) return false;
-        String[] parts = path.split("\\.");
-        ApiParameter current = parent;
-        for (String raw : parts) {
-            String segment = raw == null ? "" : raw.trim();
-            if (segment.isEmpty() || current.getChildren() == null) return false;
-            ApiParameter next = null;
-            for (ApiParameter child : current.getChildren()) {
-                if (child != null && segment.equals(child.getName())) {
-                    next = child;
-                    break;
-                }
-            }
-            if (next == null) return false;
-            current = next;
-        }
-        return true;
-    }
-
-    private TestResult skippedResult(ApiDefinition api, String batchId, String reason) {
-        TestResult result = new TestResult(api);
-        result.setStatus(TestStatus.SKIPPED);
-        result.setErrorMessage(reason);
-        result.setRequestUrl("");
-        result.setRequestBody("");
-        result.setRequestParameters(Collections.emptyMap());
-        result.setRequestHeaders(Collections.emptyMap());
-        result.setTimestamp(System.currentTimeMillis());
-        result.setBatchId(batchId);
-        return result;
-    }
 
     /**
      * 从执行结果中提取所有以该 API 为 producer 的响应值
@@ -281,12 +185,15 @@ public final class ChainTestExecutor {
     }
 
     /**
-     * 将提取的依赖值注入到 consumer 的参数 Map 中
+     * 将提取的依赖值注入到 consumer 的参数 Map 中。
+     *
+     * @return 本次实际被注入的参数名集合（用于后续合并进已保存的请求体）
      */
-    private void injectDependencies(ApiDefinition consumer,
+    private Set<String> injectDependencies(ApiDefinition consumer,
                                     Map<String, String> params,
                                     List<ApiDependency> deps,
                                     Map<String, Map<String, String>> extractedValues) {
+        Set<String> injected = new LinkedHashSet<>();
         for (ApiDependency dep : deps) {
             if (!consumer.uniqueKey().equals(dep.getConsumerKey())) continue;
             Map<String, String> producerValues = extractedValues.get(dep.getProducerKey());
@@ -299,9 +206,59 @@ public final class ChainTestExecutor {
                 String value = producerValues.get(key);
                 if (value != null) {
                     params.put(mapping.getTargetParam(), value);
+                    injected.add(mapping.getTargetParam());
                     LOG.info("注入依赖值: " + consumer.uniqueKey() + " ." + mapping.getTargetParam() + " = " + value);
                 }
             }
         }
+        return injected;
+    }
+
+    /**
+     * 把注入的依赖值合并进已保存的 JSON 请求体。
+     * <p>只合并本次真正注入的参数（{@code injected}），避免把用户编辑时保存的普通参数
+     * 值也覆盖进请求体。支持 {@code a.b.c} 嵌套路径：缺失的中间层级会自动创建。</p>
+     * <p>请求体为空或非 JSON 对象时原样返回（如 GET / RAW 场景由调用方保证）。</p>
+     */
+    private String mergeInjectedValuesIntoBody(String savedBody, Set<String> injected,
+                                               Map<String, String> params) {
+        if (savedBody == null || savedBody.isBlank() || injected == null || injected.isEmpty()) {
+            return savedBody;
+        }
+        try {
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(savedBody);
+            if (!root.isJsonObject()) return savedBody;
+            com.google.gson.JsonObject obj = root.getAsJsonObject();
+            for (String target : injected) {
+                if (target == null || target.isBlank()) continue;
+                String value = params.get(target);
+                if (value == null) continue;
+                setNestedJson(obj, target.trim().split("\\."), value);
+            }
+            return obj.toString();
+        } catch (Exception e) {
+            LOG.warn("合并依赖值到请求体失败，使用原始请求体: " + e.getMessage());
+            return savedBody;
+        }
+    }
+
+    /** 按路径段逐层写入 JSON 对象；中间层级缺失或非对象时自动替换为对象。 */
+    private void setNestedJson(com.google.gson.JsonObject root, String[] segments, String value) {
+        com.google.gson.JsonObject current = root;
+        for (int i = 0; i < segments.length - 1; i++) {
+            String seg = segments[i].trim();
+            if (seg.isEmpty()) return;
+            com.google.gson.JsonElement child = current.get(seg);
+            if (child == null || !child.isJsonObject()) {
+                com.google.gson.JsonObject created = new com.google.gson.JsonObject();
+                current.add(seg, created);
+                current = created;
+            } else {
+                current = child.getAsJsonObject();
+            }
+        }
+        String leaf = segments[segments.length - 1].trim();
+        if (leaf.isEmpty()) return;
+        current.addProperty(leaf, value);
     }
 }

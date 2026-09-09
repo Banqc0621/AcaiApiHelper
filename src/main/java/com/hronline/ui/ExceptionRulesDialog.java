@@ -66,7 +66,8 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
     /**
      * Round 7（重构）：异常自定义面板组件 —— 可独立嵌入到任意 Dialog / JTabbedPane。
-     * 顶部「新增规则 / 保存规则」按钮 + 中部规则表格 + 底部状态提示。
+     * 无顶部按钮栏：规则表格的「操作」列内置「新增 / 删除」按钮；
+     * 保存统一由外层弹窗的「应用 / 确定」触发 {@link #commitRules()}。
      * 规则对项目内所有接口生效，不挂具体接口。
      */
     public static final class ExceptionRulesPanel extends JPanel {
@@ -95,8 +96,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
         };
         private final JBTable table = new JBTable(tableModel);
         private final JLabel statusLabel = new JLabel(" ");
-        private JButton addBtn;
-        private JButton saveBtn;
 
         public ExceptionRulesPanel(@NotNull Project project) {
             super(new BorderLayout(0, 6));
@@ -123,25 +122,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
         private JComponent buildCenter() {
             JPanel center = new JPanel(new BorderLayout(0, 4));
-            JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-            addBtn = new JButton("新增规则");
-            addBtn.addActionListener(e -> {
-                if (!validateRules()) return;
-                tableModel.addRow(new Object[]{
-                        ExceptionRule.RuleType.HTTP_VALUE, "", "200", Boolean.TRUE, "删除"});
-                int row = tableModel.getRowCount() - 1;
-                table.setRowSelectionInterval(row, row);
-                table.scrollRectToVisible(table.getCellRect(row, 0, true));
-                statusLabel.setForeground(JBColor.BLUE);
-                statusLabel.setText("● 已新增规则，HTTP_VALUE 默认白名单 [200]，请按需修改后点击「保存规则」");
-            });
-            saveBtn = new JButton("保存规则");
-            saveBtn.setToolTipText("立即把当前表格写回项目设置（不依赖弹窗 OK 按钮）");
-            saveBtn.addActionListener(e -> commitRules());
-            btnBar.add(addBtn);
-            btnBar.add(saveBtn);
-            center.add(btnBar, BorderLayout.NORTH);
-
+            // 无顶部按钮栏：新增/删除都在表格「操作」列内；保存走弹窗「应用」。
             JScrollPane scroll = new JScrollPane(table);
             scroll.setPreferredSize(JBUI.size(680, 260));
             center.add(scroll, BorderLayout.CENTER);
@@ -150,21 +131,34 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
         private JComponent buildStatusBar() {
             statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 12f));
-            statusLabel.setBorder(BorderFactory.createCompoundBorder(
+            statusLabel.setForeground(JBColor.BLUE);
+
+            // 底部常驻「+ 新增规则」入口：表格里一条记录都没有时操作列没有可点的
+            // 按钮行，靠它新增第一条；新增后仍统一点「应用」保存。
+            JLabel addLink = new JLabel("＋ 新增规则");
+            addLink.setForeground(JBColor.BLUE);
+            addLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            addLink.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) {
+                    if (table.isEnabled()) addRuleRow(tableModel.getRowCount());
+                }
+            });
+
+            JPanel south = new JPanel(new BorderLayout(8, 0));
+            south.setBorder(BorderFactory.createCompoundBorder(
                     BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
                     JBUI.Borders.empty(4, 8)));
-            statusLabel.setOpaque(true);
-            statusLabel.setBackground(JBColor.PanelBackground);
-            statusLabel.setForeground(JBColor.BLUE);
-            return statusLabel;
+            south.setOpaque(true);
+            south.setBackground(JBColor.PanelBackground);
+            south.add(addLink, BorderLayout.WEST);
+            south.add(statusLabel, BorderLayout.CENTER);
+            return south;
         }
 
         private void applyEnabledState() {
             table.setEnabled(true);
-            if (addBtn != null) addBtn.setEnabled(true);
-            if (saveBtn != null) saveBtn.setEnabled(true);
             statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则；新增/编辑后请点「保存规则」");
+            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则；新增/编辑后点「应用」保存");
         }
 
         private void configureTable() {
@@ -208,24 +202,25 @@ public class ExceptionRulesDialog extends DialogWrapper {
                 }
             });
 
-            // 操作列：renderer 渲染为按钮样式；点击由 mouseListener 直接响应
+            // 操作列：渲染「新增 | 删除」文本按钮。
+            // 旧实现用共享原型 JButton + FlowLayout 做命中，单元格放不下两个按钮时
+            // bounds 会漂出单元格，点击无响应（删除失效）；现直接按单元格左右半区判定。
             TableColumn action = table.getColumnModel().getColumn(COL_ACTION);
-            action.setPreferredWidth(80);
-            JButton deleteProto = new JButton();
-            deleteProto.setMargin(JBUI.insets(0, 6, 0, 6));
-            deleteProto.setOpaque(true);
-            deleteProto.setBorder(UIManager.getBorder("Button.border"));
+            action.setPreferredWidth(110);
             action.setCellRenderer(new DefaultTableCellRenderer() {
                 @Override public Component getTableCellRendererComponent(JTable tbl, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-                    deleteProto.setText("删除");
-                    deleteProto.setBackground(isSelected ? tbl.getSelectionBackground() : tbl.getBackground());
-                    deleteProto.setForeground(isSelected ? tbl.getSelectionForeground() : JBColor.RED);
-                    return deleteProto;
+                    super.getTableCellRendererComponent(tbl, value, isSelected, hasFocus, row, column);
+                    setHorizontalAlignment(SwingConstants.CENTER);
+                    setText(isSelected ? "新增 | 删除"
+                            : "<html><span style='color:#1565C0'>新增</span>"
+                            + " <span style='color:gray'>|</span> "
+                            + "<span style='color:#C62828'>删除</span></html>");
+                    return this;
                 }
             });
             action.setCellEditor(null);
 
-            // 鼠标点击删除列直接删行（不依赖编辑模式）
+            // 鼠标点击操作列：左半区=新增（当前行下方插入），右半区=删除（移除当前行）
             table.addMouseListener(new MouseAdapter() {
                 @Override public void mouseClicked(MouseEvent e) {
                     if (!table.isEnabled()) return;
@@ -234,12 +229,30 @@ public class ExceptionRulesDialog extends DialogWrapper {
                     int col = table.columnAtPoint(p);
                     if (row < 0 || col != COL_ACTION) return;
                     int modelRow = table.convertRowIndexToModel(row);
-                    if (modelRow >= 0 && modelRow < tableModel.getRowCount()) {
+                    if (modelRow < 0 || modelRow >= tableModel.getRowCount()) return;
+
+                    Rectangle cellRect = table.getCellRect(row, col, false);
+                    if (p.x < cellRect.x + cellRect.width / 2) {
+                        addRuleRow(modelRow + 1);
+                    } else {
                         tableModel.removeRow(modelRow);
-                        statusLabel.setText("● 已删除第 " + (modelRow + 1) + " 行，记得点保存");
+                        statusLabel.setForeground(JBColor.BLUE);
+                        statusLabel.setText("● 已删除第 " + (modelRow + 1) + " 行，点「应用」保存");
                     }
                 }
             });
+        }
+
+        /** 在指定位置插入一条默认规则行（新增入口，位于表格操作列内）。 */
+        private void addRuleRow(int insertAt) {
+            if (!validateRules()) return;
+            int row = Math.max(0, Math.min(insertAt, tableModel.getRowCount()));
+            tableModel.insertRow(row, new Object[]{
+                    ExceptionRule.RuleType.HTTP_VALUE, "", "200", Boolean.TRUE, ""});
+            table.setRowSelectionInterval(row, row);
+            table.scrollRectToVisible(table.getCellRect(row, 0, true));
+            statusLabel.setForeground(JBColor.BLUE);
+            statusLabel.setText("● 已新增规则，HTTP_VALUE 默认白名单 [200]，请按需修改后点「应用」保存");
         }
 
         private void loadRules() {

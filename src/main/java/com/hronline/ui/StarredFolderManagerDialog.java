@@ -440,10 +440,14 @@ public class StarredFolderManagerDialog extends DialogWrapper {
                 final ApiDefinition api = targets.get(i);
                 Map<String, String> params = folderService.getParams(folderId, api.uniqueKey());
                 if (params == null) params = aiService.generateDefaultParameters(api);
+                // 使用收藏时保存的请求体（GET 时执行器内部会忽略，只用参数）
+                String savedBody = folderService.getBody(folderId, api.uniqueKey());
                 final int idx = i + 1;
                 FolderApiStatus status = new FolderApiStatus();
                 try {
-                    TestResult tr = httpService.executeRequest(api, baseUrl, params);
+                    TestResult tr = httpService.executeRequest(api, baseUrl, params,
+                            Collections.emptyMap(),
+                            savedBody == null || savedBody.isBlank() ? null : savedBody);
                     status.setPassed(tr.getStatus() == TestStatus.PASSED);
                     status.setStatusCode(tr.getStatusCode());
                     status.setMessage(status.isPassed() ? "通过" : failureMessage(tr));

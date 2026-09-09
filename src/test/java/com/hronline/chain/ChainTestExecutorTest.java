@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ChainTestExecutorTest {
 
     @Test
-    void executesSavedDependencyInTopologyOrderAndInjectsMultipleMappings() throws Exception {
+    void executesInFavoriteOrderAndInjectsMultipleMappings() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         List<String> requests = new CopyOnWriteArrayList<>();
         server.createContext("/login", exchange -> {
@@ -63,8 +63,10 @@ class ChainTestExecutorTest {
             HttpExecutorService http = new HttpExecutorService(null);
             http.setHistoryListener(history::add);
 
+            // 收藏夹顺序即执行顺序（不做拓扑排序）：login 在上、boxes 在下，
+            // login 的响应字段先被提取，随后注入 boxes 的参数。
             TestReport report = new ChainTestExecutor(http).execute(
-                    List.of(boxes, login), List.of(dependency), profile, null,
+                    List.of(login, boxes), List.of(dependency), profile, null,
                     (result, current, total) -> statuses.add(result.getStatus()));
 
             assertEquals(List.of("login", "/boxes/42?token=abc"), requests);
@@ -171,6 +173,64 @@ class ChainTestExecutorTest {
             assertEquals(TestStatus.PASSED, results.get(1).getStatus());
             assertTrue(pathOnly(results.get(1).getRequestUrl()).endsWith("/boxes/fallback"),
                     "未拿到依赖值时使用 profile 原占位参数");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * 问题 1 回归：非 GET 接口的依赖值必须合并进「已保存的请求体」，而不是只写进
+     * paramValues。否则下游历史记录里看到的入参永远不是上游响应的真实内容。
+     * <p>上游 /login 返回 {@code data.id=42}，下游 POST /submit 保存的请求体是
+     * {@code {"id":"old","name":"x"}}，注入后实际发出的请求体必须变成
+     * {@code {"id":"42","name":"x"}}。</p>
+     */
+    @Test
+    void injectsUpstreamValueIntoSavedPostBody() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> downstreamBodies = new CopyOnWriteArrayList<>();
+        server.createContext("/login", exchange -> {
+            byte[] body = "{\"data\":{\"id\":\"42\"}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/submit", exchange -> {
+            downstreamBodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            ApiDefinition login = api("GET", "/login");
+            ApiDefinition submit = api("POST", "/submit");
+            submit.setParameters(new ArrayList<>(List.of(parameter("id", ParameterLocation.BODY))));
+
+            ApiDependency dependency = new ApiDependency(login.uniqueKey(), submit.uniqueKey());
+            dependency.getMappings().add(new ApiDependency.ValueMapping("data.id", "id"));
+
+            TestProfile profile = new TestProfile("收藏夹", baseUrl(server));
+            profile.setParams(login.uniqueKey(), Map.of());
+            profile.setParams(submit.uniqueKey(), Map.of("id", "old"));
+            // 保存的请求体是用户编辑时定稿的静态内容
+            profile.setRequestBody(submit.uniqueKey(), "{\"id\":\"old\",\"name\":\"x\"}");
+
+            List<TestResult> results = new ArrayList<>();
+            new ChainTestExecutor(new HttpExecutorService(null)).execute(
+                    List.of(login, submit), List.of(dependency), profile, null,
+                    (result, current, total) -> results.add(result));
+
+            assertEquals(TestStatus.PASSED, results.get(0).getStatus());
+            assertEquals(TestStatus.PASSED, results.get(1).getStatus());
+            assertEquals(1, downstreamBodies.size());
+            String sentBody = downstreamBodies.get(0);
+            assertTrue(sentBody.contains("\"id\":\"42\""),
+                    "注入的上游值必须覆盖请求体中的同名字段，实际: " + sentBody);
+            assertTrue(sentBody.contains("\"name\":\"x\""),
+                    "未注入的字段必须保留原值，实际: " + sentBody);
         } finally {
             server.stop(0);
         }

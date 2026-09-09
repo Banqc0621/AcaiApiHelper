@@ -2231,6 +2231,9 @@ public class ApiTreePanel extends JPanel {
             Map<String, String> params = folderService.getParams(target.folder.getId(), target.api.uniqueKey());
             if (params == null || params.isEmpty()) params = aiService.generateDefaultParameters(target.api);
             profile.setParams(target.api.uniqueKey(), params);
+            // 收藏时保存的请求体（非 GET 接口实际发送时使用）
+            profile.setRequestBody(target.api.uniqueKey(),
+                    folderService.getBody(target.folder.getId(), target.api.uniqueKey()));
         }
         final List<ApiDependency> deps = dependencies == null ? Collections.emptyList() : dependencies;
         final int total = apis.size();
@@ -2553,6 +2556,9 @@ public class ApiTreePanel extends JPanel {
                 params = aiService.generateDefaultParameters(t.api);
             }
             profile.setParams(t.api.uniqueKey(), params);
+            // 收藏时保存的请求体（非 GET 接口实际发送时使用）
+            profile.setRequestBody(t.api.uniqueKey(),
+                    folderService.getBody(t.folder.getId(), t.api.uniqueKey()));
         }
 
         final java.util.List<ApiDefinition> apis = targets;

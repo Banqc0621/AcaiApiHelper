@@ -23,6 +23,8 @@ public class TestProfile {
     private String baseUrl = RestAutoLabConstants.DEFAULT_BASE_URL;
     /** 各接口的参数配置映射（接口uniqueKey -> 参数名到值的映射） */
     private Map<String, Map<String, String>> entries = new HashMap<>();
+    /** 各接口保存的请求体（接口uniqueKey -> 请求体文本），非 GET 接口使用 */
+    private Map<String, String> requestBodies = new HashMap<>();
     /** 全局请求头（如 Authorization、Content-Type） */
     private Map<String, String> globalHeaders = new HashMap<>();
     /** 创建时间 */
@@ -83,6 +85,31 @@ public class TestProfile {
      */
     public void setParams(String apiKey, Map<String, String> params) {
         entries.put(apiKey, new HashMap<>(params));
+        updatedAt = System.currentTimeMillis();
+    }
+
+    /**
+     * 获取指定接口保存的请求体
+     * @param apiKey 接口唯一标识
+     * @return 请求体文本，未配置时返回空字符串
+     */
+    public String getRequestBody(String apiKey) {
+        String body = requestBodies == null ? null : requestBodies.get(apiKey);
+        return body == null ? "" : body;
+    }
+
+    /**
+     * 设置指定接口保存的请求体（仅非 GET 接口实际使用）
+     * @param apiKey 接口唯一标识
+     * @param body   请求体文本
+     */
+    public void setRequestBody(String apiKey, String body) {
+        if (requestBodies == null) requestBodies = new HashMap<>();
+        if (body == null || body.isBlank()) {
+            requestBodies.remove(apiKey);
+        } else {
+            requestBodies.put(apiKey, body);
+        }
         updatedAt = System.currentTimeMillis();
     }
 

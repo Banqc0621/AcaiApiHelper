@@ -13,10 +13,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 回归测试：sendRequest 按 HTTP method 过滤参数行。
  * <ul>
- *   <li>POST/PUT/PATCH → 只发请求体（location=BODY/FILE 的行）</li>
- *   <li>GET/DELETE/HEAD 等 → 只发 path/query/header（location 非 BODY/FILE 的行）</li>
+ *   <li>只有 GET → 走参数（location 非 BODY/FILE 的行）</li>
+ *   <li>其他所有方法（POST/PUT/PATCH/DELETE/HEAD/OPTIONS…）→ 走请求体
+ *       （location=BODY/FILE 的行）</li>
  * </ul>
- * 这样避免 POST 请求同时把参数写进 query string + body 造成服务端重复解析。
+ * 这样避免非 GET 请求同时把参数写进 query string + body 造成服务端重复解析。
  */
 class ParamSendFilterTest {
 
@@ -31,15 +32,16 @@ class ParamSendFilterTest {
 
     @Test
     void isBodyMethod_recognizesStandardBodyMethods() {
+        // 规则：只有 GET 走参数，其余所有方法一律走请求体
         assertTrue(ApiDebuggerPanel.isBodyMethod("POST"));
         assertTrue(ApiDebuggerPanel.isBodyMethod("PUT"));
         assertTrue(ApiDebuggerPanel.isBodyMethod("PATCH"));
+        assertTrue(ApiDebuggerPanel.isBodyMethod("DELETE"));
+        assertTrue(ApiDebuggerPanel.isBodyMethod("HEAD"));
+        assertTrue(ApiDebuggerPanel.isBodyMethod("OPTIONS"));
         assertTrue(ApiDebuggerPanel.isBodyMethod("post"));  // 大小写不敏感
         assertTrue(ApiDebuggerPanel.isBodyMethod(" Post "));
         assertFalse(ApiDebuggerPanel.isBodyMethod("GET"));
-        assertFalse(ApiDebuggerPanel.isBodyMethod("DELETE"));
-        assertFalse(ApiDebuggerPanel.isBodyMethod("HEAD"));
-        assertFalse(ApiDebuggerPanel.isBodyMethod("OPTIONS"));
         assertFalse(ApiDebuggerPanel.isBodyMethod(null));
         assertFalse(ApiDebuggerPanel.isBodyMethod(""));
     }
