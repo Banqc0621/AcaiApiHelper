@@ -9,15 +9,15 @@ import com.intellij.openapi.project.Project;
 import java.util.*;
 
 /**
- * 依赖链批量测试执行器 - 按依赖顺序执行 API，自动传递响应值
+ * 依赖链批量测试执行器 - 按收藏夹顺序执行 API，自动传递响应值
  *
  * <p>核心能力：</p>
  * <ol>
- *   <li>拓扑排序：按依赖关系排列执行顺序，无依赖时按入参原顺序</li>
+ *   <li>收藏夹顺序：严格按调用方传入的收藏夹顺序执行，不做拓扑排序</li>
  *   <li>值提取：上游执行后从响应中按用户配置的点号路径提取 JSON 字段值</li>
  *   <li>值注入：下游执行前将提取值注入参数 Map</li>
- *   <li>失败不跳过（#93）：上游失败不阻塞下游请求，每个接口都会被执行；缺失依赖值时
- *       下游参数保留原占位，由 HTTP 自然失败暴露问题</li>
+ *   <li>发送门禁：上游未执行、失败、字段缺失/为空或目标参数不存在时，下游标记
+ *       {@link TestStatus#SKIPPED}，不发送 HTTP 请求</li>
  * </ol>
  *
  * <p>不修改 {@link HttpExecutorService}，直接调用其 {@code executeRequest()} 方法。</p>
@@ -63,7 +63,7 @@ public final class ChainTestExecutor {
      * @param profile      测试配置（含参数、baseUrl、全局请求头）
      * @param environment  环境变量（可为 null）
      * @param listener     进度回调（可为 null）
-     * @return 测试报告（每个接口都会包含一条结果，不存在 SKIPPED）
+     * @return 测试报告（每个收藏夹接口都包含一条结果，未满足依赖门禁的接口为 SKIPPED）
      */
     public TestReport execute(List<ApiDefinition> apis,
                               List<ApiDependency> dependencies,
@@ -73,6 +73,9 @@ public final class ChainTestExecutor {
         TestReport report = new TestReport();
         report.setTestName("依赖链测试");
         report.setStartTime(System.currentTimeMillis());
+
+        // 本批次唯一 ID，便于调用方在进度和结果中识别同一批测试。
+        final String batchId = "batch-" + report.getStartTime() + "-" + java.util.UUID.randomUUID();
 
         // 依赖配置可能来自较早版本或更大的收藏夹。只保留当前批次中存在的
         // producer/consumer，避免隐藏节点把当前批次错误地卡在入度队列中。
@@ -94,11 +97,13 @@ public final class ChainTestExecutor {
             }
         }
 
-        // 1. 拓扑排序（无依赖时退化为原顺序）
-        List<ApiDefinition> orderedApis = topologicalSort(inputApis, effectiveDependencies);
+        // 1. 收藏夹顺序就是执行顺序。依赖关系只负责值映射和下游发送门禁。
+        List<ApiDefinition> orderedApis = inputApis;
         int total = orderedApis.size();
 
-        // 2. 执行：一伦优化 #93，上游失败不跳过下游，每个接口都请求
+        // 2. 记录已经处理的结果和成功提取的值。未出现在 executionResults 中的
+        // producer 说明它在收藏夹中尚未执行，consumer 必须跳过。
+        Map<String, TestResult> executionResults = new LinkedHashMap<>();
         Map<String, Map<String, String>> extractedValues = new HashMap<>();
 
         // 一伦优化：把本次实际执行顺序一次性打印出来，方便用户从 IDE log 核对
@@ -114,19 +119,29 @@ public final class ChainTestExecutor {
             ApiDefinition api = orderedApis.get(i);
             LOG.info("[ChainTestExecutor] 第 " + (i + 1) + "/" + total + " 个：" + api.displayLabel());
 
-            // 取参数副本
-            Map<String, String> params = new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
+            Map<String, String> params = profile == null
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(profile.getParams(api.uniqueKey()));
+            String gateReason = dependencyGateReason(api, effectiveDependencies, executionResults,
+                    extractedValues);
+            TestResult result;
+            if (gateReason != null) {
+                result = skippedResult(api, batchId, gateReason);
+                LOG.info("[ChainTestExecutor] 跳过 " + api.displayLabel() + "：" + gateReason);
+            } else {
+                injectDependencies(api, params, effectiveDependencies, extractedValues);
+                result = httpExecutor.executeRequest(api,
+                        profile == null ? "" : profile.getBaseUrl(), params,
+                        profile == null ? Collections.emptyMap() : profile.getGlobalHeaders(),
+                        null, HttpExecutorService.BODY_FORMAT_JSON, environment, null);
+            }
+            result.setBatchId(batchId);
+            executionResults.put(api.uniqueKey(), result);
 
-            // 注入依赖值（上游字段缺失则参数保留原占位，请求自然失败）
-            injectDependencies(api, params, effectiveDependencies, extractedValues);
-
-            // 执行请求
-            TestResult result = httpExecutor.executeRequest(api, profile.getBaseUrl(), params,
-                    profile.getGlobalHeaders(), null, HttpExecutorService.BODY_FORMAT_JSON,
-                    environment, null);
-
-            // 提取响应值供下游使用（成功才提取）
-            extractProducerValues(api, result, effectiveDependencies, extractedValues);
+            // 提取响应值供后续收藏夹接口使用（只有真实成功才提取）
+            if (gateReason == null) {
+                extractProducerValues(api, result, effectiveDependencies, extractedValues);
+            }
 
             report.getResults().add(result);
             if (listener != null) {
@@ -139,83 +154,100 @@ public final class ChainTestExecutor {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 拓扑排序（Kahn 算法）
+    // 响应值提取与注入
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * 按依赖关系拓扑排序 API 列表
-     *
-     * <p>使用 Kahn 算法：反复移除入度为 0 的节点。
-     * 有环节点按原列表顺序追加，不会死循环。无依赖时严格保持入参顺序。</p>
+     * 检查一个 consumer 的所有依赖。返回 null 表示可以发送；否则返回用户可读的跳过原因。
      */
-    private List<ApiDefinition> topologicalSort(List<ApiDefinition> apis,
-                                                List<ApiDependency> deps) {
-        // 构建 key -> api 映射，保持原始顺序
-        Map<String, ApiDefinition> apiByKey = new LinkedHashMap<>();
-        for (ApiDefinition api : apis) {
-            apiByKey.put(api.uniqueKey(), api);
-        }
-
-        // 计算入度
-        Map<String, Integer> inDegree = new HashMap<>();
-        for (String key : apiByKey.keySet()) {
-            inDegree.put(key, 0);
-        }
+    private String dependencyGateReason(ApiDefinition consumer,
+                                        List<ApiDependency> deps,
+                                        Map<String, TestResult> executionResults,
+                                        Map<String, Map<String, String>> extractedValues) {
         for (ApiDependency dep : deps) {
-            if (apiByKey.containsKey(dep.getConsumerKey())) {
-                inDegree.merge(dep.getConsumerKey(), 1, Integer::sum);
+            if (!consumer.uniqueKey().equals(dep.getConsumerKey())) continue;
+            String producerKey = dep.getProducerKey();
+            TestResult producerResult = executionResults.get(producerKey);
+            if (producerResult == null) {
+                return "依赖上游尚未按收藏夹顺序执行（" + producerKey + "）";
             }
-        }
+            if (producerResult.getStatus() != TestStatus.PASSED) {
+                return "依赖上游未成功（" + producerKey + "：" + producerResult.getStatus() + "）";
+            }
 
-        // 邻接表：producerKey -> [consumerKey]
-        Map<String, List<String>> adjacency = new HashMap<>();
-        for (ApiDependency dep : deps) {
-            if (apiByKey.containsKey(dep.getProducerKey()) && apiByKey.containsKey(dep.getConsumerKey())) {
-                adjacency.computeIfAbsent(dep.getProducerKey(), k -> new ArrayList<>())
-                        .add(dep.getConsumerKey());
-            }
-        }
-
-        // Kahn 算法
-        List<ApiDefinition> sorted = new ArrayList<>();
-        // 用原始顺序的队列，保证同等优先级时保持用户选择顺序
-        Queue<String> queue = new LinkedList<>();
-        for (String key : apiByKey.keySet()) {
-            if (inDegree.getOrDefault(key, 0) == 0) {
-                queue.add(key);
-            }
-        }
-
-        while (!queue.isEmpty()) {
-            String key = queue.poll();
-            ApiDefinition api = apiByKey.get(key);
-            if (api != null) {
-                sorted.add(api);
-            }
-            for (String consumer : adjacency.getOrDefault(key, Collections.emptyList())) {
-                int newDeg = inDegree.merge(consumer, -1, Integer::sum);
-                if (newDeg == 0) {
-                    queue.add(consumer);
+            List<ApiDependency.ValueMapping> mappings = dep.getMappings() == null
+                    ? Collections.emptyList() : dep.getMappings();
+            if (mappings.isEmpty()) continue;
+            Map<String, String> producerValues = extractedValues.get(producerKey);
+            for (ApiDependency.ValueMapping mapping : mappings) {
+                if (mapping == null || mapping.getSourcePath() == null || mapping.getSourcePath().isBlank()) {
+                    return "依赖映射缺少上游响应字段路径";
+                }
+                String target = mapping.getTargetParam() == null ? "" : mapping.getTargetParam().trim();
+                if (target.isEmpty()) return "依赖映射缺少下游目标参数";
+                if (!containsParameterPath(consumer, target)) {
+                    return "下游参数不存在（" + target + "）";
+                }
+                String source = mapping.getSourcePath().trim();
+                String value = producerValues == null ? null : producerValues.get(source);
+                if (value == null || value.isBlank() || "null".equalsIgnoreCase(value.trim())) {
+                    return "上游响应字段缺失或为空（" + source + "）";
                 }
             }
         }
-
-        // 有环节点按原顺序追加
-        if (sorted.size() < apis.size()) {
-            LOG.warn("检测到循环依赖，环中节点按原始顺序执行");
-            for (ApiDefinition api : apis) {
-                if (!sorted.contains(api)) {
-                    sorted.add(api);
-                }
-            }
-        }
-
-        return sorted;
+        return null;
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 响应值提取与注入
-    // ═══════════════════════════════════════════════════════════
+    /** 递归判断目标参数是否存在，兼容 request.id 这类嵌套参数路径。 */
+    private boolean containsParameterPath(ApiDefinition api, String targetPath) {
+        if (api == null || targetPath == null || targetPath.isBlank()) return false;
+        String normalized = targetPath.trim();
+        if (api.getParameters() == null) return false;
+        for (ApiParameter root : api.getParameters()) {
+            if (root == null || root.getName() == null) continue;
+            String rootName = root.getName().trim();
+            if (normalized.equals(rootName)) return true;
+            String prefix = rootName + ".";
+            if (normalized.startsWith(prefix)
+                    && containsChildPath(root, normalized.substring(prefix.length()))) return true;
+            // 兼容配置里直接保存 child.path 而不带复杂对象根名的旧格式。
+            if (containsChildPath(root, normalized)) return true;
+        }
+        return false;
+    }
+
+    private boolean containsChildPath(ApiParameter parent, String path) {
+        if (parent == null || path == null || path.isBlank() || parent.getChildren() == null) return false;
+        String[] parts = path.split("\\.");
+        ApiParameter current = parent;
+        for (String raw : parts) {
+            String segment = raw == null ? "" : raw.trim();
+            if (segment.isEmpty() || current.getChildren() == null) return false;
+            ApiParameter next = null;
+            for (ApiParameter child : current.getChildren()) {
+                if (child != null && segment.equals(child.getName())) {
+                    next = child;
+                    break;
+                }
+            }
+            if (next == null) return false;
+            current = next;
+        }
+        return true;
+    }
+
+    private TestResult skippedResult(ApiDefinition api, String batchId, String reason) {
+        TestResult result = new TestResult(api);
+        result.setStatus(TestStatus.SKIPPED);
+        result.setErrorMessage(reason);
+        result.setRequestUrl("");
+        result.setRequestBody("");
+        result.setRequestParameters(Collections.emptyMap());
+        result.setRequestHeaders(Collections.emptyMap());
+        result.setTimestamp(System.currentTimeMillis());
+        result.setBatchId(batchId);
+        return result;
+    }
 
     /**
      * 从执行结果中提取所有以该 API 为 producer 的响应值

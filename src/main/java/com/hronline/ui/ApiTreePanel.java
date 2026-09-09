@@ -20,7 +20,6 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
@@ -2128,8 +2127,8 @@ public class ApiTreePanel extends JPanel {
         if (f == null) { Messages.showWarningDialog(project, "请先选中一个文件夹", "批量测试"); return; }
         List<FolderApiTarget> targets = collectSubtreeTargets(f);
         if (targets.isEmpty()) { Messages.showInfoMessage(project, "该文件夹（含子目录）无接口", "批量测试"); return; }
-        // 收藏夹批量测试必须复用依赖链执行器：拓扑排序保证上游完成后再发下游，
-        // 并把依赖设置中保存的字段映射注入下游参数。没有保存依赖时传空边，
+        // 收藏夹批量测试必须复用依赖链执行器：收藏夹顺序决定发送顺序，
+        // 依赖设置只负责字段映射和下游发送门禁。没有保存依赖时传空边，
         // 执行器会按收藏夹顺序串行执行，仍然不会并发乱序。
         List<ApiDependency> dependencies = savedDependenciesForSubtree(f);
         executeStarredChainBatch(targets, dependencies, "批量测试");
@@ -2210,7 +2209,7 @@ public class ApiTreePanel extends JPanel {
         if (targets == null || targets.isEmpty()) return;
 
         // uniqueKey 是依赖图节点标识。同一接口重复出现在子文件夹时，依赖关系无法区分
-        // 两个实例，按收藏树首次出现的位置执行一次，避免拓扑排序丢失节点/进度错误。
+        // 两个实例，按收藏树首次出现的位置执行一次，避免重复节点造成历史和进度歧义。
         LinkedHashMap<String, FolderApiTarget> firstTargetByKey = new LinkedHashMap<>();
         for (FolderApiTarget target : targets) {
             if (target != null && target.api != null) {
@@ -3109,13 +3108,16 @@ public class ApiTreePanel extends JPanel {
             }
             if (jarFile == null || !jarFile.isValid()) return null;
             final VirtualFile localJar = jarFile;
-            VirtualFile entry = ReadAction.compute(() -> {
+            // ReadAction.compute(ThrowableComputable) 已弃用，改用 runReadAction(Computable)；
+            // 显式声明目标类型，避免 Computable/ThrowableComputable 重载歧义
+            com.intellij.openapi.util.Computable<VirtualFile> jarRootLookup = () -> {
                 try {
                     return JarFileSystem.getInstance().getRootByLocal(localJar);
                 } catch (Exception ex) {
                     return null;
                 }
-            });
+            };
+            VirtualFile entry = ApplicationManager.getApplication().runReadAction(jarRootLookup);
             if (entry == null || !entry.isValid()) return null;
             VirtualFile inside = VfsUtil.findRelativeFile(entry, entryPath.split("/"));
             return (inside != null && inside.isValid()) ? inside : null;
@@ -3147,23 +3149,30 @@ public class ApiTreePanel extends JPanel {
         String fileName = recordedPath.substring(recordedPath.lastIndexOf('/') + 1);
         if (fileName.isBlank()) return null;
         try {
-            return com.intellij.openapi.application.ReadAction.compute(() -> {
-                com.intellij.psi.PsiFile[] files = com.intellij.psi.search.FilenameIndex.getFilesByName(
-                        project, fileName, com.intellij.psi.search.GlobalSearchScope.projectScope(project));
-                if (files.length == 0) return null;
+            // ReadAction.compute(ThrowableComputable) 已弃用，改用 runReadAction(Computable)；
+            // FilenameIndex.getFilesByName(Project,String,GlobalSearchScope) 已弃用，
+            // 改用 getVirtualFilesByName（直接返回 VirtualFile 集合）。显式声明目标类型，
+            // 避免 Computable/ThrowableComputable 重载歧义
+            com.intellij.openapi.util.Computable<VirtualFile> fileLookup = () -> {
+                java.util.Collection<VirtualFile> files = com.intellij.psi.search.FilenameIndex
+                        .getVirtualFilesByName(project, fileName, true,
+                                com.intellij.psi.search.GlobalSearchScope.projectScope(project));
+                if (files.isEmpty()) return null;
                 // 优先：路径后缀与记录路径一致（同包同名文件）。
                 // jar!/ 路径取 !/ 之后的条目路径做后缀，避免误命中项目里同名但不同包的类
                 String suffix = recordedPath.replace('\\', '/');
                 int jarSep = suffix.indexOf("!/");
                 if (jarSep >= 0) suffix = suffix.substring(jarSep + 2);
-                for (com.intellij.psi.PsiFile f : files) {
-                    if (f.getVirtualFile() != null
-                            && f.getVirtualFile().getPath().replace('\\', '/').endsWith(suffix)) {
-                        return f.getVirtualFile();
+                VirtualFile single = null;
+                for (VirtualFile f : files) {
+                    if (single == null) single = f;
+                    if (f != null && f.getPath().replace('\\', '/').endsWith(suffix)) {
+                        return f;
                     }
                 }
-                return files.length == 1 ? files[0].getVirtualFile() : null;
-            });
+                return files.size() == 1 ? single : null;
+            };
+            return ApplicationManager.getApplication().runReadAction(fileLookup);
         } catch (Exception ex) {
             LOG.warn("按文件名回退查找失败: " + recordedPath, ex);
             return null;

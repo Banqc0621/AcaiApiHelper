@@ -6,7 +6,9 @@ import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Round 7（重构）+ 一伦优化 #67：异常自定义规则判定器。
@@ -45,6 +47,18 @@ public final class ExceptionRuleEvaluator {
      */
     public static Result evaluateRules(List<ExceptionRule> rules, int statusCode, @Nullable String responseBody) {
         if (rules == null || rules.isEmpty()) return Result.passed();
+
+        // 同一响应字段同时配置 HTTP_VALUE（白名单）和 FIELD_VALUE（告警黑名单）时，
+        // 白名单是更明确的成功判定。命中白名单后不再被旧的 FIELD_VALUE 默认规则二次判红。
+        Set<String> httpValueFields = new HashSet<>();
+        for (ExceptionRule rule : rules) {
+            if (rule == null || !rule.isEnabled() || rule.getType() != ExceptionRule.RuleType.HTTP_VALUE) continue;
+            List<String> expected = rule.getExpectedValues();
+            String field = normalizeFieldName(rule.getFieldName());
+            if (!field.isEmpty() && expected != null && !expected.isEmpty()) {
+                httpValueFields.add(field);
+            }
+        }
 
         // 预解析 body 一次，给 FIELD_VALUE 复用
         com.google.gson.JsonElement parsed = null;
@@ -104,6 +118,11 @@ public final class ExceptionRuleEvaluator {
                     // 黑名单语义（#67）：值在黑名单 = 异常；不在黑名单 = 正常
                     String fname = normalizeFieldName(r.getFieldName());
                     if (fname.isEmpty()) continue;
+                    if (httpValueFields.contains(fname)) {
+                        // 同字段 HTTP_VALUE 白名单已负责判定，避免 code=500
+                        // 同时出现在历史 FIELD_VALUE 黑名单时被错误覆盖为失败。
+                        continue;
+                    }
                     if (parsed == null || !parsed.isJsonObject()) {
                         return Result.failed("接口响应不是 JSON 对象，规则 [字段=" + fname + "] 无法校验");
                     }

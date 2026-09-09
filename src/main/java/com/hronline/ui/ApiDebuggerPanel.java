@@ -205,6 +205,7 @@ public class ApiDebuggerPanel extends JPanel {
         // v3: 加载历史记录
         RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
         requestHistory = settings.loadRequestHistory();
+        sortRequestHistoryByTimestamp();
 
         setupUI();
         initParameterTableInteractions();
@@ -2047,8 +2048,8 @@ public class ApiDebuggerPanel extends JPanel {
 
         suppressBodyUndo = true;
         bodyUndoManager.discardAllEdits();
-        String method = api.getHttpMethod();
-        if (method.equals("POST") || method.equals("PUT") || method.equals("PATCH")) {
+        String method = api.getHttpMethod() == null ? "" : api.getHttpMethod().trim();
+        if (!"GET".equalsIgnoreCase(method)) {
             bodyEditor.setText(generateDefaultBody(api));
         } else {
             bodyEditor.setText("");
@@ -2330,11 +2331,9 @@ public class ApiDebuggerPanel extends JPanel {
             return;
         }
 
-        Map<String, String> params = collectParameterValues();
-        // 一伦优化 #68：按 HTTP method 过滤参数行 —— POST/PUT/PATCH 只取 BODY/FILE 行，其他 method 只取 path/query/header。
-        // 抽到 PreRequestProcessor.apply 之前，避免前置脚本看到无关行干扰用户预期。
-        boolean bodyOnly = isBodyMethod(currentApi.getHttpMethod());
-        params = filterParamsByMethod(paramTableModel, bodyOnly, false);
+        // GET 只发送 PATH/QUERY 参数；其他方法把业务数据放入请求体，PATH 仍保留用于
+        // 替换 URL 模板（例如 DELETE /users/{id}）。
+        Map<String, String> params = collectParameterValues(false);
         Map<String, String> headers = collectHeaderValues();
         String body = bodyEditor.getText();
         String requestBody = (body != null && !body.isBlank()) ? body : null;
@@ -2576,14 +2575,43 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     private Map<String, String> collectParameterValues() {
-        return filterParamsByMethod(paramTableModel, false, true);
+        return collectParameterValues(true);
+    }
+
+    private Map<String, String> collectParameterValues(boolean includeBlank) {
+        boolean bodyMethod = isBodyMethod(currentApi == null ? null : currentApi.getHttpMethod());
+        Map<String, String> values = filterParamsByMethod(paramTableModel, bodyMethod, includeBlank);
+        if (bodyMethod) {
+            // 非 GET 的业务参数走 body，但 PATH 参数仍必须传给 URL 替换逻辑。
+            filterParamsByLocation(paramTableModel, "PATH", includeBlank).forEach(values::put);
+        }
+        return values;
+    }
+
+    private static Map<String, String> filterParamsByLocation(DefaultTableModel model,
+                                                                String location,
+                                                                boolean includeBlank) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (model == null) return values;
+        for (int i = 0; i < model.getRowCount(); i++) {
+            Object name = model.getValueAt(i, 0);
+            Object position = model.getValueAt(i, 2);
+            if (!(name instanceof String) || !(position instanceof String)
+                    || !location.equalsIgnoreCase((String) position)) continue;
+            String key = ((String) name).trim();
+            if (key.isEmpty()) continue;
+            Object raw = model.getValueAt(i, 3);
+            String value = raw == null ? "" : String.valueOf(raw);
+            if (includeBlank || !value.isBlank()) values.put(key, value);
+        }
+        return values;
     }
 
     /**
      * 按 HTTP method 过滤参数行后收集 name → value：
      * <ul>
-     *   <li>{@code bodyOnly=true}（POST/PUT/PATCH）→ 只保留位置 = BODY 或 FILE 的行</li>
-     *   <li>{@code bodyOnly=false}（GET/DELETE/HEAD 等）→ 只保留位置 != BODY 且 != FILE 的行（path/query/header）</li>
+     *   <li>{@code bodyOnly=true}（所有非 GET）→ 只保留位置 = BODY、FORM 或 FILE 的行</li>
+     *   <li>{@code bodyOnly=false}（GET）→ 只保留非 body 行（path/query/header）</li>
      * </ul>
      * 抽成 static + 接受 model 是为了便于单测（不依赖 IntelliJ Platform / Project）。
      *
@@ -2596,7 +2624,9 @@ public class ApiDebuggerPanel extends JPanel {
             Object positionObj = model.getValueAt(i, 2);
             String position = positionObj instanceof String ? (String) positionObj : "";
             // BODY + FILE 都归类为 body 侧（FILE multipart 也走 body）
-            boolean isBodySide = "BODY".equalsIgnoreCase(position) || "FILE".equalsIgnoreCase(position);
+            boolean isBodySide = "BODY".equalsIgnoreCase(position)
+                    || "FORM".equalsIgnoreCase(position)
+                    || "FILE".equalsIgnoreCase(position);
             if (bodyOnly ? !isBodySide : isBodySide) continue;
             Object name = model.getValueAt(i, 0);
             Object value = model.getValueAt(i, 3);
@@ -2611,16 +2641,16 @@ public class ApiDebuggerPanel extends JPanel {
     }
 
     /**
-     * 判断 HTTP method 是否需要带请求体（决定参数过滤方向）。
+     * 判断 HTTP method 是否使用请求体（唯一的参数模式是 GET）。
      * <ul>
-     *   <li>true → bodyOnly=true：只取 BODY/FILE 行</li>
-     *   <li>false → bodyOnly=false：只取非 BODY/FILE 行（path/query/header）</li>
+     *   <li>true → bodyOnly=true：只取 BODY/FORM/FILE 行，另加 PATH 用于 URL</li>
+     *   <li>false → bodyOnly=false：只取 PATH/QUERY/HEADER 行</li>
      * </ul>
      */
     static boolean isBodyMethod(String method) {
-        if (method == null) return false;
+        if (method == null || method.trim().isEmpty()) return false;
         String m = method.trim().toUpperCase(Locale.ROOT);
-        return m.equals("POST") || m.equals("PUT") || m.equals("PATCH");
+        return !m.equals("GET");
     }
 
     /** 收集参数表全部行（含空值），用于收藏模式下回写各文件夹的实时参数快照。 */
@@ -3038,7 +3068,7 @@ public class ApiDebuggerPanel extends JPanel {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             HttpExecutorService http = HttpExecutorService.getInstance(project);
             TestResult r = http.executeRequest(currentApi, baseUrlField.getText().trim(),
-                    collectParameterValues(), collectHeaderValues(),
+                    collectParameterValues(false), collectHeaderValues(),
                     bodyEditor.getText(), testBodyFormat,
                     getCurrentEnvironment(), new ArrayList<>(currentAssertions));
             ApplicationManager.getApplication().invokeLater(() -> {
@@ -4607,6 +4637,7 @@ public class ApiDebuggerPanel extends JPanel {
     /** 历史区永远展示全量记录；标题固定为"全部接口"，方便用户理解"按接口过滤"已被取消。 */
     private void refreshHistoryList() {
         if (historyListModel == null) return;
+        sortRequestHistoryByTimestamp();
         historyListModel.clear();
         List<RequestHistory> visible = getVisibleHistory();
         for (RequestHistory h : visible) historyListModel.addElement(h);
@@ -4624,6 +4655,29 @@ public class ApiDebuggerPanel extends JPanel {
         Runnable refresh = this::refreshHistoryList;
         if (ApplicationManager.getApplication().isDispatchThread()) refresh.run();
         else ApplicationManager.getApplication().invokeLater(refresh);
+    }
+
+    /**
+     * 批量测试完成后的兼容入口。历史顺序由每条请求的真实发起时间决定，
+     * 不再按收藏夹顺序整批搬到顶部，否则会覆盖“最新发起时间在上”的语义。
+     */
+    public void reorderBatchHistoryToFront(String batchId, java.util.List<String> apiKeyOrder) {
+        Runnable apply = () -> {
+            sortRequestHistoryByTimestamp();
+            refreshHistoryList();
+            persistHistory();
+        };
+        if (ApplicationManager.getApplication().isDispatchThread()) apply.run();
+        else ApplicationManager.getApplication().invokeLater(apply);
+    }
+
+    private void sortRequestHistoryByTimestamp() {
+        if (requestHistory == null) {
+            requestHistory = new ArrayList<>();
+            return;
+        }
+        requestHistory.removeIf(Objects::isNull);
+        requestHistory.sort(Comparator.comparingLong(RequestHistory::getTimestamp).reversed());
     }
 
     /** 清除响应区当前展示，保持"清空当前接口历史"后的结果区语义一致。 */
@@ -4782,7 +4836,11 @@ public class ApiDebuggerPanel extends JPanel {
         h.setErrorMessage(result.getErrorMessage());
         // 一伦优化 #93：历史区展示的时间应该是"请求完成时间"，addToHistory 调用时刻不准。
         h.setTimestamp(result.getTimestamp());
-        requestHistory.add(0, h);
+        // 一伦优化 #93：批量测试的条目打上 batchId，整批跑完后由 ApiTreePanel 入口
+        // 调 reorderBatchHistoryToFront(batchId, apiKeyOrder) 整块按收藏夹顺序排好。
+        h.setBatchId(result.getBatchId());
+        requestHistory.add(h);
+        sortRequestHistoryByTimestamp();
         // 限制历史记录数量
         while (requestHistory.size() > RestAutoLabConstants.MAX_HISTORY_SIZE) {
             requestHistory.remove(requestHistory.size() - 1);

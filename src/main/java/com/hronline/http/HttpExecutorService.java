@@ -26,6 +26,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HTTP请求执行服务 - 负责构建和发送HTTP请求
@@ -49,6 +50,8 @@ public final class HttpExecutorService {
 
     /** HTTP客户端实例，配置合理的超时参数 */
     private final HttpClient httpClient;
+    /** 历史时间必须反映发起顺序；同一毫秒内的批量请求也要保持可排序。 */
+    private final AtomicLong lastRequestTimestamp = new AtomicLong();
 
     /** 请求体格式常量 */
     public static final String BODY_FORMAT_JSON = "JSON";
@@ -107,7 +110,16 @@ public final class HttpExecutorService {
                                      Map<String, String> extraHeaders, String requestBody,
                                      String bodyFormat, Environment environment,
                                      List<ResponseAssertion> assertions) {
-        long startTime = System.currentTimeMillis();
+        // 耗时必须从真实系统时间计算；历史排序时间单独保证同毫秒请求仍有稳定顺序。
+        long requestStartMillis = System.currentTimeMillis();
+        long historyTimestamp = nextRequestTimestamp();
+        String method = api == null || api.getHttpMethod() == null
+                ? "" : api.getHttpMethod().trim().toUpperCase(Locale.ROOT);
+        boolean getRequest = "GET".equals(method);
+        Map<String, String> historyParameters = getRequest
+                ? new LinkedHashMap<>(paramValues == null ? Collections.emptyMap() : paramValues)
+                : new LinkedHashMap<>();
+        String historyBody = "";
         // 在构建请求 URL 后即保存快照；网络/解析异常也要把最终 URL写入历史，
         // 不能退回 /users/{id} 这类模板路径。
         String fullUrl = null;
@@ -125,7 +137,12 @@ public final class HttpExecutorService {
             byte[] multipartBytes = null;
             String requestBodyDisplay;
 
-            if (hasFileParam && !BODY_FORMAT_RAW.equals(bodyFormat)) {
+            if (getRequest) {
+                // GET 的请求数据只来自 path/query 参数，忽略编辑器中的 body。
+                body = null;
+                contentType = resolveContentType(api, bodyFormat);
+                requestBodyDisplay = "";
+            } else if (hasFileParam && !BODY_FORMAT_RAW.equals(bodyFormat)) {
                 // 文件上传：构建 multipart/form-data 请求体
                 MultipartBody multipart = buildMultipartBody(api, paramValues, environment);
                 multipartBytes = multipart.bytes;
@@ -146,6 +163,8 @@ public final class HttpExecutorService {
                 requestBodyDisplay = body != null ? body : "";
             }
 
+            historyBody = getRequest ? "" : requestBodyDisplay;
+
             // 3. 构建HttpRequest
             HttpRequest request = buildHttpRequest(api.getHttpMethod(), fullUrl, body, multipartBytes, contentType,
                     api, extraHeaders, environment);
@@ -153,7 +172,7 @@ public final class HttpExecutorService {
             // 4. 发送请求并接收响应
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            long duration = System.currentTimeMillis() - startTime;
+            long duration = System.currentTimeMillis() - requestStartMillis;
 
             // 5. 构建测试结果
             TestResult result = new TestResult();
@@ -162,12 +181,11 @@ public final class HttpExecutorService {
             result.setResponseBody(formatResponseBody(response.body()));
             result.setResponseHeaders(extractResponseHeaders(response));
             result.setRequestUrl(fullUrl);
-            result.setRequestBody(requestBodyDisplay);
-            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
-                    ? Collections.emptyMap() : paramValues));
+            result.setRequestBody(historyBody);
+            result.setRequestParameters(historyParameters);
             result.setRequestHeaders(buildRequestHeaders(api, extraHeaders, contentType, environment));
             result.setDurationMs(duration);
-            result.setTimestamp(System.currentTimeMillis());
+            result.setTimestamp(historyTimestamp);
 
             // 7. 执行断言（先执行自定义断言，再根据预期状态码判定）
             boolean passed = true;
@@ -250,13 +268,12 @@ public final class HttpExecutorService {
             result.setStatus(TestStatus.CANCELLED);
             result.setErrorMessage("请求已取消");
             result.setRequestUrl(fullUrl != null ? fullUrl : (api == null ? "" : api.getUrl()));
-            result.setRequestBody(requestBody == null ? "" : requestBody);
-            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
-                    ? Collections.emptyMap() : paramValues));
+            result.setRequestBody(historyBody);
+            result.setRequestParameters(historyParameters);
             result.setRequestHeaders(new LinkedHashMap<>(extraHeaders == null
                     ? Collections.emptyMap() : extraHeaders));
-            result.setDurationMs(System.currentTimeMillis() - startTime);
-            result.setTimestamp(System.currentTimeMillis());
+            result.setDurationMs(System.currentTimeMillis() - requestStartMillis);
+            result.setTimestamp(historyTimestamp);
             if (historyListener != null) {
                 historyListener.onRequestCompleted(result);
             }
@@ -264,7 +281,7 @@ public final class HttpExecutorService {
                     + (api == null ? "" : api.getUrl()));
             return result;
         } catch (Exception e) {
-            long duration = System.currentTimeMillis() - startTime;
+            long duration = System.currentTimeMillis() - requestStartMillis;
             log.warn("请求异常: " + (api == null ? "" : api.getHttpMethod()) + " "
                     + (api == null ? "" : api.getUrl()) + " - " + e.getMessage());
 
@@ -273,19 +290,23 @@ public final class HttpExecutorService {
             result.setStatus(TestStatus.ERROR);
             result.setErrorMessage(e.getClass().getSimpleName() + ": " + e.getMessage());
             result.setRequestUrl(fullUrl != null ? fullUrl : (api == null ? "" : api.getUrl()));
-            result.setRequestBody(requestBody == null ? "" : requestBody);
-            result.setRequestParameters(new LinkedHashMap<>(paramValues == null
-                    ? Collections.emptyMap() : paramValues));
+            result.setRequestBody(historyBody);
+            result.setRequestParameters(historyParameters);
             result.setRequestHeaders(new LinkedHashMap<>(extraHeaders == null
                     ? Collections.emptyMap() : extraHeaders));
             result.setDurationMs(duration);
-            result.setTimestamp(System.currentTimeMillis());
+            result.setTimestamp(historyTimestamp);
 
             if (historyListener != null) {
                 historyListener.onRequestCompleted(result);
             }
             return result;
         }
+    }
+
+    private long nextRequestTimestamp() {
+        long now = System.currentTimeMillis();
+        return lastRequestTimestamp.updateAndGet(previous -> Math.max(now, previous + 1));
     }
 
     /** 为断言失败生成始终可见的中文原因，避免状态码断言只显示一个红色叉号。 */
@@ -443,10 +464,13 @@ public final class HttpExecutorService {
             url = url.replace("{" + param.getName() + "}", URLEncoder.encode(value, StandardCharsets.UTF_8));
         }
 
-        // 查询参数拼接
+        String method = api.getHttpMethod() == null ? "" : api.getHttpMethod().trim().toUpperCase(Locale.ROOT);
+        // 只有 GET 使用 query 参数；非 GET 的业务数据统一进入请求体。
         List<String> queryParams = new ArrayList<>();
-        for (ApiParameter param : api.queryParameters()) {
-            String value = paramValues.get(param.getName());
+        List<ApiParameter> queryParameters = "GET".equals(method)
+                ? api.queryParameters() : Collections.emptyList();
+        for (ApiParameter param : queryParameters) {
+            String value = paramValues == null ? null : paramValues.get(param.getName());
             if (value != null) {
                 value = resolveEnvVars(value, env);
                 queryParams.add(URLEncoder.encode(param.getName(), StandardCharsets.UTF_8)
@@ -468,8 +492,13 @@ public final class HttpExecutorService {
      */
     private String buildRequestBody(ApiDefinition api, Map<String, String> paramValues, String bodyFormat,
                                     Environment environment) {
-        String method = api.getHttpMethod().toUpperCase();
-        if (RestAutoLabConstants.METHODS_WITHOUT_BODY.contains(method)) return null;
+        String method = api == null || api.getHttpMethod() == null
+                ? "" : api.getHttpMethod().trim().toUpperCase(Locale.ROOT);
+        // 只有 GET 的业务数据来自 URL 参数；其余方法（包括 DELETE/HEAD/OPTIONS）
+        // 统一允许请求体，避免编辑器中保存的 body 被静默丢弃。
+        if ("GET".equals(method)) return null;
+
+        Map<String, String> values = paramValues == null ? Collections.emptyMap() : paramValues;
 
         List<ApiParameter> bodyParams = api.bodyParameters();
         List<ApiParameter> formParams = api.formParameters();
@@ -479,7 +508,7 @@ public final class HttpExecutorService {
             // 收集BODY参数和FORM参数
             Map<String, String> formData = new LinkedHashMap<>();
             for (ApiParameter param : bodyParams) {
-                String value = paramValues.get(param.getName());
+                String value = values.get(param.getName());
                 if (value != null) {
                     formData.put(param.getName(), resolveEnvVars(value, environment));
                 } else {
@@ -487,7 +516,7 @@ public final class HttpExecutorService {
                 }
             }
             for (ApiParameter param : formParams) {
-                String value = paramValues.get(param.getName());
+                String value = values.get(param.getName());
                 if (value != null) {
                     formData.put(param.getName(), resolveEnvVars(value, environment));
                 } else {
@@ -514,11 +543,11 @@ public final class HttpExecutorService {
                         ? parseComplexBodyValue(param.generateDefaultValue())
                         : parseComplexBodyValue(resolveEnvVars(value, environment));
                 Map<String, Object> objectValue = asMutableObject(complexValue);
-                if (objectValue == null && hasNestedOverrides(param, paramValues)) {
+                if (objectValue == null && hasNestedOverrides(param, values)) {
                     objectValue = new LinkedHashMap<>();
                 }
                 if (objectValue != null) {
-                    applyNestedOverrides(param, objectValue, paramValues, environment);
+                    applyNestedOverrides(param, objectValue, values, environment);
                     jsonMap.put(param.getName(), objectValue);
                 } else if (value != null) {
                     jsonMap.put(param.getName(), parseValueByType(
@@ -784,7 +813,7 @@ public final class HttpExecutorService {
             case "GET" -> builder.GET();
             case "POST" -> builder.POST(bodyPublisher);
             case "PUT" -> builder.PUT(bodyPublisher);
-            case "DELETE" -> builder.DELETE();
+            case "DELETE" -> builder.method("DELETE", bodyPublisher);
             case "PATCH" -> builder.method("PATCH", bodyPublisher);
             case "HEAD" -> builder.method("HEAD", HttpRequest.BodyPublishers.noBody());
             case "OPTIONS" -> builder.method("OPTIONS", HttpRequest.BodyPublishers.noBody());
