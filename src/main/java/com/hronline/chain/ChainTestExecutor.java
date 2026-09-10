@@ -128,11 +128,14 @@ public final class ChainTestExecutor {
             // 保存的请求体是用户编辑时定稿的静态内容，注入的依赖值必须合并进去，
             // 否则下游历史记录里看到的入参永远不是上游响应的真实内容。
             String savedBody = profile == null ? "" : profile.getRequestBody(api.uniqueKey());
-            savedBody = mergeInjectedValuesIntoBody(savedBody, injectedParams, params);
+            String mergedBody = mergeInjectedValuesIntoBody(savedBody, injectedParams, params);
+            if (!injectedParams.isEmpty()) {
+                LOG.info("注入后最终请求体: " + api.uniqueKey() + " -> " + mergedBody);
+            }
             TestResult result = httpExecutor.executeRequest(api,
                     profile == null ? "" : profile.getBaseUrl(), params,
                     profile == null ? Collections.emptyMap() : profile.getGlobalHeaders(),
-                    savedBody.isBlank() ? null : savedBody,
+                    mergedBody.isBlank() ? null : mergedBody,
                     HttpExecutorService.BODY_FORMAT_JSON, environment, null);
             result.setBatchId(batchId);
 
@@ -157,11 +160,13 @@ public final class ChainTestExecutor {
      * 从执行结果中提取所有以该 API 为 producer 的响应值
      * 一伦优化 #94：按用户配置的点号路径直接抽取，不再做硬编码 data./result. 前缀猜测。
      * 嵌套路径（如 {@code data.user.name}）通过 ResponseAssertion 的点号解析器直接走通。
+     * <p>不按 PASSED 门禁过滤：上游即使被异常规则/预期状态码判为失败，响应里仍可能
+     * 包含下游需要的字段；提取不到时下游自然回退保存的原值，与「不跳过下游」一致。</p>
      */
     private void extractProducerValues(ApiDefinition api, TestResult result,
                                        List<ApiDependency> deps,
                                        Map<String, Map<String, String>> extractedValues) {
-        if (result == null || result.getStatus() != TestStatus.PASSED) return;
+        if (result == null) return;
         String responseBody = result.getResponseBody();
         if (responseBody == null || responseBody.isEmpty()) return;
 
@@ -205,9 +210,21 @@ public final class ChainTestExecutor {
                 if (key.isEmpty()) continue;
                 String value = producerValues.get(key);
                 if (value != null) {
-                    params.put(mapping.getTargetParam(), value);
-                    injected.add(mapping.getTargetParam());
-                    LOG.info("注入依赖值: " + consumer.uniqueKey() + " ." + mapping.getTargetParam() + " = " + value);
+                    String targetParam = mapping.getTargetParam();
+                    params.put(targetParam, value);
+                    injected.add(targetParam);
+                    // 目标参数可能是点号路径（如 login.username）：若下游请求体实际是
+                    // 扁平结构（只有顶层 username），按完整 key 永远匹配不上，注入值会被
+                    // 静默丢弃。因此同时注册叶子名，保证参数构建/请求体合并都能命中。
+                    int dot = targetParam == null ? -1 : targetParam.lastIndexOf('.');
+                    if (dot >= 0 && dot < targetParam.length() - 1) {
+                        String leaf = targetParam.substring(dot + 1).trim();
+                        if (!leaf.isEmpty()) {
+                            params.put(leaf, value);
+                            injected.add(leaf);
+                        }
+                    }
+                    LOG.info("注入依赖值: " + consumer.uniqueKey() + " ." + targetParam + " = " + value);
                 }
             }
         }
@@ -217,7 +234,8 @@ public final class ChainTestExecutor {
     /**
      * 把注入的依赖值合并进已保存的 JSON 请求体。
      * <p>只合并本次真正注入的参数（{@code injected}），避免把用户编辑时保存的普通参数
-     * 值也覆盖进请求体。支持 {@code a.b.c} 嵌套路径：缺失的中间层级会自动创建。</p>
+     * 值也覆盖进请求体。目标路径真实存在时原位覆盖；路径不存在时回退覆盖同名叶子字段，
+     * 绝不凭空创建嵌套结构（详见 {@link #setInjectedValue}）。</p>
      * <p>请求体为空或非 JSON 对象时原样返回（如 GET / RAW 场景由调用方保证）。</p>
      */
     private String mergeInjectedValuesIntoBody(String savedBody, Set<String> injected,
@@ -233,7 +251,7 @@ public final class ChainTestExecutor {
                 if (target == null || target.isBlank()) continue;
                 String value = params.get(target);
                 if (value == null) continue;
-                setNestedJson(obj, target.trim().split("\\."), value);
+                setInjectedValue(obj, target.trim().split("\\."), value);
             }
             return obj.toString();
         } catch (Exception e) {
@@ -242,23 +260,56 @@ public final class ChainTestExecutor {
         }
     }
 
-    /** 按路径段逐层写入 JSON 对象；中间层级缺失或非对象时自动替换为对象。 */
-    private void setNestedJson(com.google.gson.JsonObject root, String[] segments, String value) {
+    /**
+     * 把注入值写进已保存的请求体，且不允许改变请求体的结构：
+     * <ol>
+     *   <li>目标路径在请求体中真实存在 → 原位覆盖（如真实存在 login.username）；</li>
+     *   <li>完整路径不存在但叶子字段同名存在于任意层级 → 覆盖叶子字段
+     *       （如目标 login.username 而请求体只有顶层 username，此时绝不能
+     *       凭空创建 login 包装，否则下游会多出新增字段）；</li>
+     *   <li>都找不到 → 顶层新增叶子字段（路径本身就是新字段的情况）。</li>
+     * </ol>
+     */
+    private void setInjectedValue(com.google.gson.JsonObject root, String[] segments, String value) {
+        if (segments.length == 0) return;
         com.google.gson.JsonObject current = root;
+        boolean pathExists = true;
         for (int i = 0; i < segments.length - 1; i++) {
             String seg = segments[i].trim();
-            if (seg.isEmpty()) return;
+            if (seg.isEmpty()) { pathExists = false; break; }
             com.google.gson.JsonElement child = current.get(seg);
-            if (child == null || !child.isJsonObject()) {
-                com.google.gson.JsonObject created = new com.google.gson.JsonObject();
-                current.add(seg, created);
-                current = created;
-            } else {
+            if (child != null && child.isJsonObject()) {
                 current = child.getAsJsonObject();
+            } else {
+                pathExists = false;
+                break;
             }
         }
         String leaf = segments[segments.length - 1].trim();
         if (leaf.isEmpty()) return;
-        current.addProperty(leaf, value);
+
+        if (pathExists) {
+            current.addProperty(leaf, value);
+            return;
+        }
+        // 完整路径不存在：优先覆盖任意层级的同名叶子字段，避免凭空创建嵌套结构
+        com.google.gson.JsonObject owner = findLeafOwner(root, leaf);
+        if (owner != null) {
+            owner.addProperty(leaf, value);
+        } else {
+            root.addProperty(leaf, value);
+        }
+    }
+
+    /** 深度优先查找第一个包含指定叶子字段的 JSON 对象；找不到返回 null。 */
+    private com.google.gson.JsonObject findLeafOwner(com.google.gson.JsonObject root, String leaf) {
+        if (root.has(leaf)) return root;
+        for (com.google.gson.JsonElement child : root.entrySet().stream()
+                .filter(e -> e.getValue() != null && e.getValue().isJsonObject())
+                .map(Map.Entry::getValue).collect(java.util.stream.Collectors.toList())) {
+            com.google.gson.JsonObject found = findLeafOwner(child.getAsJsonObject(), leaf);
+            if (found != null) return found;
+        }
+        return null;
     }
 }

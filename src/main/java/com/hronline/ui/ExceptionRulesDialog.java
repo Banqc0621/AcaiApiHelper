@@ -2,6 +2,7 @@ package com.hronline.ui;
 
 import com.hronline.model.ExceptionRule;
 import com.hronline.settings.RestAutoLabSettingsState;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
@@ -66,7 +67,7 @@ public class ExceptionRulesDialog extends DialogWrapper {
 
     /**
      * Round 7（重构）：异常自定义面板组件 —— 可独立嵌入到任意 Dialog / JTabbedPane。
-     * 无顶部按钮栏：规则表格的「操作」列内置「新增 / 删除」按钮；
+     * 表格上方常驻「新增规则」按钮；表格「操作」列内提供「新增 / 删除」；
      * 保存统一由外层弹窗的「应用 / 确定」触发 {@link #commitRules()}。
      * 规则对项目内所有接口生效，不挂具体接口。
      */
@@ -95,7 +96,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
             }
         };
         private final JBTable table = new JBTable(tableModel);
-        private final JLabel statusLabel = new JLabel(" ");
 
         public ExceptionRulesPanel(@NotNull Project project) {
             super(new BorderLayout(0, 6));
@@ -103,7 +103,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
             setBorder(JBUI.Borders.empty(8));
             add(buildHeader(), BorderLayout.NORTH);
             add(buildCenter(), BorderLayout.CENTER);
-            add(buildStatusBar(), BorderLayout.SOUTH);
             configureTable();
             loadRules();
             applyEnabledState();
@@ -121,44 +120,26 @@ public class ExceptionRulesDialog extends DialogWrapper {
         }
 
         private JComponent buildCenter() {
-            JPanel center = new JPanel(new BorderLayout(0, 4));
-            // 无顶部按钮栏：新增/删除都在表格「操作」列内；保存走弹窗「应用」。
+            JPanel center = new JPanel(new BorderLayout(0, 6));
+
+            // 顶部工具栏：常驻「+ 新增规则」按钮，位置固定、样式醒目，
+            // 表格一条记录都没有时也能从这里新增第一条。
+            JButton addButton = new JButton(AllIcons.General.Add);
+            addButton.setText("新增规则");
+            addButton.addActionListener(e -> addRuleRow(tableModel.getRowCount()));
+            JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+            toolbar.setOpaque(false);
+            toolbar.add(addButton);
+
             JScrollPane scroll = new JScrollPane(table);
             scroll.setPreferredSize(JBUI.size(680, 260));
+            center.add(toolbar, BorderLayout.NORTH);
             center.add(scroll, BorderLayout.CENTER);
             return center;
         }
 
-        private JComponent buildStatusBar() {
-            statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 12f));
-            statusLabel.setForeground(JBColor.BLUE);
-
-            // 底部常驻「+ 新增规则」入口：表格里一条记录都没有时操作列没有可点的
-            // 按钮行，靠它新增第一条；新增后仍统一点「应用」保存。
-            JLabel addLink = new JLabel("＋ 新增规则");
-            addLink.setForeground(JBColor.BLUE);
-            addLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            addLink.addMouseListener(new MouseAdapter() {
-                @Override public void mouseClicked(MouseEvent e) {
-                    if (table.isEnabled()) addRuleRow(tableModel.getRowCount());
-                }
-            });
-
-            JPanel south = new JPanel(new BorderLayout(8, 0));
-            south.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-                    JBUI.Borders.empty(4, 8)));
-            south.setOpaque(true);
-            south.setBackground(JBColor.PanelBackground);
-            south.add(addLink, BorderLayout.WEST);
-            south.add(statusLabel, BorderLayout.CENTER);
-            return south;
-        }
-
         private void applyEnabledState() {
             table.setEnabled(true);
-            statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● 当前共 " + tableModel.getRowCount() + " 条全局规则；新增/编辑后点「应用」保存");
         }
 
         private void configureTable() {
@@ -236,8 +217,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
                         addRuleRow(modelRow + 1);
                     } else {
                         tableModel.removeRow(modelRow);
-                        statusLabel.setForeground(JBColor.BLUE);
-                        statusLabel.setText("● 已删除第 " + (modelRow + 1) + " 行，点「应用」保存");
                     }
                 }
             });
@@ -251,8 +230,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
                     ExceptionRule.RuleType.HTTP_VALUE, "", "200", Boolean.TRUE, ""});
             table.setRowSelectionInterval(row, row);
             table.scrollRectToVisible(table.getCellRect(row, 0, true));
-            statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● 已新增规则，HTTP_VALUE 默认白名单 [200]，请按需修改后点「应用」保存");
         }
 
         private void loadRules() {
@@ -340,8 +317,6 @@ public class ExceptionRulesDialog extends DialogWrapper {
                 table.setRowSelectionInterval(row, row);
                 table.scrollRectToVisible(table.getCellRect(row, COL_EXPECTED, true));
             }
-            statusLabel.setForeground(JBColor.RED);
-            statusLabel.setText("● 规则未保存：" + message);
             Messages.showErrorDialog(project,
                     "第 " + (row + 1) + " 条规则：\n" + message,
                     "异常规则校验失败");
@@ -364,15 +339,10 @@ public class ExceptionRulesDialog extends DialogWrapper {
                 rules.add(new ExceptionRule(type, fname, values, Boolean.TRUE.equals(enObj)));
             }
             RestAutoLabSettingsState.getInstance(project).saveExceptionRules(rules);
-            statusLabel.setForeground(JBColor.BLUE);
-            statusLabel.setText("● ✓ 已保存 " + rules.size() + " 条全局规则到项目设置（" + java.time.LocalTime.now().withNano(0) + "）");
             return true;
         }
 
         /** 给 DialogWrapper / EnvAndDataManageDialog 的兼容入口。 */
         public void commit() { commitRules(); }
-
-        /** 给 ApiDebuggerPanel 在打开 dialog 前拿到状态文本用。 */
-        public String getCurrentStatus() { return statusLabel.getText(); }
     }
 }

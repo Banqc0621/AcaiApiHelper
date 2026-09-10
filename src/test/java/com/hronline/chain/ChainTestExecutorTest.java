@@ -179,6 +179,56 @@ class ChainTestExecutorTest {
     }
 
     /**
+     * 上游被异常规则/预期状态码判为 FAILED 时，响应体里的依赖值仍要提取注入，
+     * 不能因为判定失败就丢掉（否则用户改异常规则后依赖注入会"突然失效"）。
+     */
+    @Test
+    void extractsDependencyValuesEvenWhenUpstreamIsMarkedFailed() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> downstreamUrls = new CopyOnWriteArrayList<>();
+        server.createContext("/login", exchange -> {
+            byte[] body = "{\"data\":{\"id\":\"77\"}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(500, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/", exchange -> {
+            downstreamUrls.add(exchange.getRequestURI().toString());
+            byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            ApiDefinition login = api("GET", "/login");
+            login.setExpectedStatusCodes(java.util.Set.of(200)); // 500 会被判为 FAILED
+            ApiDefinition boxes = api("GET", "/boxes/{id}");
+            boxes.setParameters(new ArrayList<>(List.of(parameter("id", ParameterLocation.PATH))));
+
+            ApiDependency dependency = new ApiDependency(login.uniqueKey(), boxes.uniqueKey());
+            dependency.getMappings().add(new ApiDependency.ValueMapping("data.id", "id"));
+
+            TestProfile profile = new TestProfile("收藏夹", baseUrl(server));
+            profile.setParams(login.uniqueKey(), Map.of());
+            profile.setParams(boxes.uniqueKey(), Map.of("id", "old"));
+            List<TestResult> results = new ArrayList<>();
+
+            new ChainTestExecutor(new HttpExecutorService(null)).execute(
+                    List.of(login, boxes), List.of(dependency), profile, null,
+                    (result, current, total) -> results.add(result));
+
+            assertEquals(TestStatus.FAILED, results.get(0).getStatus());
+            assertEquals(TestStatus.PASSED, results.get(1).getStatus());
+            assertEquals("/boxes/77", pathOnly(results.get(1).getRequestUrl()),
+                    "上游判失败不影响依赖值提取注入");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
      * 问题 1 回归：非 GET 接口的依赖值必须合并进「已保存的请求体」，而不是只写进
      * paramValues。否则下游历史记录里看到的入参永远不是上游响应的真实内容。
      * <p>上游 /login 返回 {@code data.id=42}，下游 POST /submit 保存的请求体是
@@ -230,6 +280,65 @@ class ChainTestExecutorTest {
             assertTrue(sentBody.contains("\"id\":\"42\""),
                     "注入的上游值必须覆盖请求体中的同名字段，实际: " + sentBody);
             assertTrue(sentBody.contains("\"name\":\"x\""),
+                    "未注入的字段必须保留原值，实际: " + sentBody);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * 回归：目标参数写的是嵌套路径（如 login.username），但已保存的请求体是扁平结构
+     * （只有顶层 username）时，注入必须覆盖顶层同名字段，绝不能凭空创建
+     * {@code "login":{...}} 包装 —— 那会让下游请求多出用户没配置的新增字段。
+     */
+    @Test
+    void doesNotCreateNestedWrapperWhenBodyIsFlat() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> downstreamBodies = new CopyOnWriteArrayList<>();
+        server.createContext("/verify", exchange -> {
+            byte[] body = "{\"data\":{\"username\":\"滑块验证数据不能为空\"}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/auth/companyAdminLogin", exchange -> {
+            downstreamBodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        try {
+            ApiDefinition verify = api("GET", "/verify");
+            ApiDefinition login = api("POST", "/auth/companyAdminLogin");
+            login.setParameters(new ArrayList<>(List.of(parameter("username", ParameterLocation.BODY))));
+
+            ApiDependency dependency = new ApiDependency(verify.uniqueKey(), login.uniqueKey());
+            // 目标参数是嵌套写法，但下游请求体实际是扁平的
+            dependency.getMappings().add(new ApiDependency.ValueMapping("data.username", "login.username"));
+
+            TestProfile profile = new TestProfile("收藏夹", baseUrl(server));
+            profile.setParams(verify.uniqueKey(), Map.of());
+            profile.setParams(login.uniqueKey(), Map.of("login.username", "old"));
+            profile.setRequestBody(login.uniqueKey(),
+                    "{\"username\":\"12312\",\"password\":\"123456\",\"loginType\":\"0\",\"verifyCode\":\"1\"}");
+
+            List<TestResult> results = new ArrayList<>();
+            new ChainTestExecutor(new HttpExecutorService(null)).execute(
+                    List.of(verify, login), List.of(dependency), profile, null,
+                    (result, current, total) -> results.add(result));
+
+            assertEquals(TestStatus.PASSED, results.get(0).getStatus());
+            assertEquals(TestStatus.PASSED, results.get(1).getStatus());
+            assertEquals(1, downstreamBodies.size());
+            String sentBody = downstreamBodies.get(0);
+            assertTrue(sentBody.contains("\"username\":\"滑块验证数据不能为空\""),
+                    "注入值必须覆盖顶层同名字段，实际: " + sentBody);
+            assertTrue(!sentBody.contains("\"login\":"),
+                    "请求体中不能出现新增的 login 包装字段，实际: " + sentBody);
+            assertTrue(sentBody.contains("\"password\":\"123456\""),
                     "未注入的字段必须保留原值，实际: " + sentBody);
         } finally {
             server.stop(0);
