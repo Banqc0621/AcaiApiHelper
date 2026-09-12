@@ -163,8 +163,10 @@ public class ApiParameter {
         if (lowerName.contains("code") || lowerName.contains("no") || lowerName.contains("number")) {
             return "A10001";
         }
-        // 年龄字段
-        if (lowerName.contains("age")) {
+        // 年龄字段：仅全词匹配（age / userAge / user_age / ageXxx），
+        // 避免 page、image、message、storage 等含 "age" 子串的字段被误填 25
+        if (lowerName.equals("age") || lowerName.endsWith("_age") || name.endsWith("Age")
+                || (name.startsWith("age") && name.length() > 3 && Character.isUpperCase(name.charAt(3)))) {
             return "25";
         }
         // 金额/价格字段

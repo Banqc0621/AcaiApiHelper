@@ -45,6 +45,56 @@ public final class StarredFolderService {
         return RestAutoLabSettingsState.getInstance(project);
     }
 
+    /**
+     * 「收藏文件夹」导入描述：一棵待导入的文件夹子树。
+     * <p>由 UI 层从全量/最新视图的 Controller 节点递归构建，
+     * {@link #importFolderStructure(List)} 按同样层级创建收藏文件夹。</p>
+     */
+    public static final class FolderImportSpec {
+        public String name;
+        public final List<String> apiKeys = new ArrayList<>();
+        public final List<FolderImportSpec> children = new ArrayList<>();
+    }
+
+    /**
+     * 按原树形结构递归创建收藏文件夹并收纳接口（全量列表右键「收藏文件夹」）。
+     *
+     * <p>与手工新建一致：重名自动加 (2)、(3) 后缀，不覆盖/合并已有同名文件夹；
+     * 嵌套子文件夹保持原层级；同一接口允许同时存在于多个收藏文件夹。</p>
+     *
+     * @return 实际新增收藏的接口总数（用于日志/提示）
+     */
+    public int importFolderStructure(List<FolderImportSpec> specs) {
+        if (specs == null || specs.isEmpty()) return 0;
+        List<StarredFolder> folders = loadFolders();
+        int addedApis = 0;
+        for (FolderImportSpec spec : specs) {
+            if (spec != null) addedApis += importFolderStructureRec(folders, spec, null);
+        }
+        if (addedApis > 0 || !specs.isEmpty()) {
+            settings().saveStarredFolders(folders);
+            syncStarredSet(folders);
+        }
+        return addedApis;
+    }
+
+    private int importFolderStructureRec(List<StarredFolder> folders, FolderImportSpec spec, String parentId) {
+        String rawName = spec.name == null || spec.name.isBlank() ? "未命名" : spec.name.trim();
+        StarredFolder folder = new StarredFolder(
+                UUID.randomUUID().toString(), uniqueFolderName(folders, rawName), parentId);
+        for (String key : spec.apiKeys) {
+            if (key != null && !key.isBlank() && !folder.getApiKeys().contains(key)) {
+                folder.getApiKeys().add(key);
+            }
+        }
+        folders.add(folder);
+        int count = folder.getApiKeys().size();
+        for (FolderImportSpec child : spec.children) {
+            if (child != null) count += importFolderStructureRec(folders, child, folder.getId());
+        }
+        return count;
+    }
+
     // ==================== 文件夹 CRUD ====================
 
     /** 加载全部文件夹（保证「未分类」在首位） */

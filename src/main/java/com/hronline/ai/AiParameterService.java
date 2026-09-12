@@ -56,19 +56,19 @@ public final class AiParameterService {
     }
 
     /**
-     * 构造 Authorization Header 值。
+     * 给请求构建器附加 Authorization Header。
      * <p>规则：</p>
      * <ul>
-     *   <li>需要鉴权的自部署模型网关（token 非空、非字面量 "Bearer"）：返回 <code>Bearer {token}</code></li>
-     *   <li>不鉴权的自部署模型网关（token 为空）：返回 <code>Bearer Bearer</code> 占位值</li>
-     *   <li>不鉴权的自部署模型网关（token 为字面量 "Bearer"）：返回 <code>Bearer Bearer</code> 占位值</li>
+     *   <li>API Key 为空：网关不鉴权，不添加 Authorization 头</li>
+     *   <li>API Key 非空：发送 <code>Bearer {token}</code></li>
      * </ul>
      */
-    private String buildAuthHeader(String token) {
-        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(token)) {
-            return RestAutoLabConstants.BEARER_PREFIX + RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN;
+    private HttpRequest.Builder applyAuthHeader(HttpRequest.Builder builder, String token) {
+        if (token == null || token.isBlank()) {
+            return builder;
         }
-        return RestAutoLabConstants.BEARER_PREFIX + token;
+        return builder.header(RestAutoLabConstants.HEADER_AUTHORIZATION,
+                RestAutoLabConstants.BEARER_PREFIX + token.trim());
     }
 
     /**
@@ -112,8 +112,8 @@ public final class AiParameterService {
             log.info("[AI生成参数] 跳过(简版)：自部署模型网关地址未配置，使用默认值生成策略");
             return generateDefaultParameters(api, scenario);
         }
-        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
-            log.info("[AI生成参数] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
+        if (settings.getAiToken().isBlank()) {
+            log.info("[AI生成参数] API Key 为空，将不携带 Authorization 头调用自部署模型网关");
         }
 
         try {
@@ -178,8 +178,8 @@ public final class AiParameterService {
                     "自部署模型网关地址未配置，请在「AI配置」中填写网关地址"
             );
         }
-        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
-            log.info("[AI生成参数] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
+        if (settings.getAiToken().isBlank()) {
+            log.info("[AI生成参数] API Key 为空，将不携带 Authorization 头调用自部署模型网关");
         }
 
         try {
@@ -236,11 +236,12 @@ public final class AiParameterService {
                 + ", stream=false"
                 + ", 请求体长度=" + requestJson.length());
 
-        HttpRequest request = HttpRequest.newBuilder()
+        // API Key 为空时不携带 Authorization 头（网关不鉴权）；非空时发送 Bearer {token}
+        HttpRequest request = applyAuthHeader(HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
-                .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE),
+                settings.getAiToken())
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -304,11 +305,12 @@ public final class AiParameterService {
                 + ", model=" + settings.getAiModel()
                 + ", 请求体长度=" + requestJson.length());
 
-        HttpRequest request = HttpRequest.newBuilder()
+        // API Key 为空时不携带 Authorization 头（网关不鉴权）；非空时发送 Bearer {token}
+        HttpRequest request = applyAuthHeader(HttpRequest.newBuilder()
                 .uri(URI.create(fullUrl))
                 .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
-                .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE),
+                settings.getAiToken())
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
@@ -1027,8 +1029,8 @@ public final class AiParameterService {
             log.info("[AI生成断言] 跳过：自部署模型网关地址未配置，生成默认断言");
             return generateDefaultAssertions(api);
         }
-        if (RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken())) {
-            log.info("[AI生成断言] 检测到不鉴权的自部署模型网关，将使用占位 Bearer 调用");
+        if (settings.getAiToken().isBlank()) {
+            log.info("[AI生成断言] API Key 为空，将不携带 Authorization 头调用自部署模型网关");
         }
 
         try {
@@ -1046,11 +1048,11 @@ public final class AiParameterService {
                     + ", stream=false"
                     + ", 请求体长度=" + requestJson.length());
 
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest request = applyAuthHeader(HttpRequest.newBuilder()
                     .uri(URI.create(fullUrl))
                     .timeout(Duration.ofSeconds(RestAutoLabConstants.AI_REQUEST_TIMEOUT_SECONDS))
-                    .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE)
-                    .header(RestAutoLabConstants.HEADER_AUTHORIZATION, buildAuthHeader(settings.getAiToken()))
+                    .header(RestAutoLabConstants.HEADER_CONTENT_TYPE, RestAutoLabConstants.DEFAULT_CONTENT_TYPE),
+                    settings.getAiToken())
                     .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                     .build();
 

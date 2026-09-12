@@ -120,9 +120,9 @@ public class ApiDebuggerPanel extends JPanel {
     private boolean suppressBodyUndo = false;
     private boolean suppressParameterUndo = false;
     private List<Object[]> parameterUndoSnapshot = Collections.emptyList();
-    // ── 响应区（v2.0.0：JsonSyntaxPane 提供语法高亮 + Ctrl+滚轮缩放 + 右键菜单）──
+    // ── 响应区（JsonSyntaxPane 提供 JSON 语法高亮）──
     private final JBTextArea responseArea = new JBTextArea();
-    /** 响应文本视图：带 JSON 语法高亮 / 缩放 / 右键菜单的高亮面板（responseArea 仅作后台数据兼容） */
+    /** 响应文本视图：带 JSON 语法高亮的面板（responseArea 仅作后台数据兼容） */
     private final JsonSyntaxPane responsePane = new JsonSyntaxPane();
     /** 当前响应视图是否为树形（true=树形，false=文本） */
     private boolean responseViewTree = false;
@@ -135,17 +135,6 @@ public class ApiDebuggerPanel extends JPanel {
     /** #78/#85：异常信息条。网络 ERROR 或业务规则 FAILED 且有原因时可见，承载完整文本，避开底部 statusLabel。 */
     private final JBLabel responseErrorLabel = new JBLabel();
     private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
-    /** 一伦优化 #94：响应面板整体折叠状态。默认折叠（状态行可见 + 主体隐藏），有响应或用户点击展开才显示完整面板。 */
-    private boolean responseContentCollapsed = true;
-    /** 展开态主体容器（内容 + 底部按钮），折叠时整块隐藏。 */
-    private JPanel responseBodyContainer;
-    /** 一伦优化 #96：保存调试器垂直 splitter 的引用，折叠/展开后 revalidate/repaint。 */
-    private JBSplitter debuggerSplitter;
-    /** 一伦优化 #99：单个 toggle 按钮，文字在「展开响应」/「收起响应」间切换，纯文字无图标，跟就绪 label 等大。 */
-    private JButton responseToggleBtn;
-    /** 一伦优化 #100：保存 createResponsePanel 返回的响应面板本尊，折叠时整体隐藏让请求区占满。 */
-    private JPanel responsePanelRoot;
-
     private final JBTextArea testResultArea = new JBTextArea();
     
     // 批量测试状态控制
@@ -264,49 +253,13 @@ public class ApiDebuggerPanel extends JPanel {
         installSplitterHint(splitter);
         add(splitter, BorderLayout.CENTER);
 
-        // 一伦优化 #101：保留 splitter 引用，仅用于折叠/展开后 revalidate/repaint。
-        // 比例不再由折叠逻辑干预——折叠态靠「第二组件不可见」让请求区占满，
-        // 展开时 proportion 走 setSplitterProportionKey 持久化的值，自然恢复用户偏好。
-        this.debuggerSplitter = splitter;
-
         // 底部状态栏
-        // 一伦优化 #97：把响应面板的展开/收起按钮挪到这一行，跟 statusLabel 同行同字体。
-        // 响应面板本身不再单独有 toggle 行，折叠时整个响应面板完全隐藏，只留底部这行的按钮。
         JPanel bottomPanel = new JPanel(new BorderLayout());
         bottomPanel.setBorder(UiStyle.topDivider());
         UiStyle.hint(statusLabel);
         statusLabel.setText("就绪");
-        // 左侧：statusLabel，右侧：响应面板展开/收起按钮（hint 同字体）
-        JPanel bottomLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        bottomLeft.setOpaque(false);
-        bottomLeft.add(statusLabel);
-        bottomPanel.add(bottomLeft, BorderLayout.WEST);
-        // 一伦优化 #99：右侧只放一个 toggle 按钮，纯文字，跟 statusLabel 同一行同一字号同一灰度。
-        // 之前用两个独立按钮 + 图标 → 图标本身 16px 比 11pt 文字高，壳子比 label 大一圈；
-        // 两个按钮同时存在也违反 toggle 的语义。
-        responseToggleBtn = new JButton("展开响应");
-        responseToggleBtn.addActionListener(e -> setResponseContentCollapsed(!responseContentCollapsed));
-        // 完全套 statusLabel 的样式（UiStyle.hint 走的是 PLAIN 11f + JBColor.GRAY）
-        Font hintFont = statusLabel.getFont();
-        responseToggleBtn.setFont(hintFont);
-        responseToggleBtn.setForeground(JBColor.GRAY);
-        // 彻底扁平化 —— 无边框/无背景/无留白/无焦点高亮，跟 JLabel 视觉等高
-        responseToggleBtn.setBorder(BorderFactory.createEmptyBorder());
-        responseToggleBtn.setMargin(new Insets(0, 0, 0, 0));
-        responseToggleBtn.setContentAreaFilled(false);
-        responseToggleBtn.setFocusPainted(false);
-        responseToggleBtn.setBorderPainted(false);
-        responseToggleBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        responseToggleBtn.setToolTipText("展开/收起接口响应面板");
-        JPanel bottomRight = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        bottomRight.setOpaque(false);
-        bottomRight.add(responseToggleBtn);
-        bottomPanel.add(bottomRight, BorderLayout.EAST);
+        bottomPanel.add(statusLabel, BorderLayout.WEST);
         add(bottomPanel, BorderLayout.SOUTH);
-
-        // 一伦优化 #99：构造完 bottomPanel 后再调一次 applyResponseCollapsedState，
-        // 让 toggleBtn 文字和 splitter 初始比例都跟默认折叠状态同步。
-        applyResponseCollapsedState();
 
         // ── v2.0.0 交互增强：body 编辑器撤销/折叠 ──
         // 响应层常驻显示，"切到响应Tab重置视图"逻辑已不再适用，移除 initResponseTabListener
@@ -1545,11 +1498,7 @@ public class ApiDebuggerPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 0));
         panel.setBorder(JBUI.Borders.empty(0));
 
-        // === 一伦优化 #97：响应面板 = 仅响应内容 + 底部按钮 ===
-        // 状态行（状态/耗时/大小/展开收起）已移到外层底部栏，跟请求结果摘要同行同字体。
-        // 折叠时整个响应面板完全隐藏；展开时显示。
-
-        // 主体：内容 + 底部按钮
+        // 响应面板 = 响应内容 + 底部按钮；状态行（状态/耗时/大小）在外层底部栏。
         JPanel responseBodyContainer = new JPanel(new BorderLayout(0, 4));
         responseBodyContainer.setBorder(JBUI.Borders.empty(4, 4, 4, 4));
 
@@ -1561,7 +1510,6 @@ public class ApiDebuggerPanel extends JPanel {
 
         // 内容区：文本 + 树形
         responsePane.setEditable(false);
-        responsePane.setToolTipText("提示：Ctrl+滚轮 或 Ctrl++/- 可缩放字体，右键提供复制/全选/缩放");
         JScrollPane textScroll = new JBScrollPane(responsePane);
         textScroll.setBorder(JBUI.Borders.empty());
         textScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
@@ -1613,52 +1561,7 @@ public class ApiDebuggerPanel extends JPanel {
         // 兼容旧字段（响应面板不再展示告警文字 / 状态）
         responseErrorPanel.setVisible(false);
 
-        this.responseBodyContainer = responseBodyContainer;
-
-        // 一伦优化 #100：保留响应面板本尊引用，折叠时 splitter 第二组件会换成 0 高占位面板，
-        // 上区域才能贴底——只 setVisible(false) 容器仍占它能"想要"的高度。
-        this.responsePanelRoot = panel;
-
-        // 默认折叠
-        applyResponseCollapsedState();
         return panel;
-    }
-
-    /** 一伦优化 #97：切换响应面板整体折叠状态。 */
-    private void setResponseContentCollapsed(boolean collapsed) {
-        this.responseContentCollapsed = collapsed;
-        applyResponseCollapsedState();
-    }
-
-    /** 一伦优化 #96/97/99/101：根据折叠状态同步主体可见性 + toggle 按钮文字。 */
-    private void applyResponseCollapsedState() {
-        // 单按钮 toggle：文字随状态切换
-        if (responseToggleBtn != null) {
-            responseToggleBtn.setText(responseContentCollapsed ? "展开响应" : "收起响应");
-        }
-
-        // 主体可见性：折叠时彻底隐藏；展开时显示
-        if (responseBodyContainer != null) {
-            responseBodyContainer.setVisible(!responseContentCollapsed);
-        }
-
-        // 一伦优化 #101：折叠时把整个响应面板本尊设为不可见。
-        // JBSplitter.doLayout 检测到「第二组件不可见」时走单组件分支——
-        // 隐藏 divider、第一组件（请求区）直接占满整个 splitter。
-        // 之前用「换 0 高占位面板 + 压 proportion 到 0.95」仍残留
-        // 8px divider + 5% 高度的空白，导致上区域不贴底。
-        if (responsePanelRoot != null) {
-            responsePanelRoot.setVisible(!responseContentCollapsed);
-        }
-
-        if (responseBodyContainer != null && responseBodyContainer.getParent() != null) {
-            responseBodyContainer.getParent().revalidate();
-            responseBodyContainer.getParent().repaint();
-        }
-        if (debuggerSplitter != null) {
-            debuggerSplitter.revalidate();
-            debuggerSplitter.repaint();
-        }
     }
 
     private JSeparator createSeparator() {
@@ -2489,15 +2392,11 @@ public class ApiDebuggerPanel extends JPanel {
         String body = result.getResponseBody() == null ? "" : result.getResponseBody();
         responseArea.setText(body);
         responseArea.setCaretPosition(0);
-        // v2.0.0：响应文本视图走 JsonSyntaxPane（语法高亮 + 缩放）
+        // 响应文本视图走 JsonSyntaxPane（语法高亮）
         responsePane.setTextAndHighlight(body);
         responsePane.setCaretPosition(0);
         responseCardLayout.show(responseContentPanel, "text");
         responseViewTree = false;
-        // 一伦优化 #92：拿到响应后自动展开响应内容区（哪怕 body 为空，方便用户手动点展开按钮）
-        if (responseContentCollapsed) {
-            setResponseContentCollapsed(false);
-        }
         buildResponseJsonTree(result.getResponseBody());
 
         // 一伦优化 #5：响应已独立为底部常驻层，无需切 Tab
@@ -3654,7 +3553,6 @@ public class ApiDebuggerPanel extends JPanel {
         private final JBPasswordField keyField;
         private final JBTextField apiPathField;
         private final JComboBox<String> modelField;
-        private final JCheckBox localModelCheck;
         private final JBTextArea systemPromptArea;
         private final JBTextArea userPromptArea;
 
@@ -3668,7 +3566,8 @@ public class ApiDebuggerPanel extends JPanel {
             urlField.setToolTipText("例如: http://localhost:8000/v1 或 http://model-gateway.internal/v1");
             keyField = new JBPasswordField();
             keyField.setText(settings.getAiToken());
-            keyField.setToolTipText("自部署模型网关的 Bearer Token（无需带 'Bearer ' 前缀，插件会自动加）；网关不鉴权时可留空");
+            keyField.setToolTipText("自部署模型网关的 Bearer Token（无需带 'Bearer ' 前缀，插件会自动加）；"
+                    + "网关不鉴权时可留空，留空则请求不携带 Authorization 头");
 
             JButton toggleKeyBtn = new JButton(AllIcons.Actions.Preview);
             toggleKeyBtn.setToolTipText("显示/隐藏 API Key 内容");
@@ -3699,29 +3598,6 @@ public class ApiDebuggerPanel extends JPanel {
             modelField.setEditable(true);
             modelField.setSelectedItem(settings.getAiModel());
             modelField.setToolTipText("选择或输入模型名称，如 Qwen3.5-35B-A3B");
-
-            localModelCheck = new JCheckBox("自部署模型（API Key 自动填为 Bearer 占位）");
-            localModelCheck.setSelected(RestAutoLabConstants.isSelfHostedGatewayWithoutToken(settings.getAiToken()));
-            localModelCheck.setToolTipText("<html>勾选后 API Key 字段自动填入字面量 <b>Bearer</b> 并禁用编辑。<br>"
-                    + "调用时发送 <code>Authorization: Bearer Bearer</code>，满足 vLLM/Qwen 等网关要求。<br>"
-                    + "自部署模型网关不鉴权时可保留占位值；需要鉴权时请填入网关 Token。</html>");
-            if (localModelCheck.isSelected()) {
-                keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
-            }
-            localModelCheck.addActionListener(e -> {
-                if (localModelCheck.isSelected()) {
-                    keyField.setText(RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN);
-                    keyField.setEnabled(false);
-                    toggleKeyBtn.setEnabled(false);
-                } else {
-                    keyField.setText("");
-                    keyField.setEnabled(true);
-                    toggleKeyBtn.setEnabled(true);
-                    keyField.requestFocusInWindow();
-                }
-            });
-            keyField.setEnabled(!localModelCheck.isSelected());
-            toggleKeyBtn.setEnabled(!localModelCheck.isSelected());
 
             systemPromptArea = new JBTextArea(settings.getAiSystemPrompt());
             systemPromptArea.setLineWrap(true);
@@ -3777,23 +3653,20 @@ public class ApiDebuggerPanel extends JPanel {
             gbc.gridx = 1; gbc.weightx = 1;
             form.add(modelField, gbc);
 
-            gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
-            form.add(localModelCheck, gbc);
-
             JBLabel hintLabel = new JBLabel("<html><i>"
                     + "自部署模型：填写模型网关地址，按网关要求配置 Token 和 API 路径；<br>"
-                    + "网关不鉴权时可勾选'自部署模型'，API Key 自动填为 <b>Bearer</b> 占位。"
+                    + "API Key 留空表示网关不鉴权，请求将不携带 Authorization 头。"
                     + "</i></html>");
             hintLabel.setFont(hintLabel.getFont().deriveFont(Font.PLAIN, 10f));
             hintLabel.setForeground(JBColor.GRAY);
-            gbc.gridy = 5;
+            gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
             form.add(hintLabel, gbc);
 
-            gbc.gridy = 6; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
+            gbc.gridy = 5; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
             JSeparator sep1 = new JSeparator();
             form.add(sep1, gbc);
 
-            gbc.gridy = 7; gbc.fill = GridBagConstraints.NONE;
+            gbc.gridy = 6; gbc.fill = GridBagConstraints.NONE;
             JBLabel promptHeader = new JBLabel("AI 提示词自定义");
             promptHeader.setFont(promptHeader.getFont().deriveFont(Font.BOLD, 12f));
             promptHeader.setForeground(JBColor.BLUE);
@@ -3807,13 +3680,13 @@ public class ApiDebuggerPanel extends JPanel {
             systemPromptToggle.setHorizontalAlignment(SwingConstants.LEFT);
             systemPromptToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
             systemPromptToggle.setFont(systemPromptToggle.getFont().deriveFont(Font.BOLD, 11f));
-            gbc.gridy = 8; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1; gbc.weighty = 0;
+            gbc.gridy = 7; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1; gbc.weighty = 0;
             form.add(systemPromptToggle, gbc);
 
             JPanel systemPromptContent = new JPanel(new BorderLayout());
             systemPromptContent.add(systemPromptScroll, BorderLayout.CENTER);
             systemPromptContent.setVisible(false);
-            gbc.gridy = 9; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.35;
+            gbc.gridy = 8; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.35;
             form.add(systemPromptContent, gbc);
 
             final boolean[] userPromptExpanded = {false};
@@ -3824,16 +3697,16 @@ public class ApiDebuggerPanel extends JPanel {
             userPromptToggle.setHorizontalAlignment(SwingConstants.LEFT);
             userPromptToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
             userPromptToggle.setFont(userPromptToggle.getFont().deriveFont(Font.BOLD, 11f));
-            gbc.gridy = 10; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
+            gbc.gridy = 9; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
             form.add(userPromptToggle, gbc);
 
             JPanel userPromptContent = new JPanel(new BorderLayout());
             userPromptContent.add(userPromptScroll, BorderLayout.CENTER);
             userPromptContent.setVisible(false);
-            gbc.gridy = 11; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.55;
+            gbc.gridy = 10; gbc.fill = GridBagConstraints.BOTH; gbc.weighty = 0.55;
             form.add(userPromptContent, gbc);
 
-            gbc.gridy = 12; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
+            gbc.gridy = 11; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weighty = 0;
             JBLabel placeholderHint = new JBLabel("<html><font color='#888888' size='2'>占位符: ${API_URL} ${HTTP_METHOD} ${API_NAME} ${CONTROLLER_NAME} ${DESCRIPTION} ${CONTENT_TYPE} ${PARAMETERS} ${SCENARIO_NAME} ${SCENARIO_DESC} ${FULL_HINT}</font></html>");
             form.add(placeholderHint, gbc);
 
@@ -3912,8 +3785,7 @@ public class ApiDebuggerPanel extends JPanel {
                 apiPath = "/" + apiPath;
             }
             settings.setAiServerUrl(serverUrl);
-            settings.setAiToken(localModelCheck.isSelected()
-                    ? RestAutoLabConstants.AI_LOCAL_BEARER_TOKEN : apiKey);
+            settings.setAiToken(apiKey);
             settings.setAiApiPath(apiPath);
             settings.setAiModel(model);
             settings.setAiSystemPrompt(systemPromptArea.getText());

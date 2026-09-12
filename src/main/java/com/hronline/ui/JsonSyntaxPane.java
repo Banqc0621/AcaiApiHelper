@@ -1,36 +1,29 @@
-
-
 package com.hronline.ui;
 
-import com.intellij.icons.AllIcons;
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 
 import javax.swing.*;
 import javax.swing.text.*;
 import java.awt.*;
-import java.awt.event.*;
-import java.awt.datatransfer.StringSelection;
+import java.awt.event.InputEvent;
+import java.awt.event.MouseWheelEvent;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
 /**
  * 独立的 JSON 语法高亮文本面板。
  *
- * <p>v2.0 增强特性：</p>
  * <ul>
  *   <li>完整 JSON 词法高亮（键名、字符串、数字、布尔、null、标点）</li>
- *   <li>Ctrl + 鼠标滚轮 / Ctrl+± 缩放字体（10–24px）</li>
- *   <li>右键弹出菜单（复制 / 全选 / 格式化 / 字体大小）</li>
+ *   <li>滚动：Shift+滚轮水平滚动，普通滚轮垂直滚动（无字体缩放）</li>
+ *   <li>右键菜单：复制 / 全选</li>
  *   <li>支持明暗主题（颜色取自 {@link UiStyle} 语义色板）</li>
  * </ul>
  */
 public class JsonSyntaxPane extends JTextPane {
 
-    private static final int MIN_FONT_SIZE = 10;
-    private static final int MAX_FONT_SIZE = 24;
     private static final int DEFAULT_FONT_SIZE = (int) UiStyle.FONT_MONO;
-    private static final float ZOOM_STEP = 1f;
 
     private final Style defaultStyle;
     private final Style keyStyle;
@@ -40,13 +33,9 @@ public class JsonSyntaxPane extends JTextPane {
     private final Style nullStyle;
     private final Style punctuationStyle;
 
-    private float currentFontSize;
-    private JPopupMenu contextMenu;
-
     public JsonSyntaxPane() {
         super();
-        currentFontSize = DEFAULT_FONT_SIZE;
-        setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) currentFontSize));
+        setFont(new Font(Font.MONOSPACED, Font.PLAIN, DEFAULT_FONT_SIZE));
         setEditable(false);
         setBackground(JBColor.namedColor("Editor.background", new Color(0xFF, 0xFF, 0xFF)));
         setBorder(JBUI.Borders.empty(4, 6));
@@ -54,7 +43,7 @@ public class JsonSyntaxPane extends JTextPane {
         defaultStyle = addStyle("default", null);
         StyleConstants.setForeground(defaultStyle, JBColor.foreground());
         StyleConstants.setFontFamily(defaultStyle, Font.MONOSPACED);
-        StyleConstants.setFontSize(defaultStyle, (int) currentFontSize);
+        StyleConstants.setFontSize(defaultStyle, DEFAULT_FONT_SIZE);
 
         keyStyle = addStyle("key", defaultStyle);
         StyleConstants.setForeground(keyStyle, UiStyle.JSON_KEY);
@@ -77,8 +66,44 @@ public class JsonSyntaxPane extends JTextPane {
         punctuationStyle = addStyle("punctuation", defaultStyle);
         StyleConstants.setForeground(punctuationStyle, UiStyle.JSON_PUNCTUATION);
 
+        initScrollSupport();
         initContextMenu();
-        initZoomSupport();
+    }
+
+    /**
+     * 关键修复：JTextPane 默认「跟随视口宽度换行」，收到长响应后内容宽度被压缩、
+     * 水平滚动条永远不出现，垂直滚动条的长度计算也随之异常（上下滑动框错乱）。
+     * 返回 false 让内容按自身首选尺寸布局：超长行交给水平滚动条，垂直方向才按需出现。
+     */
+    @Override
+    public boolean getScrollableTracksViewportWidth() {
+        Container parent = getParent();
+        if (parent instanceof JViewport) {
+            return getUI().getPreferredSize(this).width <= parent.getWidth();
+        }
+        return super.getScrollableTracksViewportWidth();
+    }
+
+    /** 高度不跟随视口收缩：内容比视口高时保持完整高度，垂直滚动条才能正确反映全文长度。 */
+    @Override
+    public boolean getScrollableTracksViewportHeight() {
+        return false;
+    }
+
+    /** 右键菜单：复制 / 全选（无缩放、无提示项）。 */
+    private void initContextMenu() {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem copyItem = new JMenuItem("复制");
+        copyItem.addActionListener(e -> copy());
+        copyItem.setEnabled(false);
+        addCaretListener(e -> copyItem.setEnabled(getSelectionStart() != getSelectionEnd()));
+        menu.add(copyItem);
+
+        JMenuItem selectAllItem = new JMenuItem("全选");
+        selectAllItem.addActionListener(e -> selectAll());
+        menu.add(selectAllItem);
+
+        setComponentPopupMenu(menu);
     }
 
     /**
@@ -97,191 +122,56 @@ public class JsonSyntaxPane extends JTextPane {
 
         applyJsonHighlighting(text);
         setCaretPosition(0);
+        // 强制重新布局，确保外层滚动容器拿到正确的首选尺寸（滚动条范围正常）
+        revalidate();
+        repaint();
     }
 
-    /** 设置字体大小（限定在 MIN-MAX 范围内） */
-    public void setFontSize(float size) {
-        float clamped = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, size));
-        if (Math.abs(clamped - currentFontSize) < 0.1f) return;
-        currentFontSize = clamped;
-        Font newFont = new Font(Font.MONOSPACED, Font.PLAIN, (int) clamped);
-        setFont(newFont);
-        for (Style s : new Style[]{defaultStyle, keyStyle, stringStyle, numberStyle, booleanStyle, nullStyle, punctuationStyle}) {
-            StyleConstants.setFontSize(s, (int) clamped);
-        }
-        String current = getText();
-        if (current != null && !current.isEmpty()) {
-            applyJsonHighlighting(current);
-        }
-    }
+    // ── 滚动支持：Shift+滚轮水平滚动，普通滚轮垂直滚动（均显式处理，不依赖事件冒泡）──
 
-    public float getCurrentFontSize() {
-        return currentFontSize;
-    }
-
-    public void zoomIn() {
-        setFontSize(currentFontSize + ZOOM_STEP);
-    }
-
-    public void zoomOut() {
-        setFontSize(currentFontSize - ZOOM_STEP);
-    }
-
-    public void zoomReset() {
-        setFontSize(DEFAULT_FONT_SIZE);
-    }
-
-    // ── 右键菜单 ────────────────────────────────────────────
-
-    private void initContextMenu() {
-        contextMenu = new JPopupMenu();
-
-        JMenuItem copyItem = new JMenuItem("复制", AllIcons.Actions.Copy);
-        copyItem.addActionListener(e -> copySelectedText());
-
-        JMenuItem copyAllItem = new JMenuItem("复制全部", AllIcons.Actions.Copy);
-        copyAllItem.addActionListener(e -> {
-            String all = getText();
-            if (all != null && !all.isEmpty()) {
-                StringSelection sel = new StringSelection(all);
-                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
-                showCopyToast("已复制全部 " + all.length() + " 字符");
-            }
-        });
-
-        JMenuItem selectAllItem = new JMenuItem("全选", AllIcons.Actions.Selectall);
-        selectAllItem.addActionListener(e -> selectAll());
-
-        contextMenu.addSeparator();
-
-        JMenuItem zoomInItem = new JMenuItem("放大字体  (+)", AllIcons.Graph.ZoomIn);
-        zoomInItem.addActionListener(e -> zoomIn());
-
-        JMenuItem zoomOutItem = new JMenuItem("缩小字体  (-)", AllIcons.Graph.ZoomOut);
-        zoomOutItem.addActionListener(e -> zoomOut());
-
-        JMenuItem zoomResetItem = new JMenuItem("重置字体", AllIcons.Actions.Refresh);
-        zoomResetItem.addActionListener(e -> zoomReset());
-
-        contextMenu.add(copyItem);
-        contextMenu.add(copyAllItem);
-        contextMenu.add(selectAllItem);
-        contextMenu.addSeparator();
-        contextMenu.add(zoomInItem);
-        contextMenu.add(zoomOutItem);
-        contextMenu.add(zoomResetItem);
-
-        addMouseListener(new MouseAdapter() {
-            @Override
-            public void mousePressed(MouseEvent e) {
-                showMenu(e);
-            }
-
-            @Override
-            public void mouseReleased(MouseEvent e) {
-                showMenu(e);
-            }
-
-            private void showMenu(MouseEvent e) {
-                if (e.isPopupTrigger()) {
-                    contextMenu.show(JsonSyntaxPane.this, e.getX(), e.getY());
-                }
-            }
-        });
-    }
-
-    private void copySelectedText() {
-        String selected = getSelectedText();
-        if (selected != null && !selected.isEmpty()) {
-            StringSelection sel = new StringSelection(selected);
-            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(sel, null);
-            // 一伦优化 #15：复制成功后弹 1.5s 自动消失的 toast，给用户视觉反馈
-            showCopyToast("已复制 " + selected.length() + " 字符");
-        }
-    }
-
-    /**
-     * 一伦优化 #15：在面板右下角弹出短暂 toast，1.5s 后自动淡出。
-     * <p>用顶层 {@link JWindow} 浮层 + alpha 渐变，避免阻塞用户操作。
-     * 多次触发会取消上一次并重启计时器。</p>
-     */
-    private void showCopyToast(String message) {
-        Window owner = SwingUtilities.getWindowAncestor(this);
-        if (owner == null) return;
-        // 取消已存在的 toast
-        for (Window w : owner.getOwnedWindows()) {
-            if (w instanceof JWindow && "JsonSyntaxPane.copyToast".equals(w.getName())) {
-                w.dispose();
-            }
-        }
-        JWindow toast = new JWindow(owner);
-        toast.setName("JsonSyntaxPane.copyToast");
-        JLabel label = new JLabel(message);
-        label.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1),
-                BorderFactory.createEmptyBorder(6, 12, 6, 12)));
-        label.setBackground(new Color(0x2E, 0x7D, 0x32, 230));
-        label.setForeground(Color.WHITE);
-        label.setOpaque(true);
-        label.setFont(label.getFont().deriveFont(Font.PLAIN, 11f));
-        toast.add(label);
-        toast.pack();
-        // 定位到面板右下角内 8px 偏移
-        java.awt.Rectangle paneBounds = this.getBounds();
-        java.awt.Point paneLoc = SwingUtilities.convertPoint(this, 0, 0, owner);
-        int tx = paneLoc.x + paneBounds.width - toast.getWidth() - 12;
-        int ty = paneLoc.y + paneBounds.height - toast.getHeight() - 12;
-        toast.setLocation(Math.max(paneLoc.x, tx), Math.max(paneLoc.y, ty));
-        toast.setAlwaysOnTop(true);
-        toast.setVisible(true);
-        // 1.5s 后自动消失
-        Timer timer = new Timer(1500, e -> {
-            toast.dispose();
-        });
-        timer.setRepeats(false);
-        timer.start();
-    }
-
-    // ── Ctrl+滚轮 缩放 ──────────────────────────────────────
-
-    private void initZoomSupport() {
+    private void initScrollSupport() {
         addMouseWheelListener(e -> {
-            if ((e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0) {
-                if (e.getWheelRotation() < 0) {
-                    zoomIn();
-                } else {
-                    zoomOut();
-                }
-                e.consume();
+            JScrollPane scrollPane = findEnclosingScrollPane();
+            if (scrollPane == null) return;
+            if ((e.getModifiersEx() & InputEvent.SHIFT_DOWN_MASK) != 0) {
+                scrollHorizontal(scrollPane, e);
+            } else {
+                scrollVertical(scrollPane, e);
             }
+            // 显式消费：注册了本监听器后，事件不会再可靠地冒泡给外层滚动面板，
+            // 因此两个方向都手动驱动滚动条并消费事件，避免「滚轮无效」或「滚动两次」。
+            e.consume();
         });
+    }
 
-        InputMap im = getInputMap(JComponent.WHEN_FOCUSED);
-        ActionMap am = getActionMap();
+    private void scrollVertical(JScrollPane scrollPane, MouseWheelEvent e) {
+        JScrollBar bar = scrollPane.getVerticalScrollBar();
+        if (bar == null || !bar.isVisible()) return;
+        int direction = e.getWheelRotation(); // 负 = 向上，正 = 向下
+        if (e.getScrollType() == MouseWheelEvent.WHEEL_UNIT_SCROLL) {
+            int units = Math.max(1, e.getScrollAmount());
+            bar.setValue(bar.getValue() + direction * units * bar.getUnitIncrement());
+        } else {
+            bar.setValue(bar.getValue() + direction * bar.getBlockIncrement());
+        }
+    }
 
-        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
-        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, InputEvent.CTRL_DOWN_MASK), "zoomIn");
-        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut");
-        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset");
+    private void scrollHorizontal(JScrollPane scrollPane, MouseWheelEvent e) {
+        JScrollBar bar = scrollPane.getHorizontalScrollBar();
+        if (bar == null || !bar.isVisible()) return;
+        int direction = e.getWheelRotation() < 0 ? -1 : 1;
+        bar.setValue(bar.getValue() + direction * bar.getBlockIncrement());
+    }
 
-        am.put("zoomIn", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomIn();
+    private JScrollPane findEnclosingScrollPane() {
+        Container parent = getParent();
+        while (parent != null) {
+            if (parent instanceof JScrollPane) {
+                return (JScrollPane) parent;
             }
-        });
-        am.put("zoomOut", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomOut();
-            }
-        });
-        am.put("zoomReset", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                zoomReset();
-            }
-        });
+            parent = parent.getParent();
+        }
+        return null;
     }
 
     // ── JSON 语法高亮核心 ───────────────────────────────────

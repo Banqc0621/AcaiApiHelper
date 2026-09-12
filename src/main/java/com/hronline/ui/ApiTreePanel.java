@@ -105,6 +105,12 @@ public class ApiTreePanel extends JPanel {
 
     /** 收藏树重建时沿用用户最后一次“一键展开/收起”的状态，避免刷新后又被强制展开。 */
     private boolean starredFoldersExpanded = true;
+    /**
+     * 收藏视图展开文件夹 id 的持久化快照。跨视图切换（收藏 ↔ 全量/最新）后收藏树会被
+     * 普通视图替换，切回收藏时按这里的 id 恢复展开状态，保证文件夹不会被合并。
+     * null 表示用户从未在收藏视图操作过，走 {@link #starredFoldersExpanded} 的默认行为。
+     */
+    private Set<String> starredExpandedFolderIds;
     /** 批量展开/收起期间屏蔽 TreeExpansionListener，避免中间态覆盖最终状态。 */
     private boolean applyingFolderExpansion;
 
@@ -298,11 +304,28 @@ public class ApiTreePanel extends JPanel {
                     if (u instanceof ApiDefinition) { found = (ApiDefinition) u; break; }
                 }
             }
-            if (found == null) return; // 既不是 API 节点又没已选 API → 不弹菜单
+            if (found == null) {
+                // 右键 Controller 文件夹节点且无已选 API：取所选文件夹下的接口作为上下文，
+                // 支持「选中单个/多个文件夹右键收藏」；所选文件夹下也没有接口时仅提供刷新
+                java.util.List<ApiDefinition> folderApis = getStarCandidateApis();
+                found = folderApis.isEmpty() ? null : folderApis.get(0);
+            }
+            if (found == null) {
+                DefaultActionGroup refreshOnly = new DefaultActionGroup();
+                refreshOnly.add(createRefreshListAction());
+                ActionPopupMenu refreshPopup = ActionManager.getInstance()
+                        .createActionPopupMenu(ActionPlaces.POPUP, refreshOnly);
+                refreshPopup.getComponent().show(tree, e.getX(), e.getY());
+                return;
+            }
             api = found;
         }
 
         DefaultActionGroup group = new DefaultActionGroup();
+
+        // 刷新当前视图的所有接口（保留文件夹展开状态）
+        group.add(createRefreshListAction());
+        group.addSeparator();
 
         // 调试动作
         AnAction debugAction = new AnAction("调试此接口", "在调试面板打开此接口", AllIcons.Actions.Execute) {
@@ -318,46 +341,81 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(debugAction);
 
-        // 收藏：已收藏则提供「取消收藏」；未收藏则「收藏」（单选/多选均可，统一走批量逻辑）
+        // 收藏：候选接口（选中接口 + 选中文件夹下的全部接口）中有任一已收藏则提供「取消收藏」
         StarredFolderService folderSvc =
                 StarredFolderService.getInstance(project);
-        boolean isStarred = folderSvc.isStarred(api.uniqueKey());
-        if (isStarred) {
-            AnAction unstarAction = new AnAction("取消收藏", "从所有收藏文件夹中移除", AllIcons.Nodes.Favorite) {
+
+        // 选中 Controller 文件夹时：提供「收藏文件夹 / 取消收藏文件夹」——
+        // 保留原文件夹结构直接加入收藏列表，无需再指定目标文件夹
+        java.util.List<DefaultMutableTreeNode> selectedFolderNodes = getSelectedControllerFolderNodes();
+        if (!selectedFolderNodes.isEmpty()) {
+            group.add(new AnAction("收藏文件夹", "保留文件夹结构直接加入收藏列表（无需选择目标文件夹）", AllIcons.Nodes.Favorite) {
                 @Override
                 public void actionPerformed(@NotNull AnActionEvent e) {
-                    java.util.List<ApiDefinition> selected = getSelectedApis();
-                    if (selected.isEmpty()) {
-                        ApiDefinition single = getSelectedApi();
-                        if (single != null) selected = java.util.Collections.singletonList(single);
-                    }
-                    if (selected.isEmpty()) return;
-                    StarredFolderService svc =
-                            StarredFolderService.getInstance(project);
-                    for (ApiDefinition a : selected) {
-                        svc.unstarApi(a.uniqueKey());
-                        a.setStarred(false);
-                    }
-                    tree.repaint();
+                    starFoldersAsStructure(selectedFolderNodes);
                 }
-            };
-            group.add(unstarAction);
+            });
+            boolean anyFolderStarred = false;
+            java.util.List<StarredFolder> starredFolders = folderSvc.loadFolders();
+            for (DefaultMutableTreeNode fn : selectedFolderNodes) {
+                String baseName = controllerBaseName(String.valueOf(fn.getUserObject()));
+                for (StarredFolder f : starredFolders) {
+                    if (baseName.equals(f.getName())
+                            && (f.getParentId() == null || f.getParentId().isBlank())) {
+                        anyFolderStarred = true;
+                        break;
+                    }
+                }
+                if (anyFolderStarred) break;
+            }
+            if (anyFolderStarred) {
+                group.add(new AnAction("取消收藏文件夹", "删除收藏列表中的同名文件夹并取消其下所有接口的收藏", AllIcons.Nodes.Favorite) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent e) {
+                        unstarFoldersAsStructure(selectedFolderNodes);
+                    }
+                });
+            }
+            group.addSeparator();
         }
 
-        // 「收藏」按钮：单选/多选统一走批量收藏对话框
-        AnAction starAction = new AnAction("收藏", "加入收藏文件夹", AllIcons.Nodes.Favorite) {
-            @Override
-            public void actionPerformed(@NotNull AnActionEvent e) {
-                java.util.List<ApiDefinition> selected = getSelectedApis();
-                if (selected.isEmpty()) {
-                    ApiDefinition single = getSelectedApi();
-                    if (single != null) selected = java.util.Collections.singletonList(single);
-                }
-                if (selected.isEmpty()) return;
-                addApisToFolderDialog(selected);
+        // 纯文件夹选中（没有选中任何接口节点）：收藏操作只走「收藏文件夹 / 取消收藏文件夹」，
+        // 不再提供需要选择目标文件夹的 API 级「收藏」，避免两种入口混淆。
+        boolean folderOnlySelection = !selectedFolderNodes.isEmpty() && !hasSelectedApiNodes();
+
+        final java.util.List<ApiDefinition> starCandidates = getStarCandidateApis();
+        if (!folderOnlySelection) {
+            boolean isStarred = false;
+            for (ApiDefinition a : starCandidates) {
+                if (folderSvc.isStarred(a.uniqueKey())) { isStarred = true; break; }
             }
-        };
-        group.add(starAction);
+            if (isStarred) {
+                AnAction unstarAction = new AnAction("取消收藏", "从所有收藏文件夹中移除", AllIcons.Nodes.Favorite) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent e) {
+                        if (starCandidates.isEmpty()) return;
+                        StarredFolderService svc =
+                                StarredFolderService.getInstance(project);
+                        for (ApiDefinition a : starCandidates) {
+                            svc.unstarApi(a.uniqueKey());
+                            a.setStarred(false);
+                        }
+                        tree.repaint();
+                    }
+                };
+                group.add(unstarAction);
+            }
+
+            // 「收藏」按钮：单选/多选接口走批量收藏对话框（选择目标文件夹）
+            AnAction starAction = new AnAction("收藏", "加入收藏文件夹", AllIcons.Nodes.Favorite) {
+                @Override
+                public void actionPerformed(@NotNull AnActionEvent e) {
+                    if (starCandidates.isEmpty()) return;
+                    addApisToFolderDialog(starCandidates);
+                }
+            };
+            group.add(starAction);
+        }
 
         // 复制URL
         group.addSeparator();
@@ -582,7 +640,8 @@ public class ApiTreePanel extends JPanel {
             updateExpandCollapseButtons();
             // 一伦 #56：「全量」承担恢复全量列表职责——若配置了扫描包过滤
             // （如右键包「仅显示此包接口」），先清空过滤，再优先从 lastFullScanApis
-            // 即时恢复全量列表（不必等后台重扫），然后后台异步触发一次扫描刷新缓存。
+            // 即时恢复全量列表（不必等后台重扫）。单击不再触发后台重扫，
+            // 刷新统一改为在列表中右键文件夹/接口执行。
             RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
             boolean hadFilter = !settings.getScanPackageFilter().isBlank();
             ApiScannerService scanner = ApiScannerService.getInstance(project);
@@ -595,13 +654,11 @@ public class ApiTreePanel extends JPanel {
                     // 优先从备份的全量缓存恢复——即时显示，不必等扫描
                     updateTree(cachedFull);
                 } else {
-                    // 从未完成过全量扫描时也不能继续挂着右键范围的旧树。
-                    updateTree(Collections.emptyList());
+                    // 从未完成过全量扫描时兜底扫描（仅在列表为空时触发）
+                    triggerScanIfNeeded("全量");
                 }
-                // 后台异步重扫刷新（同时清除 sourceScopeActive）
-                scanner.scanProjectApisAsync();
             } else {
-                // 缓存为空或失效时主动触发一次扫描
+                // 仅在列表为空（首次使用）时触发扫描；有数据时单击不再刷新
                 triggerScanIfNeeded("全量");
             }
             applyFilters();
@@ -610,17 +667,9 @@ public class ApiTreePanel extends JPanel {
             currentFilter = FILTER_STARRED;
             updateExpandCollapseButtons();
             applyFilters();
-            // 一伦 #67：收藏按钮单击即刷新接口信息，不再要求用户双击。
-            // 触发完整扫描以同步源码中的 URL/方法变化；扫描完成后回调会再次走
-            // updateTree → applyFilters → refreshStarredApiIndex + buildStarredTree，
-            // 收藏视图中的接口信息会自动更新。
-            statsLabel.setText("● 正在扫描API（收藏刷新）...");
-            ApiScannerService.getInstance(project).scanProjectApisAsync();
         });
-        // 旧版在这里监听双击收藏按钮刷新；刷新已迁移到上面的单击 ActionListener，
-        // 不再注册 MouseListener，避免双击与按钮默认点击行为竞争。
-        // 完整扫描仍会按 sourceFilePath + sourceLineNumber 把 starredApis/folder.apiKeys
-        // 等持久化字段从旧 key 改写到新 key，完成后收藏视图会自动反映最新接口信息。
+        // 收藏按钮单击不再触发后台扫描；收藏接口信息的刷新统一改为在列表中
+        // 右键文件夹/接口选择「刷新接口列表」。
         btnLatest.addActionListener(e -> {
             currentFilter = FILTER_LATEST;
             updateExpandCollapseButtons();
@@ -687,11 +736,11 @@ public class ApiTreePanel extends JPanel {
 
     private void updateExpandCollapseButtons() {
         // #84：单按钮智能切换。图标/tooltip 是当前状态的即时反馈，避免用户误解。
+        // 全量/最新/收藏三个视图通用：只要当前树里有可展开的文件夹就显示并启用。
         if (collapseAllFoldersButton == null) return;
-        boolean starred = FILTER_STARRED.equals(currentFilter);
-        boolean hasContent = starred && treeModel.getRoot() instanceof DefaultMutableTreeNode
+        boolean hasContent = treeModel.getRoot() instanceof DefaultMutableTreeNode
                 && hasExpandableFolderNodes((DefaultMutableTreeNode) treeModel.getRoot());
-        collapseAllFoldersButton.setVisible(starred);
+        collapseAllFoldersButton.setVisible(hasContent);
         collapseAllFoldersButton.setEnabled(hasContent);
         if (hasContent) {
             boolean expanded = areAllFolderNodesExpanded((DefaultMutableTreeNode) treeModel.getRoot());
@@ -724,6 +773,28 @@ public class ApiTreePanel extends JPanel {
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         if (!hasExpandableFolderNodes(root)) return;
         starredFoldersExpanded = areAllFolderNodesExpanded(root);
+        // 手动逐个展开/收起时也同步快照，保证切换视图后能按原样恢复
+        starredExpandedFolderIds = collectExpandedStarredFolderIds(root);
+    }
+
+    /**
+     * 离开收藏视图前把文件夹展开状态持久化到 {@link #starredExpandedFolderIds}。
+     * <p>只在当前显示的确实是收藏树时采集（按根节点类型判断），避免全量/最新树的
+     * 展开状态污染收藏快照。</p>
+     */
+    private void persistStarredExpansionState() {
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        if (!"root".equals(root.getUserObject())) return;
+        starredExpandedFolderIds = collectExpandedStarredFolderIds(root);
+        starredFoldersExpanded = areAllFolderNodesExpanded(root);
+    }
+
+    /** 收集指定收藏树根下当前已展开的文件夹 id（所有层级，只统计有子节点的文件夹）。 */
+    private Set<String> collectExpandedStarredFolderIds(DefaultMutableTreeNode root) {
+        Set<String> expanded = new HashSet<>();
+        collectExpandedStarredFolderIds(root, expanded);
+        return expanded;
     }
 
     /**
@@ -742,14 +813,34 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
-     * 一伦优化 v7：「全量」「最新」切换时若接口列表为空或缓存已失效，主动触发一次扫描，
-     * 替代被移除的独立「扫描API」按钮。这样分类按钮本身就承担了扫描入口职责。
+     * 仅在接口列表为空（首次使用且未自动扫描等场景）时触发扫描。
+     * 列表有数据时分类按钮不再触发刷新，刷新统一改为在列表中右键文件夹/接口选择「刷新接口列表」。
      */
     private void triggerScanIfNeeded(String reason) {
         if (allApis.isEmpty()) {
             ApiScannerService.getInstance(project).scanProjectApisAsync();
             statsLabel.setText("● 正在扫描API（" + reason + "）...");
         }
+    }
+
+    /**
+     * 右键「刷新接口列表」：触发一次全量重扫。扫描完成后 ToolWindow 监听器会回调
+     * updateTree 重建当前视图（全量/最新/收藏），重建过程通过捕获/还原文件夹展开状态，
+     * 保证刷新不改变文件夹的打开和关闭状态。
+     */
+    private void refreshApiList() {
+        statsLabel.setText("● 正在刷新接口列表...");
+        ApiScannerService.getInstance(project).scanProjectApisAsync();
+    }
+
+    /** 全量/最新/收藏右键菜单共用的刷新动作。 */
+    private AnAction createRefreshListAction() {
+        return new AnAction("刷新接口列表", "重新扫描项目并刷新当前视图的所有接口（保留文件夹展开状态）", AllIcons.Actions.Refresh) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                refreshApiList();
+            }
+        };
     }
 
     /**
@@ -813,7 +904,7 @@ public class ApiTreePanel extends JPanel {
                 btn.setToolTipText("显示所有API接口");
                 break;
             case FILTER_STARRED:
-                btn.setToolTipText("单击打开收藏并刷新接口信息（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试）");
+                btn.setToolTipText("显示收藏接口（文件夹分组 / 拖拽 / 批量AI参数 / 批量测试），右键文件夹/接口可刷新");
                 break;
             case FILTER_LATEST:
                 btn.setToolTipText("仅显示最近（" + LATEST_CHANGE_DAYS + "天）Git 变更涉及的接口");
@@ -954,6 +1045,10 @@ public class ApiTreePanel extends JPanel {
             return;
         }
 
+        // 离开收藏视图前（切到全量/最新）先持久化其文件夹展开状态，
+        // 之后再切回收藏时按 id 恢复，避免文件夹被全部合并
+        persistStarredExpansionState();
+
         List<ApiDefinition> filtered = applyCategoryFilter(allApis);
 
         // 再应用搜索过滤
@@ -1009,6 +1104,9 @@ public class ApiTreePanel extends JPanel {
      */
     private void buildTree(List<ApiDefinition> apis) {
         ApplicationManager.getApplication().invokeLater(() -> {
+            // 重建前先记录当前展开的 Controller 名称，刷新后按原样恢复，
+            // 保证右键「刷新接口列表」不改变文件夹的打开/关闭状态
+            Set<String> expandedControllers = captureExpandedControllerNames();
             DefaultMutableTreeNode root = new DefaultMutableTreeNode("API列表");
 
             // 切换树/空状态面板
@@ -1017,6 +1115,7 @@ public class ApiTreePanel extends JPanel {
             if (apis.isEmpty()) {
                 treeModel.setRoot(root);
                 treeModel.reload();
+                updateExpandCollapseButtons();
                 return;
             }
 
@@ -1060,11 +1159,17 @@ public class ApiTreePanel extends JPanel {
             treeModel.setRoot(root);
             treeModel.reload();
 
-            // 默认展开所有一级节点（Controller节点），API子节点由用户手动展开
+            // 默认展开所有一级节点（Controller节点），API子节点由用户手动展开；
+            // 刷新重建时（expandedControllers != null）仅恢复刷新前展开的节点，
+            // 不改变当前界面文件夹的打开/关闭状态
             int controllerNodeCount = root.getChildCount();
             for (int i = 0; i < controllerNodeCount; i++) {
-                TreePath path = new TreePath(((DefaultMutableTreeNode) root.getChildAt(i)).getPath());
-                tree.expandPath(path);
+                DefaultMutableTreeNode controllerNode = (DefaultMutableTreeNode) root.getChildAt(i);
+                TreePath path = new TreePath(controllerNode.getPath());
+                if (expandedControllers == null
+                        || expandedControllers.contains(controllerBaseName(String.valueOf(controllerNode.getUserObject())))) {
+                    tree.expandPath(path);
+                }
             }
 
             // 诊断：确认实际建树节点数与传入数一致（排查"显示不全"）
@@ -1075,7 +1180,39 @@ public class ApiTreePanel extends JPanel {
             LOG.warn("[ApiTree] buildTree 传入=" + apis.size()
                     + ", Controller节点=" + controllerNodeCount
                     + ", 实际API叶子节点=" + builtApiNodes);
+
+            // 重建后同步一键展开/收起按钮的可见性与图标状态
+            updateExpandCollapseButtons();
         });
+    }
+
+    /**
+     * 捕获当前普通视图（全量/最新）中已展开的 Controller 名称（不含数量后缀）。
+     * <p>返回 null 表示当前树没有可参考的展开状态（如首次建树、收藏视图或空树），
+     * 此时 buildTree 走默认的"全部展开"行为。</p>
+     */
+    private Set<String> captureExpandedControllerNames() {
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return null;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        // 当前树不是普通视图（如正处于收藏视图）时，其展开状态对普通视图没有参考价值，
+        // 返回 null 走默认的全部展开行为；不能用 currentFilter 判断——切换分类时
+        // currentFilter 已先于重建树被改成新值
+        if (!"API列表".equals(root.getUserObject())) return null;
+        if (root.getChildCount() == 0) return null;
+        Set<String> expanded = new HashSet<>();
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
+            if (child.getChildCount() > 0 && tree.isExpanded(new TreePath(child.getPath()))) {
+                expanded.add(controllerBaseName(String.valueOf(child.getUserObject())));
+            }
+        }
+        return expanded;
+    }
+
+    /** Controller 节点显示文本形如 "XxxController (12)"，去掉数量后缀得到基础名称。 */
+    private static String controllerBaseName(String displayText) {
+        int idx = displayText.lastIndexOf(" (");
+        return idx > 0 && displayText.endsWith(")") ? displayText.substring(0, idx) : displayText;
     }
 
     // ================================================================
@@ -1114,6 +1251,13 @@ public class ApiTreePanel extends JPanel {
         // 但展开逻辑必须与 setRoot 同步执行，避免 invokeLater 嵌套导致 setRoot 与 expandPath 时序错位
         // （时序错位会表现为文件夹折叠后打不开、初始未展开等交互问题）
         Runnable build = () -> {
+            // 重建前先记录当前展开的文件夹 id，刷新后按原样恢复，
+            // 保证右键「刷新接口列表」不改变文件夹的打开/关闭状态；
+            // 从其他视图切回收藏时当前树不是收藏树，退而使用离开前持久化的快照
+            Set<String> expandedFolderIds = captureExpandedStarredFolderIds();
+            if (expandedFolderIds == null) {
+                expandedFolderIds = starredExpandedFolderIds;
+            }
             DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
             String keyword = searchField.getText().trim().toLowerCase();
 
@@ -1139,9 +1283,12 @@ public class ApiTreePanel extends JPanel {
             try {
                 treeModel.setRoot(root);
                 // setRoot 已触发结构重载，无需再 reload()（reload 会再次清空 expandedState，让紧随的 expandPath 失效）
-                // 同步应用上次的一键状态：扫描、搜索或切换页面重建树时，不应把用户刚收起的
-                // 文件夹重新展开，否则下一次点击按钮会出现“图标变了但界面没变化”的错觉。
-                if (starredFoldersExpanded) {
+                if (expandedFolderIds != null) {
+                    // 刷新重建：按文件夹 id 恢复刷新前的展开状态，不改变当前打开/关闭状态
+                    restoreExpandedStarredFolders(root, expandedFolderIds);
+                } else if (starredFoldersExpanded) {
+                    // 同步应用上次的一键状态：扫描、搜索或切换页面重建树时，不应把用户刚收起的
+                    // 文件夹重新展开，否则下一次点击按钮会出现“图标变了但界面没变化”的错觉。
                     expandAllFolderNodes(root);
                 } else {
                     collapseAllFolderNodes(root);
@@ -1149,6 +1296,8 @@ public class ApiTreePanel extends JPanel {
             } finally {
                 applyingFolderExpansion = false;
             }
+            // 重建后把快照同步为当前树的实际状态（清理已删除文件夹的失效 id）
+            starredExpandedFolderIds = collectExpandedStarredFolderIds(root);
             statsLabel.setText(String.format("● 文件夹 %d · 接口 %d%s · 失败标红 %d",
                     counters[0], counters[1],
                     counters[3] > 0 ? " · ⚠失效 " + counters[3] : "",
@@ -1159,6 +1308,50 @@ public class ApiTreePanel extends JPanel {
             build.run();
         } else {
             ApplicationManager.getApplication().invokeLater(build);
+        }
+    }
+
+    /**
+     * 捕获当前收藏视图中已展开的文件夹 id 集合。
+     * <p>返回 null 表示当前树没有可参考的展开状态（非收藏视图或空树），
+     * 此时 buildStarredTree 走默认的"一键展开/收起"行为。</p>
+     */
+    private Set<String> captureExpandedStarredFolderIds() {
+        if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return null;
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        // 当前树不是收藏视图（如正处于全量/最新视图）时，其展开状态对收藏视图没有参考价值，
+        // 返回 null 走默认的一键展开/收起行为；不能用 currentFilter 判断——切换分类时
+        // currentFilter 已先于重建树被改成新值
+        if (!"root".equals(root.getUserObject())) return null;
+        if (root.getChildCount() == 0) return null;
+        Set<String> expanded = new HashSet<>();
+        collectExpandedStarredFolderIds(root, expanded);
+        return expanded;
+    }
+
+    /** 递归收集已展开的文件夹节点 id（只统计有子节点的文件夹）。 */
+    private void collectExpandedStarredFolderIds(DefaultMutableTreeNode node, Set<String> expanded) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            StarredFolder f = ((FolderNode) child.getUserObject()).folder;
+            if (child.getChildCount() > 0 && tree.isExpanded(new TreePath(child.getPath()))) {
+                expanded.add(f.getId());
+            }
+            collectExpandedStarredFolderIds(child, expanded);
+        }
+    }
+
+    /** 按捕获的文件夹 id 集合递归恢复展开状态，保证刷新不改变打开/关闭状态。 */
+    private void restoreExpandedStarredFolders(DefaultMutableTreeNode node, Set<String> expandedIds) {
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            StarredFolder f = ((FolderNode) child.getUserObject()).folder;
+            if (expandedIds.contains(f.getId())) {
+                tree.expandPath(new TreePath(child.getPath()));
+            }
+            restoreExpandedStarredFolders(child, expandedIds);
         }
     }
 
@@ -1196,28 +1389,46 @@ public class ApiTreePanel extends JPanel {
         return folderNode;
     }
 
+    /** 判断节点是否为「文件夹类」节点：收藏视图的 FolderNode，
+     *  或全量/最新视图中以 String 展示的 Controller 分组节点（排除根节点）。 */
+    private static boolean isFolderLikeNode(DefaultMutableTreeNode node) {
+        if (node == null || !node.getAllowsChildren()) return false;
+        Object uo = node.getUserObject();
+        if (uo instanceof FolderNode) return true;
+        if (uo instanceof String) {
+            // 根节点（"root" / "API列表"）不算文件夹
+            return node.getParent() != null;
+        }
+        return false;
+    }
+
     /** 递归展开所有文件夹节点（多级目录需逐层展开） */
     private void expandAllFolderNodes(DefaultMutableTreeNode node) {
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
-            if (child.getUserObject() instanceof FolderNode) {
+            if (isFolderLikeNode(child)) {
                 tree.expandPath(new TreePath(child.getPath()));
                 expandAllFolderNodes(child);
             }
         }
     }
 
-    /** 一键收起收藏视图中的所有文件夹（后序折叠，确保多级路径仍然有效）。 */
+    /** 一键收起当前视图中的所有文件夹（后序折叠，确保多级路径仍然有效）。
+     *  全量/最新/收藏视图通用。 */
     private void collapseAllFolderNodes() {
-        if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
-        starredFoldersExpanded = false;
+        // starredFoldersExpanded 是收藏视图的重建策略标记，普通视图操作不应污染它
+        if (FILTER_STARRED.equals(currentFilter)) starredFoldersExpanded = false;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         applyingFolderExpansion = true;
         try {
             collapseAllFolderNodes(root);
         } finally {
             applyingFolderExpansion = false;
+        }
+        // 收藏视图：一键收起后快照同步为空集，避免切换视图回来时恢复出已被用户收起的文件夹
+        if (FILTER_STARRED.equals(currentFilter)) {
+            starredExpandedFolderIds = collectExpandedStarredFolderIds(root);
         }
         tree.clearSelection();
         updateExpandCollapseButtons();
@@ -1228,15 +1439,16 @@ public class ApiTreePanel extends JPanel {
         if (root == null) return;
         for (int i = 0; i < root.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) root.getChildAt(i);
-            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
+            if (isFolderLikeNode(child)) collapseFolderNode(child);
         }
     }
 
-    /** 当前收藏树是否已经把所有有子节点的文件夹展开。 */
+    /** 当前树是否已经把所有有子节点的文件夹展开（收藏视图的 FolderNode
+     *  与全量/最新视图的 Controller 分组节点均适用）。 */
     private boolean areAllFolderNodesExpanded(DefaultMutableTreeNode node) {
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
-            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            if (!isFolderLikeNode(child)) continue;
             TreePath path = new TreePath(child.getPath());
             if (child.getChildCount() > 0 && !tree.isExpanded(path)) return false;
             if (!areAllFolderNodesExpanded(child)) return false;
@@ -1249,16 +1461,15 @@ public class ApiTreePanel extends JPanel {
         if (node == null) return false;
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
-            if (!(child.getUserObject() instanceof FolderNode)) continue;
+            if (!isFolderLikeNode(child)) continue;
             if (child.getChildCount() > 0) return true;
             if (hasExpandableFolderNodes(child)) return true;
         }
         return false;
     }
 
-    /** 单按钮 toggle 行为：按当前树状态决定执行收起还是展开。 */
+    /** 单按钮 toggle 行为：按当前树状态决定执行收起还是展开。全量/最新/收藏通用。 */
     private void toggleAllFolderNodes() {
-        if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         // 以实际树状态为准，而不是只依赖上次按钮状态；用户手动展开/收起后第一次点击
@@ -1270,13 +1481,13 @@ public class ApiTreePanel extends JPanel {
         }
     }
 
-    /** v2.2 一键展开收藏视图中的所有文件夹（工具栏按钮入口）。
-     *  先收起全部再展开，可恢复「上次折叠过的中间节点」再次可见，避免 buildStarredTree
-     *  后只能展开顶层的问题。 */
+    /** v2.2 一键展开当前视图中的所有文件夹（工具栏按钮入口）。
+     *  先收起全部再展开，可恢复「上次折叠过的中间节点」再次可见。
+     *  全量/最新/收藏视图通用。 */
     private void expandAllFolderNodesFromToolbar() {
-        if (!FILTER_STARRED.equals(currentFilter)) return;
         if (!(treeModel.getRoot() instanceof DefaultMutableTreeNode)) return;
-        starredFoldersExpanded = true;
+        // starredFoldersExpanded 是收藏视图的重建策略标记，普通视图操作不应污染它
+        if (FILTER_STARRED.equals(currentFilter)) starredFoldersExpanded = true;
         DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
         // 先全部收起，再展开，确保所有中间节点都处于展开态
         applyingFolderExpansion = true;
@@ -1289,6 +1500,10 @@ public class ApiTreePanel extends JPanel {
         } finally {
             applyingFolderExpansion = false;
         }
+        // 收藏视图：一键展开后快照同步为全部文件夹，避免切换视图回来时状态丢失
+        if (FILTER_STARRED.equals(currentFilter)) {
+            starredExpandedFolderIds = collectExpandedStarredFolderIds(root);
+        }
         tree.clearSelection();
         updateExpandCollapseButtons();
     }
@@ -1296,7 +1511,7 @@ public class ApiTreePanel extends JPanel {
     private void collapseFolderNode(DefaultMutableTreeNode node) {
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
-            if (child.getUserObject() instanceof FolderNode) collapseFolderNode(child);
+            if (isFolderLikeNode(child)) collapseFolderNode(child);
         }
         tree.collapsePath(new TreePath(node.getPath()));
     }
@@ -1511,19 +1726,34 @@ public class ApiTreePanel extends JPanel {
             if ("root".equals(targetUo)) {
                 // 顶层节点之间拖动：path=root，childIndex 是顶层插槽。
                 DefaultMutableTreeNode parentNode = targetNode;
-                DefaultMutableTreeNode before = childIndex > 0 && childIndex - 1 < parentNode.getChildCount()
-                        ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex - 1) : null;
-                DefaultMutableTreeNode after = childIndex < parentNode.getChildCount()
-                        ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex) : null;
-                if (after != null && after.getUserObject() instanceof FolderNode) {
-                    anchor = ((FolderNode) after.getUserObject()).folder;
-                    position = "before";
-                } else if (before != null && before.getUserObject() instanceof FolderNode) {
-                    anchor = ((FolderNode) before.getUserObject()).folder;
-                    position = "after";
+                if (childIndex < 0) {
+                    // 根不可见 + ON_OR_INSERT：拖到根区域空白处（如顶层列表下方空区）时
+                    // childIndex=-1，不能 getChildAt(-1)。此手势的语义 = 把文件夹移到一级（顶层），
+                    // 追加到最后一个顶层文件夹之后。
+                    DefaultMutableTreeNode lastTop = parentNode.getChildCount() > 0
+                            ? (DefaultMutableTreeNode) parentNode.getChildAt(parentNode.getChildCount() - 1) : null;
+                    if (lastTop != null && lastTop.getUserObject() instanceof FolderNode) {
+                        anchor = ((FolderNode) lastTop.getUserObject()).folder;
+                        position = "after";
+                    } else {
+                        position = "child";
+                        newParentId = null;
+                    }
                 } else {
-                    position = "child";
-                    newParentId = null;
+                    DefaultMutableTreeNode before = childIndex > 0 && childIndex - 1 < parentNode.getChildCount()
+                            ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex - 1) : null;
+                    DefaultMutableTreeNode after = childIndex < parentNode.getChildCount()
+                            ? (DefaultMutableTreeNode) parentNode.getChildAt(childIndex) : null;
+                    if (after != null && after.getUserObject() instanceof FolderNode) {
+                        anchor = ((FolderNode) after.getUserObject()).folder;
+                        position = "before";
+                    } else if (before != null && before.getUserObject() instanceof FolderNode) {
+                        anchor = ((FolderNode) before.getUserObject()).folder;
+                        position = "after";
+                    } else {
+                        position = "child";
+                        newParentId = null;
+                    }
                 }
             } else if (targetUo instanceof FolderNode) {
                 StarredFolder targetFolder = ((FolderNode) targetUo).folder;
@@ -1562,6 +1792,12 @@ public class ApiTreePanel extends JPanel {
             List<StarredFolder> currentFolders = folderService.loadFolders();
             for (FolderNode fn : dragged) {
                 if (anchor != null && fn.folder.getId().equals(anchor.getId())) continue;
+                // 把子文件夹拖到自己的父文件夹上：语义 = 提升为父文件夹的兄弟（紧跟其后），
+                // 否则会被重新插回父文件夹内部，用户永远无法用拖拽把子文件夹拖出来。
+                if (anchor != null && "child".equals(position)
+                        && anchor.getId().equals(fn.folder.getParentId())) {
+                    position = "after";
+                }
                 String parentId = newParentId;
                 if (anchor != null && !"child".equals(position)) parentId = anchor.getParentId();
                 if ("child".equals(position) && parentId != null
@@ -1608,8 +1844,10 @@ public class ApiTreePanel extends JPanel {
         DefaultActionGroup group = new DefaultActionGroup();
 
         if (row < 0) {
-            // 空白处：仅「新建文件夹」
+            // 空白处：「新建文件夹」+ 刷新接口列表（收藏列表为空时也能从空白处触发刷新）
             group.add(starredAction("新建文件夹", AllIcons.Actions.NewFolder, this::starredNewFolder));
+            group.addSeparator();
+            group.add(createRefreshListAction());
         } else {
             // 一伦优化 #4：右键命中节点时保留多选，而不是替换为单选。
             // 这与普通 handlePopup 行为一致，让"先 Cmd 多选 N 个接口再右键其中一个"的体验可工作。
@@ -1629,6 +1867,8 @@ public class ApiTreePanel extends JPanel {
                 StarredFolder f = ((FolderNode) uo).folder;
                 group.add(starredAction("新建子文件夹", AllIcons.Actions.NewFolder, this::starredNewSubFolder));
                 group.add(starredAction("重命名", AllIcons.Actions.Edit, this::starredRenameFolder));
+                group.addSeparator();
+                group.add(createRefreshListAction());
                 group.addSeparator();
                 group.add(starredAction("AI 生成参数", AllIcons.Actions.Lightning, this::starredBatchAiGen));
                 group.add(starredAction("批量测试", AllIcons.Actions.Execute, this::starredBatchTest));
@@ -1650,6 +1890,8 @@ public class ApiTreePanel extends JPanel {
                     group.add(starredAction("调试此接口", AllIcons.Actions.Execute, this::starredDebugApi));
                     group.add(starredAction("编辑参数", AllIcons.Actions.EditSource, this::starredEditParams));
                 }
+                group.addSeparator();
+                group.add(createRefreshListAction());
                 group.addSeparator();
                 group.add(starredAction("移动到…", AllIcons.Actions.MoveTo2, this::starredMoveToUnified));
                 if (!multi) {
@@ -2731,6 +2973,9 @@ public class ApiTreePanel extends JPanel {
                     } else {
                         statsLabel.setText("● 共 " + result.size() + " 个接口近1个月有变更");
                     }
+                    // buildTree 内部是异步建树，这里再同步一次，保证最新视图的
+                    // 一键展开/收起按钮在异步计算完成后依然可见且状态正确
+                    updateExpandCollapseButtons();
                 }
             }, ModalityState.defaultModalityState());
         });
@@ -2784,6 +3029,159 @@ public class ApiTreePanel extends JPanel {
         // 去重（按 ApiDefinition 自身 hashCode/equals）—— 用户不可能多选同节点但防御下
         java.util.LinkedHashSet<ApiDefinition> uniq = new java.util.LinkedHashSet<>(result);
         return new java.util.ArrayList<>(uniq);
+    }
+
+    /**
+     * 「收藏/取消收藏」候选接口：显式选中的接口节点 + 选中的 Controller 文件夹节点下的全部接口。
+     * <ul>
+     *   <li>选中单个/多个接口节点：返回这些接口（与 {@link #getSelectedApis()} 一致）</li>
+     *   <li>选中单个/多个 Controller 文件夹：返回文件夹下所有接口（递归展开）</li>
+     *   <li>接口与文件夹混合选中：两者合并去重，按树路径顺序</li>
+     * </ul>
+     */
+    private java.util.List<ApiDefinition> getStarCandidateApis() {
+        java.util.LinkedHashSet<ApiDefinition> uniq = new java.util.LinkedHashSet<>();
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null) return new java.util.ArrayList<>();
+        for (TreePath tp : paths) {
+            Object node = tp.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) continue;
+            collectApisUnderNode((DefaultMutableTreeNode) node, uniq);
+        }
+        return new java.util.ArrayList<>(uniq);
+    }
+
+    /** 递归收集节点下的全部接口（节点本身是接口则直接收集）。 */
+    private static void collectApisUnderNode(DefaultMutableTreeNode node, java.util.LinkedHashSet<ApiDefinition> out) {
+        Object userObj = node.getUserObject();
+        if (userObj instanceof ApiDefinition) {
+            out.add((ApiDefinition) userObj);
+            return;
+        }
+        if (userObj instanceof StarredApiNode) {
+            out.add(((StarredApiNode) userObj).api);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            javax.swing.tree.TreeNode child = node.getChildAt(i);
+            if (child instanceof DefaultMutableTreeNode) {
+                collectApisUnderNode((DefaultMutableTreeNode) child, out);
+            }
+        }
+    }
+
+    /** 当前选择中是否包含接口节点（不含文件夹节点）。 */
+    private boolean hasSelectedApiNodes() {
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null) return false;
+        for (TreePath tp : paths) {
+            Object u = ((DefaultMutableTreeNode) tp.getLastPathComponent()).getUserObject();
+            if (u instanceof ApiDefinition || u instanceof StarredApiNode) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 收集当前选中的 Controller 文件夹节点（全量/最新视图）。
+     * <p>去重并排除祖先包含关系：选中了父文件夹时不再单独处理其子文件夹
+     * （父的子树天然包含子文件夹）。</p>
+     */
+    private java.util.List<DefaultMutableTreeNode> getSelectedControllerFolderNodes() {
+        java.util.List<DefaultMutableTreeNode> folders = new java.util.ArrayList<>();
+        TreePath[] paths = tree.getSelectionPaths();
+        if (paths == null) return folders;
+        for (TreePath tp : paths) {
+            Object node = tp.getLastPathComponent();
+            if (!(node instanceof DefaultMutableTreeNode)) continue;
+            DefaultMutableTreeNode dmn = (DefaultMutableTreeNode) node;
+            if (!(dmn.getUserObject() instanceof String)) continue; // Controller 节点以 String 展示
+            if (dmn.getParent() == null) continue; // 排除根节点
+            folders.add(dmn);
+        }
+        // 排除祖先已选中的节点，避免重复导入子树
+        java.util.List<DefaultMutableTreeNode> result = new java.util.ArrayList<>();
+        for (DefaultMutableTreeNode f : folders) {
+            boolean ancestorSelected = false;
+            DefaultMutableTreeNode p = (DefaultMutableTreeNode) f.getParent();
+            while (p != null && p.getParent() != null) {
+                if (folders.contains(p)) { ancestorSelected = true; break; }
+                p = (DefaultMutableTreeNode) p.getParent();
+            }
+            if (!ancestorSelected) result.add(f);
+        }
+        return result;
+    }
+
+    /** 把全量树中的 Controller 节点递归转换为导入描述（保留嵌套结构与接口归属）。 */
+    private StarredFolderService.FolderImportSpec toFolderImportSpec(DefaultMutableTreeNode node) {
+        StarredFolderService.FolderImportSpec spec = new StarredFolderService.FolderImportSpec();
+        spec.name = controllerBaseName(String.valueOf(node.getUserObject()));
+        for (int i = 0; i < node.getChildCount(); i++) {
+            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
+            Object uo = child.getUserObject();
+            if (uo instanceof ApiDefinition) {
+                spec.apiKeys.add(((ApiDefinition) uo).uniqueKey());
+            } else if (uo instanceof String) {
+                spec.children.add(toFolderImportSpec(child));
+            }
+        }
+        return spec;
+    }
+
+    /**
+     * 「收藏文件夹」：保留原文件夹结构直接加入收藏列表（无需选择目标文件夹）。
+     * 重名自动加 (2)、(3) 后缀，不覆盖已有同名收藏文件夹。
+     */
+    private void starFoldersAsStructure(java.util.List<DefaultMutableTreeNode> folderNodes) {
+        java.util.List<StarredFolderService.FolderImportSpec> specs = new java.util.ArrayList<>();
+        for (DefaultMutableTreeNode fn : folderNodes) specs.add(toFolderImportSpec(fn));
+        int added = folderService.importFolderStructure(specs);
+
+        // 同步接口的星标标记（用于统计与列表星标图标）
+        java.util.Set<String> starredKeys = new java.util.HashSet<>();
+        for (StarredFolder f : folderService.loadFolders()) starredKeys.addAll(f.getApiKeys());
+        for (ApiDefinition a : allApis) a.setStarred(starredKeys.contains(a.uniqueKey()));
+
+        refreshStarredApiIndex();
+        tree.repaint();
+        LOG.info("[ApiTree] 收藏文件夹完成：导入 " + specs.size() + " 个文件夹，共 " + added + " 个接口");
+    }
+
+    /**
+     * 「取消收藏文件夹」：按名称定位顶层同名收藏文件夹，递归删除整个文件夹子树，
+     * 并取消其下所有接口的收藏状态。
+     */
+    private void unstarFoldersAsStructure(java.util.List<DefaultMutableTreeNode> folderNodes) {
+        java.util.List<StarredFolder> folders = folderService.loadFolders();
+        java.util.LinkedHashSet<String> targetIds = new java.util.LinkedHashSet<>();
+        java.util.List<String> targetNames = new java.util.ArrayList<>();
+        for (DefaultMutableTreeNode fn : folderNodes) {
+            String baseName = controllerBaseName(String.valueOf(fn.getUserObject()));
+            for (StarredFolder f : folders) {
+                if (baseName.equals(f.getName()) && (f.getParentId() == null || f.getParentId().isBlank())) {
+                    if (targetIds.add(f.getId())) targetNames.add(f.getName());
+                }
+            }
+        }
+        if (targetIds.isEmpty()) return;
+
+        String label = targetNames.size() == 1 ? "「" + targetNames.get(0) + "」"
+                : targetNames.size() + " 个文件夹";
+        int ret = Messages.showYesNoDialog(project,
+                "取消收藏" + label + "？\n将删除收藏列表中对应的文件夹（含子文件夹）并取消其下所有接口的收藏。",
+                "取消收藏文件夹", Messages.getQuestionIcon());
+        if (ret != Messages.YES) return;
+
+        for (String id : targetIds) folderService.deleteFolder(id);
+
+        // 同步接口的星标标记
+        java.util.Set<String> starredKeys = new java.util.HashSet<>();
+        for (StarredFolder f : folderService.loadFolders()) starredKeys.addAll(f.getApiKeys());
+        for (ApiDefinition a : allApis) a.setStarred(starredKeys.contains(a.uniqueKey()));
+
+        refreshStarredApiIndex();
+        tree.repaint();
+        LOG.info("[ApiTree] 取消收藏文件夹完成：删除 " + targetIds.size() + " 个文件夹");
     }
 
     /**
