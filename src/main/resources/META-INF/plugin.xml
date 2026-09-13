@@ -8,7 +8,7 @@
     <!-- 插件显示名称 -->
     <name>RestAutoLab</name>
 
-    <version>1.1.0</version>
+    <version>1.1.1</version>
 
     <!-- 供应商信息 -->
     <vendor>RestAutoLab</vendor>
@@ -45,6 +45,11 @@
 
     <!-- 变更日志 -->
     <change-notes><![CDATA[
+        <h3>v1.1.1（2026-09-10）</h3>
+        <ul>
+            <li><b>发布链路精简</b>：v1.1.0 发布链路里去掉的飞书 base 自动同步（v1.1.1 同步生效），构建不再依赖 lark-cli 的 <code>base:record:read</code> 等 scope，发布只需 JetBrains Marketplace Token。</li>
+            <li><b>构建产物一致</b>：移除 <code>uploadToFeishuBase</code> Gradle task 与 <code>scripts/upload_plugin_to_feishu_base.py</code>；<code>gradlew publishPlugin</code> 只做 JetBrains Marketplace 上传，行为更可预期。</li>
+        </ul>
         <h3>v1.1.0（2026-08-31）</h3>
         <ul>
             <li><b>收藏多级目录</b>：收藏文件夹支持任意层级嵌套，可在文件夹右键「新建子文件夹」；移动/复制/收藏对话框以层级路径区分同名子目录。</li>

@@ -1,6 +1,13 @@
 # RestAutoLab 更新日志
 
-> 插件 ID：`com.banqc.restautolab` · 当前公开版本：`v1.1.0`
+> 插件 ID：`com.banqc.restautolab` · 当前公开版本：`v1.1.1`
+
+## [1.1.1] - 2026-09-10
+
+### 修复
+
+- **发布链路精简**：v1.1.0 起发布的构建流程去掉了飞书 base 自动同步（依赖脚本 `scripts/upload_plugin_to_feishu_base.py`）。`gradlew publishPlugin` 不再触发该 task，构建产物 zip 不变，但发布不再需要 lark-cli 的 `base:record:read` 等 scope，发布链路更轻、可预期性更高。
+- **构建脚本一致**：`build.gradle.kts` 移除 `uploadToFeishuBase` Gradle task 与 `buildPlugin.finalizedBy(...)` 链；归档/收尾动作只覆盖 JetBrains Marketplace。
 
 ## [1.1.0] - 2026-08-31
 
