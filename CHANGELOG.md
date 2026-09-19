@@ -1,6 +1,22 @@
 # RestAutoLab 更新日志
 
-> 插件 ID：`com.banqc.restautolab` · 当前公开版本：`v1.1.2`
+> 插件 ID：`com.banqc.restautolab` · 当前公开版本：`v1.1.3`
+
+## [1.1.3] - 2026-09-16
+
+### 新增
+
+- **响应面板折叠/展开**：调试器响应面板整体折叠（默认折叠），底部状态栏右侧加 toggle 按钮「展开响应 / 收起响应」，纯文字样式跟 statusLabel 同字体同灰度。展开/折叠仅控制第二组件可见性，splitter 比例由 `setSplitterProportionKey` 持久化值恢复，不被折叠逻辑干预。
+- **响应 JSON 树懒加载**：接口切换只缓存 JSON 文本不递归建树，节点首次展开才构建子节点；数百条数组不再一次性建节点，切到树形视图不再卡顿。
+
+### 优化
+
+- **JSONPath 数组自动解包**：断言取值遇到数组且 key 不是显式索引（`[n]` 或纯数字）时，自动取第一个元素继续查找；显式索引和数字索引统一做负数边界校验。
+- **UI 滚动修复**：`UiStyle.fixWindowsScrolling` 应用到请求参数表、Header 表、Body 滚动、变量滚动和响应树滚动面板，Windows 上滚动行为统一。
+
+### 加固
+
+- `DependencyGraphDialog / EnvironmentManagerDialog / ReportExporter / ApiTreePanel / ResponseAssertion` 多处加固。
 
 ## [1.1.2] - 2026-09-13
 
