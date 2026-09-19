@@ -27,7 +27,7 @@ import java.util.function.Consumer;
 /**
  * 依赖关系配置对话框 - 展示自动检测到的依赖关系，支持用户确认/编辑/删除/添加
  *
- * <p>表格列：上游接口 | 响应字段 | 下游接口 | 目标参数</p>
+ * <p>表格列：上游接口 | 响应字段 | 下游接口 | 目标字段</p>
  */
 public class DependencyGraphDialog extends DialogWrapper {
 
@@ -108,7 +108,7 @@ public class DependencyGraphDialog extends DialogWrapper {
 
     /**
      * 按收藏夹中的接口顺序创建相邻依赖边。边暂不带映射，
-     * 用户可在表格中逐行补充多个“响应路径 → 目标参数”映射。
+     * 用户可在表格中逐行补充多个"响应路径 → 目标字段"映射。
      */
     public static List<ApiDependency> createSequentialDependencies(List<ApiDefinition> orderedApis) {
         List<ApiDependency> result = new ArrayList<>();
@@ -177,11 +177,12 @@ public class DependencyGraphDialog extends DialogWrapper {
         orderScroll.setBorder(BorderFactory.createTitledBorder(
                 BorderFactory.createEtchedBorder(), "收藏夹接口顺序"));
         orderScroll.setPreferredSize(JBUI.size(820, orderModel.isEmpty() ? 56 : 118));
+        UiStyle.fixWindowsScrolling(orderScroll);
         top.add(orderScroll, BorderLayout.CENTER);
         panel.add(top, BorderLayout.NORTH);
 
         // 表格：接口列使用下拉框，字段列使用可编辑下拉框；点击“添加依赖”直接新增空白记录。
-        String[] columns = {"上游接口", "响应字段", "下游接口", "目标参数"};
+        String[] columns = {"上游接口", "响应字段", "下游接口", "目标字段"};
         tableModel = new DefaultTableModel(columns, 0) {
             @Override
             public boolean isCellEditable(int row, int col) {
@@ -211,31 +212,23 @@ public class DependencyGraphDialog extends DialogWrapper {
             @Override
             public Component prepareRenderer(TableCellRenderer renderer, int row, int column) {
                 Component component = super.prepareRenderer(renderer, row, column);
-                // 根据当前列宽计算换行后的首选高度，避免长响应字段/目标参数被固定行高截断。
-                // 上限保留在 120px，超长内容仍可通过悬浮提示查看完整值。
-                if (component instanceof JTextArea area) {
-                    int width = Math.max(1, getColumnModel().getColumn(column).getWidth());
-                    area.setSize(new Dimension(width, 1000));
-                    int preferred = Math.max(42, Math.min(120, area.getPreferredSize().height + 2));
-                    // 多列逐个渲染时只增不减，避免后续短列把长字段列计算出的高度覆盖掉。
-                    if (preferred > getRowHeight(row)) setRowHeight(row, preferred);
-                }
                 return component;
             }
         };
         // 注册 ToolTipManager；getToolTipText(MouseEvent) 会按单元格返回完整长文本。
         table.setToolTipText("");
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        table.setRowHeight(42);
-        table.setIntercellSpacing(new Dimension(JBUI.scale(8), JBUI.scale(4)));
-        // 上游/下游接口列显示完整方法 + URL，字段列通过换行与 tooltip 查看完整内容，
-        // 避免长路径或字段被窄列截断。
-        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(210));
-        table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(350));
-        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(210));
-        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(340));
+        // 行高在 26px 基础上再降到 0.8 倍，约 21px
+        table.setRowHeight(21);
+        table.setIntercellSpacing(new Dimension(JBUI.scale(4), JBUI.scale(1)));
+        // 列宽比例：上游接口 : 上游字段 : 下游接口 : 目标字段 = 2 : 1 : 2 : 1
+        // 接口列占更宽空间展示完整URL，字段列窄一些，表格支持横向滚动查看长内容
+        table.getColumnModel().getColumn(0).setPreferredWidth(JBUI.scale(260));
+        table.getColumnModel().getColumn(1).setPreferredWidth(JBUI.scale(130));
+        table.getColumnModel().getColumn(2).setPreferredWidth(JBUI.scale(260));
+        table.getColumnModel().getColumn(3).setPreferredWidth(JBUI.scale(130));
         // #80：上游/下游接口列走自定义 ApiColumnRenderer（完整方法 + URL + 交替行底），
-        // 响应字段/目标参数列保持原 WrappingCellRenderer（长文本换行）。
+        // 响应字段/目标字段列使用单行渲染器（不换行），长内容靠横向滚动查看。
         table.getColumnModel().getColumn(0).setCellRenderer(new ApiColumnRenderer());
         table.getColumnModel().getColumn(1).setCellRenderer(new WrappingCellRenderer());
         table.getColumnModel().getColumn(2).setCellRenderer(new ApiColumnRenderer());
@@ -251,8 +244,15 @@ public class DependencyGraphDialog extends DialogWrapper {
             // 更新，避免每次键入都重复序列化设置，同时确保关闭前最后一次事件已落盘。
             tableModel.addTableModelListener(e -> scheduleAutoSave());
         }
+        // 单元格编辑结束后按最新内容重新计算列宽（打字过程中不调整，避免列宽频繁跳动）
+        table.addPropertyChangeListener("tableCellEditor", evt -> {
+            if (!table.isEditing()) {
+                autoFitColumnWidths();
+            }
+        });
 
         JBScrollPane scrollPane = new JBScrollPane(table);
+        UiStyle.fixWindowsScrolling(scrollPane);
         panel.add(scrollPane, BorderLayout.CENTER);
 
         // 按钮栏
@@ -289,6 +289,37 @@ public class DependencyGraphDialog extends DialogWrapper {
         }
         if (tableModel.getRowCount() == 0) {
             tableModel.addRow(new Object[]{"(无依赖)", "", "", ""});
+        }
+        // 根据内容自动调整列宽：内容超长时扩展列宽，用户通过横向滚动条查看完整内容
+        autoFitColumnWidths();
+    }
+
+    /**
+     * 根据表格单元格内容自动调整列宽。
+     * 保持最小宽度：接口列 260px，字段列 130px；内容更长时按文本宽度扩展，无上限。
+     */
+    private void autoFitColumnWidths() {
+        int[] minWidths = {JBUI.scale(260), JBUI.scale(130), JBUI.scale(260), JBUI.scale(130)};
+        java.awt.FontMetrics headerMetrics = table.getTableHeader().getFontMetrics(table.getTableHeader().getFont());
+        java.awt.FontMetrics cellMetrics = table.getFontMetrics(table.getFont());
+        for (int col = 0; col < table.getColumnCount(); col++) {
+            int width = minWidths[col];
+            // 表头宽度
+            Object headerValue = table.getColumnModel().getColumn(col).getHeaderValue();
+            if (headerValue != null) {
+                width = Math.max(width, headerMetrics.stringWidth(String.valueOf(headerValue)) + JBUI.scale(20));
+            }
+            // 所有单元格内容宽度
+            for (int row = 0; row < tableModel.getRowCount(); row++) {
+                Object value = tableModel.getValueAt(row, col);
+                if (value != null) {
+                    String text = String.valueOf(value);
+                    // 接口列显示会加上 [METHOD] 前缀，预留约 60px 宽度
+                    int extra = (col == 0 || col == 2) ? JBUI.scale(70) : JBUI.scale(20);
+                    width = Math.max(width, cellMetrics.stringWidth(text) + extra);
+                }
+            }
+            table.getColumnModel().getColumn(col).setPreferredWidth(width);
         }
     }
 
@@ -360,7 +391,7 @@ public class DependencyGraphDialog extends DialogWrapper {
     private void syncFromTable() {
         // DialogWrapper 的 OK 动作可能在表格编辑器仍处于激活状态时触发；
         // 必须先把当前正在编辑的单元格值写入 model，否则 dialog dispose 后
-        // tableModel 里读到的会是旧值（用户最后输入的响应字段/目标参数会丢）。
+        // tableModel 里读到的会是旧值（用户最后输入的响应字段/目标字段会丢）。
         if (syncingTable) return;
         syncingTable = true;
         try {
@@ -430,7 +461,7 @@ public class DependencyGraphDialog extends DialogWrapper {
     /**
      * 把表格行重建为 ApiDependency 列表。抽出来的纯函数，单测可直接覆盖。
      * <p>输入行格式：每行 [producerLabel, sourcePath, consumerLabel, targetParam]，
-     * 对应表头「上游接口 | 响应字段 | 下游接口 | 目标参数」。
+     * 对应表头「上游接口 | 响应字段 | 下游接口 | 目标字段」。
      * {@code labelByKey} 是 uniqueKey → METHOD + URL 全路径标签的映射，用于反向解析。</p>
      *
      * <p>规则：
@@ -569,18 +600,17 @@ public class DependencyGraphDialog extends DialogWrapper {
     }
 
     /**
-     * 长文本单元格渲染器。表格保留水平滚动，并通过换行和 tooltip 同时保证可读性，
-     * 避免响应字段或目标参数被列宽截断后无法查看。
+     * 长文本单元格渲染器。不换行，单行显示，超长内容通过表格横向滚动条 + tooltip 查看完整值。
      */
     private static final class WrappingCellRenderer extends JTextArea implements TableCellRenderer {
         private WrappingCellRenderer() {
-            setLineWrap(true);
-            setWrapStyleWord(true);
+            setLineWrap(false);
+            setWrapStyleWord(false);
             setOpaque(true);
             setEditable(false);
             setFocusable(false);
-            setBorder(JBUI.Borders.empty(4, 6));
-            setMargin(JBUI.insets(2, 4));
+            setBorder(JBUI.Borders.empty(2, 4));
+            setMargin(JBUI.insets(1, 2));
         }
 
         @Override
@@ -599,10 +629,10 @@ public class DependencyGraphDialog extends DialogWrapper {
             Color focusColor = UIManager.getColor("Table.focusCellHighlightBorder");
             if (hasFocus && focusColor != null) {
                 setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(focusColor, 2),
-                        JBUI.Borders.empty(2, 4)));
+                        BorderFactory.createLineBorder(focusColor, 1),
+                        JBUI.Borders.empty(1, 3)));
             } else {
-                setBorder(JBUI.Borders.empty(4, 6));
+                setBorder(JBUI.Borders.empty(2, 4));
             }
             setToolTipText(text.trim().length() > 20 ? text : null);
             return this;
@@ -672,13 +702,13 @@ public class DependencyGraphDialog extends DialogWrapper {
         private static final JBColor PLACEHOLDER_FG = new JBColor(new Color(0x66, 0x66, 0x66), new Color(0x99, 0x99, 0x99));
 
         ApiColumnRenderer() {
-            setLineWrap(true);
-            setWrapStyleWord(true);
+            setLineWrap(false);
+            setWrapStyleWord(false);
             setOpaque(true);
             setEditable(false);
             setFocusable(false);
-            setBorder(JBUI.Borders.empty(6, 10));
-            setMargin(JBUI.insets(2, 4));
+            setBorder(JBUI.Borders.empty(2, 6));
+            setMargin(JBUI.insets(1, 2));
         }
 
         @Override
@@ -1071,7 +1101,7 @@ public class DependencyGraphDialog extends DialogWrapper {
             this.response = response;
             this.combo = combo;
             combo.setEditable(true);
-            combo.setToolTipText(response ? "可下拉选择响应字段，也可手动输入路径" : "可下拉选择目标参数，也可手动输入参数名");
+            combo.setToolTipText(response ? "可下拉选择响应字段，也可手动输入路径" : "可下拉选择目标字段，也可手动输入字段名");
         }
 
         @Override

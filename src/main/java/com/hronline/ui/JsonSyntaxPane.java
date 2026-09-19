@@ -25,6 +25,14 @@ public class JsonSyntaxPane extends JTextPane {
 
     private static final int DEFAULT_FONT_SIZE = (int) UiStyle.FONT_MONO;
 
+    /**
+     * 超过该长度（字符数）的响应不再做逐 token 语法高亮。单条正常响应通常只有几 KB；
+     * 数百条记录的列表响应往往在 50KB 以上、包含上万个 token，每个 token 一次
+     * setCharacterAttributes 会明显卡 EDT。超过阈值退化为纯文本展示，内容仍可查看/复制，
+     * 仅不着色。
+     */
+    private static final int HIGHLIGHT_LIMIT = 50_000;
+
     private final Style defaultStyle;
     private final Style keyStyle;
     private final Style stringStyle;
@@ -108,19 +116,27 @@ public class JsonSyntaxPane extends JTextPane {
 
     /**
      * 设置文本并自动应用 JSON 语法高亮。非 JSON 内容会原样显示（不报错，不高亮）。
+     * 超过 {@link #HIGHLIGHT_LIMIT} 的超大响应跳过逐 token 着色，避免接口切换时卡 EDT。
      */
     public void setTextAndHighlight(String text) {
-        setText("");
-        if (text == null || text.isEmpty()) return;
+        if (text == null || text.isEmpty()) {
+            setText("");
+            return;
+        }
 
         StyledDocument doc = getStyledDocument();
         try {
+            // 直接带默认样式一次性插入，避免先 setText("") 再 insertString 的两次文档改动；
+            // 也省去随后对整段再 setCharacterAttributes(default) 的一次全量属性写入。
+            doc.remove(0, doc.getLength());
             doc.insertString(0, text, defaultStyle);
         } catch (BadLocationException e) {
             return;
         }
 
-        applyJsonHighlighting(text);
+        if (text.length() <= HIGHLIGHT_LIMIT) {
+            applyJsonHighlighting(text);
+        }
         setCaretPosition(0);
         // 强制重新布局，确保外层滚动容器拿到正确的首选尺寸（滚动条范围正常）
         revalidate();
@@ -183,7 +199,7 @@ public class JsonSyntaxPane extends JTextPane {
      */
     private void applyJsonHighlighting(String text) {
         StyledDocument doc = getStyledDocument();
-        doc.setCharacterAttributes(0, text.length(), defaultStyle, true);
+        // 文本已用 defaultStyle 插入，无需再对整段写一遍默认属性，省一次全量文档更新。
 
         int i = 0;
         int len = text.length();

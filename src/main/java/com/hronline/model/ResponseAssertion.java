@@ -162,23 +162,53 @@ public class ResponseAssertion {
             JsonElement current = element;
             for (String key : parts) {
                 if (current == null) return null;
+                key = key.trim();
+                if (key.isEmpty()) continue;
+
+                // 自动解包数组：如果当前是数组且key不是显式索引，取第一个元素继续查找
+                while (current.isJsonArray()) {
+                    JsonArray arr = current.getAsJsonArray();
+                    if (arr.isEmpty()) {
+                        current = null;
+                        break;
+                    }
+                    // 检查key是否是显式索引 [n] 或纯数字
+                    if (key.startsWith("[") && key.endsWith("]")) {
+                        break; // 显式索引，下面处理
+                    }
+                    try {
+                        Integer.parseInt(key);
+                        break; // 数字索引，下面处理
+                    } catch (NumberFormatException e) {
+                        // 不是索引，自动取第一个元素
+                        current = arr.get(0);
+                    }
+                }
+                if (current == null) return null;
+
                 if (key.startsWith("[") && key.endsWith("]")) {
+                    // 显式索引 [n]
                     int idx = Integer.parseInt(key.substring(1, key.length() - 1));
                     if (current.isJsonArray()) {
                         JsonArray arr = current.getAsJsonArray();
-                        current = idx < arr.size() ? arr.get(idx) : null;
-                    } else return null;
+                        current = idx >= 0 && idx < arr.size() ? arr.get(idx) : null;
+                    } else {
+                        return null;
+                    }
                 } else if (current.isJsonObject()) {
                     current = current.getAsJsonObject().get(key);
                 } else if (current.isJsonArray()) {
+                    // 纯数字作为索引
                     try {
                         int idx = Integer.parseInt(key);
                         JsonArray arr = current.getAsJsonArray();
-                        current = idx < arr.size() ? arr.get(idx) : null;
+                        current = idx >= 0 && idx < arr.size() ? arr.get(idx) : null;
                     } catch (NumberFormatException e) {
                         return null;
                     }
-                } else return null;
+                } else {
+                    return null;
+                }
             }
             if (current == null || current.isJsonNull()) return null;
             if (current.isJsonPrimitive()) return current.getAsString();

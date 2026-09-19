@@ -6,6 +6,7 @@ import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -20,7 +21,9 @@ import javax.swing.event.DocumentListener;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableColumn;
 import java.awt.*;
+import java.awt.event.ActionListener;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -275,46 +278,35 @@ public class EnvironmentManagerDialog extends DialogWrapper {
 
         rightPanel.add(infoPanel, BorderLayout.NORTH);
 
-        // Variables and headers tabbed pane
+        // Variables and headers tabbed pane（全局请求头在前，环境变量在后）
         JTabbedPane tabs = new JTabbedPane();
+        tabs.setFont(tabs.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
 
-        // Variables table
-        varTableModel = new DefaultTableModel(new Object[]{"变量名", "变量值"}, 0);
-        JBTable varTable = new JBTable(varTableModel);
-        JPanel varPanel = new JPanel(new BorderLayout());
-        varPanel.add(new JBScrollPane(varTable), BorderLayout.CENTER);
-        JPanel varBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        JButton addVarBtn = new JButton("添加", AllIcons.General.Add);
-        addVarBtn.addActionListener(e -> varTableModel.addRow(new Object[]{"", ""}));
-        JButton delVarBtn = new JButton("删除", AllIcons.General.Remove);
-        delVarBtn.addActionListener(e -> {
-            int row = varTable.getSelectedRow();
-            if (row >= 0) varTableModel.removeRow(row);
-        });
-        varBtnPanel.add(addVarBtn);
-        varBtnPanel.add(delVarBtn);
-        varBtnPanel.add(new JBLabel("提示：在请求中使用 {{变量名}} 引用"));
-        varPanel.add(varBtnPanel, BorderLayout.SOUTH);
-        tabs.addTab("环境变量", varPanel);
-
-        // Headers table
+        // ── 全局请求头 ──
         headerTableModel = new DefaultTableModel(new Object[]{"Header名", "值"}, 0);
         JBTable headerTable = new JBTable(headerTableModel);
-        JPanel headerPanel = new JPanel(new BorderLayout());
-        headerPanel.add(new JBScrollPane(headerTable), BorderLayout.CENTER);
-        JPanel headerBtnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        JButton addHdrBtn = new JButton("添加", AllIcons.General.Add);
-        addHdrBtn.addActionListener(e -> headerTableModel.addRow(new Object[]{"", ""}));
-        JButton delHdrBtn = new JButton("删除", AllIcons.General.Remove);
-        delHdrBtn.addActionListener(e -> {
-            int row = headerTable.getSelectedRow();
-            if (row >= 0) headerTableModel.removeRow(row);
-        });
-        headerBtnPanel.add(addHdrBtn);
-        headerBtnPanel.add(delHdrBtn);
-        headerBtnPanel.add(new JBLabel("提示：Header 值中也可以使用 {{变量名}}"));
-        headerPanel.add(headerBtnPanel, BorderLayout.SOUTH);
-        tabs.addTab("全局请求头", headerPanel);
+        configureKeyValueTable(headerTable, false);
+        JPanel headerPanel = buildKeyValuePanel(headerTable,
+                "Header 值中也可以使用 {{变量名}}",
+                e -> headerTableModel.addRow(new Object[]{"", ""}),
+                e -> {
+                    int row = headerTable.getSelectedRow();
+                    if (row >= 0) headerTableModel.removeRow(row);
+                });
+        tabs.addTab("全局请求头", AllIcons.General.Settings, headerPanel);
+
+        // ── 环境变量 ──
+        varTableModel = new DefaultTableModel(new Object[]{"变量名", "变量值"}, 0);
+        JBTable varTable = new JBTable(varTableModel);
+        configureKeyValueTable(varTable, true);
+        JPanel varPanel = buildKeyValuePanel(varTable,
+                "在请求中使用 {{变量名}} 引用",
+                e -> varTableModel.addRow(new Object[]{"", ""}),
+                e -> {
+                    int row = varTable.getSelectedRow();
+                    if (row >= 0) varTableModel.removeRow(row);
+                });
+        tabs.addTab("环境变量", AllIcons.Nodes.Variable, varPanel);
 
         rightPanel.add(tabs, BorderLayout.CENTER);
 
@@ -367,6 +359,80 @@ public class EnvironmentManagerDialog extends DialogWrapper {
         };
         varTableModel.addTableModelListener(tableListener);
         headerTableModel.addTableModelListener(tableListener);
+    }
+
+    /**
+     * 统一「环境变量 / 全局请求头」两列可编辑表格的样式：
+     * <ul>
+     *   <li>统一主题风格（{@link UiStyle#styleTable}），行高加高到 30，更易点击编辑；</li>
+     *   <li>两列（名 / 值）按约 1:5 分配宽度，值列更宽以容纳长内容；</li>
+     *   <li>启用主题感知的细网格线，编辑时单元格边界清晰；</li>
+     *   <li>值列编辑器在停止编辑时自动去除首尾空格（仅环境变量，{@code trimValue}=true）。</li>
+     * </ul>
+     *
+     * @param trimValue 是否对「值」列启用自动去空格（环境变量需要，请求头保持原样）
+     */
+    private void configureKeyValueTable(JBTable table, boolean trimValue) {
+        UiStyle.styleTable(table);
+        table.setRowHeight(30);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_SUBSEQUENT_COLUMNS);
+
+        Color gridColor = JBColor.namedColor("Table.gridColor",
+                new JBColor(new Color(0xB8, 0xBE, 0xC6), new Color(0x60, 0x66, 0x6E)));
+        table.setShowGrid(true);
+        table.setGridColor(gridColor);
+        table.setIntercellSpacing(JBUI.size(1, 1));
+
+        TableColumn nameCol = table.getColumnModel().getColumn(0);
+        TableColumn valueCol = table.getColumnModel().getColumn(1);
+        // 名:值 ≈ 1:5。名称列固定窄宽（设上下限避免被拖没/过宽），值列吃掉剩余空间。
+        nameCol.setMinWidth(80);
+        nameCol.setMaxWidth(180);
+        nameCol.setPreferredWidth(100);
+        valueCol.setPreferredWidth(500);
+        // 仅环境变量的值列在编辑结束时自动 trim 首尾空格
+        if (trimValue) {
+            valueCol.setCellEditor(new TrimValueCellEditor());
+        }
+    }
+
+    /** 统一构建变量/请求头面板：表格居中、底部「添加/删除 + 提示」工具栏。 */
+    private JPanel buildKeyValuePanel(JBTable table, String hint,
+                                      ActionListener onAdd, ActionListener onDelete) {
+        JPanel panel = new JPanel(new BorderLayout(0, 6));
+        panel.setBorder(JBUI.Borders.emptyTop(4));
+
+        JBScrollPane scroll = new JBScrollPane(table);
+        scroll.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(
+                        JBColor.namedColor("Table.gridColor",
+                                new JBColor(new Color(0xB8, 0xBE, 0xC6), new Color(0x60, 0x66, 0x6E))), 1),
+                JBUI.Borders.empty(1)));
+        UiStyle.fixWindowsScrolling(scroll);
+        panel.add(scroll, BorderLayout.CENTER);
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        btnPanel.add(UiStyle.button("添加", AllIcons.General.Add, onAdd));
+        btnPanel.add(UiStyle.button("删除", AllIcons.General.Remove, onDelete));
+        JBLabel hintLabel = new JBLabel(hint);
+        UiStyle.hint(hintLabel);
+        hintLabel.setBorder(JBUI.Borders.emptyLeft(8));
+        btnPanel.add(hintLabel);
+        panel.add(btnPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    /** 文本单元格编辑器：停止编辑时自动去除值的首尾空格。 */
+    private static final class TrimValueCellEditor extends DefaultCellEditor {
+        TrimValueCellEditor() {
+            super(new JBTextField());
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            Object value = super.getCellEditorValue();
+            return value == null ? "" : value.toString().trim();
+        }
     }
 
     /**
@@ -473,7 +539,8 @@ public class EnvironmentManagerDialog extends DialogWrapper {
             String k = (String) varTableModel.getValueAt(i, 0);
             String v = (String) varTableModel.getValueAt(i, 1);
             if (k != null && !k.isBlank()) {
-                selectedEnvironment.getVariables().put(k, v != null ? v : "");
+                // 变量值自动去除首尾空格（编辑器已 trim，这里再兜底，覆盖导入/未失焦等场景）
+                selectedEnvironment.getVariables().put(k.trim(), v != null ? v.trim() : "");
             }
         }
 

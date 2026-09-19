@@ -127,6 +127,11 @@ public class ApiDebuggerPanel extends JPanel {
     /** 当前响应视图是否为树形（true=树形，false=文本） */
     private boolean responseViewTree = false;
     private final JTree responseJsonTree = new JTree();
+    /**
+     * 待构建为树的 JSON 文本。接口切换时只缓存、不递归建树（数百条数组时建树非常卡），
+     * 首次切到树形视图或展开节点时再按需解析/加载。
+     */
+    private String pendingTreeJson;
     private final CardLayout responseCardLayout = new CardLayout();
     private final JPanel responseContentPanel = new JPanel(responseCardLayout);
     private final JBLabel responseStatusLabel = new JBLabel("状态: -");
@@ -135,6 +140,16 @@ public class ApiDebuggerPanel extends JPanel {
     /** #78/#85：异常信息条。网络 ERROR 或业务规则 FAILED 且有原因时可见，承载完整文本，避开底部 statusLabel。 */
     private final JBLabel responseErrorLabel = new JBLabel();
     private final JPanel responseErrorPanel = new JPanel(new BorderLayout());
+    /** 响应面板整体折叠状态。默认折叠（主体隐藏），有响应或用户点击展开才显示完整面板。 */
+    private boolean responseContentCollapsed = true;
+    /** 展开态主体容器（内容 + 底部按钮），折叠时整块隐藏。 */
+    private JPanel responseBodyContainer;
+    /** 保存调试器垂直 splitter 的引用，折叠/展开后 revalidate/repaint。 */
+    private JBSplitter debuggerSplitter;
+    /** 单个 toggle 按钮，文字在「展开响应」/「收起响应」间切换，纯文字无图标，跟就绪 label 等大。 */
+    private JButton responseToggleBtn;
+    /** 保存 createResponsePanel 返回的响应面板本尊，折叠时整体隐藏让请求区占满。 */
+    private JPanel responsePanelRoot;
     private final JBTextArea testResultArea = new JBTextArea();
     
     // 批量测试状态控制
@@ -234,6 +249,7 @@ public class ApiDebuggerPanel extends JPanel {
         requestScroll.setBorder(JBUI.Borders.empty());
         requestScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         requestScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        UiStyle.fixWindowsScrolling(requestScroll);
 
         JPanel responsePanel = createResponsePanel();
 
@@ -253,13 +269,46 @@ public class ApiDebuggerPanel extends JPanel {
         installSplitterHint(splitter);
         add(splitter, BorderLayout.CENTER);
 
-        // 底部状态栏
+        // 保留 splitter 引用，仅用于折叠/展开后 revalidate/repaint。
+        // 比例不再由折叠逻辑干预——折叠态靠「第二组件不可见」让请求区占满，
+        // 展开时 proportion 走 setSplitterProportionKey 持久化的值，自然恢复用户偏好。
+        this.debuggerSplitter = splitter;
+
+        // 底部状态栏：响应面板的展开/收起按钮跟 statusLabel 同行同字体。
+        // 响应面板本身不单独放 toggle 行，折叠时整个响应面板完全隐藏，只留底部这行的按钮。
         JPanel bottomPanel = new JPanel(new BorderLayout());
         bottomPanel.setBorder(UiStyle.topDivider());
         UiStyle.hint(statusLabel);
         statusLabel.setText("就绪");
-        bottomPanel.add(statusLabel, BorderLayout.WEST);
+        // 左侧：statusLabel，右侧：响应面板展开/收起按钮（hint 同字体）
+        JPanel bottomLeft = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        bottomLeft.setOpaque(false);
+        bottomLeft.add(statusLabel);
+        bottomPanel.add(bottomLeft, BorderLayout.WEST);
+        // 右侧只放一个 toggle 按钮，纯文字，跟 statusLabel 同一行同一字号同一灰度
+        responseToggleBtn = new JButton("展开响应");
+        responseToggleBtn.addActionListener(e -> setResponseContentCollapsed(!responseContentCollapsed));
+        // 完全套 statusLabel 的样式（UiStyle.hint 走的是 PLAIN 11f + JBColor.GRAY）
+        Font hintFont = statusLabel.getFont();
+        responseToggleBtn.setFont(hintFont);
+        responseToggleBtn.setForeground(JBColor.GRAY);
+        // 彻底扁平化 —— 无边框/无背景/无留白/无焦点高亮，跟 JLabel 视觉等高
+        responseToggleBtn.setBorder(BorderFactory.createEmptyBorder());
+        responseToggleBtn.setMargin(new Insets(0, 0, 0, 0));
+        responseToggleBtn.setContentAreaFilled(false);
+        responseToggleBtn.setFocusPainted(false);
+        responseToggleBtn.setBorderPainted(false);
+        responseToggleBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        responseToggleBtn.setToolTipText("展开/收起接口响应面板");
+        JPanel bottomRight = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        bottomRight.setOpaque(false);
+        bottomRight.add(responseToggleBtn);
+        bottomPanel.add(bottomRight, BorderLayout.EAST);
         add(bottomPanel, BorderLayout.SOUTH);
+
+        // 构造完 bottomPanel 后再调一次 applyResponseCollapsedState，
+        // 让 toggleBtn 文字和 splitter 初始比例都跟默认折叠状态同步。
+        applyResponseCollapsedState();
 
         // ── v2.0.0 交互增强：body 编辑器撤销/折叠 ──
         // 响应层常驻显示，"切到响应Tab重置视图"逻辑已不再适用，移除 initResponseTabListener
@@ -867,6 +916,7 @@ public class ApiDebuggerPanel extends JPanel {
         preRequestScriptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
         JBScrollPane scriptScroll = new JBScrollPane(preRequestScriptArea);
         scriptScroll.setPreferredSize(new Dimension(320, 160));
+        UiStyle.fixWindowsScrolling(scriptScroll);
         scriptPanel.add(scriptScroll, BorderLayout.CENTER);
 
         JBLabel scriptHint = new JBLabel("支持 set / param / header 三类命令，# 或 // 注释");
@@ -911,6 +961,7 @@ public class ApiDebuggerPanel extends JPanel {
         varScroll.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(variableGridColor, 1),
                 JBUI.Borders.empty(1)));
+        UiStyle.fixWindowsScrolling(varScroll);
         variablesPanel.add(varScroll, BorderLayout.CENTER);
 
         JBLabel variablesHint = new JBLabel("覆盖运行时变量，作用于本次请求");
@@ -1193,7 +1244,9 @@ public class ApiDebuggerPanel extends JPanel {
             }
         });
 
-        panel.add(new JBScrollPane(paramTable), BorderLayout.CENTER);
+        JBScrollPane paramScroll = new JBScrollPane(paramTable);
+        UiStyle.fixWindowsScrolling(paramScroll);
+        panel.add(paramScroll, BorderLayout.CENTER);
 
         // 一伦优化 v4：tab 顶部 [+/−] 行动行 + 附件面板（仅在有文件参数时显示）
         JPanel northContainer = new JPanel();
@@ -1371,7 +1424,9 @@ public class ApiDebuggerPanel extends JPanel {
         UiStyle.styleTable(headerTable);
         // 一伦优化 #8：请求头区域右键菜单，含"清空 Cookie"（与原工具栏按钮行为一致）
         headerTable.setComponentPopupMenu(buildHeaderTablePopup());
-        panel.add(new JBScrollPane(headerTable), BorderLayout.CENTER);
+        JBScrollPane headerScroll = new JBScrollPane(headerTable);
+        UiStyle.fixWindowsScrolling(headerScroll);
+        panel.add(headerScroll, BorderLayout.CENTER);
 
         // 一伦优化 v4：tab 顶部 [+/−/AI] 行动行
         JPanel actionBar = createTabActionBar(
@@ -1475,6 +1530,7 @@ public class ApiDebuggerPanel extends JPanel {
         bodyScrollPane.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(JBColor.border(), 1, true),
                 JBUI.Borders.empty(2)));
+        UiStyle.fixWindowsScrolling(bodyScrollPane);
         center.add(bodyScrollPane, BorderLayout.CENTER);
         panel.add(center, BorderLayout.CENTER);
 
@@ -1514,6 +1570,7 @@ public class ApiDebuggerPanel extends JPanel {
         textScroll.setBorder(JBUI.Borders.empty());
         textScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         textScroll.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        UiStyle.fixWindowsScrolling(textScroll);
         responseContentPanel.add(textScroll, "text");
 
         responseArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, (int) UiStyle.FONT_MONO));
@@ -1524,8 +1581,21 @@ public class ApiDebuggerPanel extends JPanel {
         responseJsonTree.setShowsRootHandles(true);
         responseJsonTree.setFont(responseJsonTree.getFont().deriveFont(Font.PLAIN, UiStyle.FONT_BODY));
         responseJsonTree.setCellRenderer(new JsonTreeNodeRenderer());
+        // 懒加载：容器节点只在首次展开时才构建子节点，数百条数组不会一次性全部建节点
+        responseJsonTree.addTreeWillExpandListener(new javax.swing.event.TreeWillExpandListener() {
+            @Override
+            public void treeWillExpand(javax.swing.event.TreeExpansionEvent event) {
+                Object node = event.getPath().getLastPathComponent();
+                if (node instanceof LazyJsonTreeNode lazy) lazy.ensureChildrenLoaded();
+            }
+
+            @Override
+            public void treeWillCollapse(javax.swing.event.TreeExpansionEvent event) {
+            }
+        });
         JScrollPane treeScroll = new JBScrollPane(responseJsonTree);
         treeScroll.setBorder(JBUI.Borders.empty());
+        UiStyle.fixWindowsScrolling(treeScroll);
         responseContentPanel.add(treeScroll, "tree");
 
         responseCardLayout.show(responseContentPanel, "text");
@@ -1545,6 +1615,8 @@ public class ApiDebuggerPanel extends JPanel {
         JButton clearBtn = iconButton("清空", AllIcons.Actions.GC, e -> {
             responseArea.setText("");
             responsePane.setTextAndHighlight("");
+            // 同步清掉懒加载树缓存，避免在空响应上切树形视图仍显示上一条响应
+            buildResponseJsonTree(null);
             responseViewTree = false;
         });
         clearBtn.setToolTipText("清空响应内容");
@@ -1561,7 +1633,49 @@ public class ApiDebuggerPanel extends JPanel {
         // 兼容旧字段（响应面板不再展示告警文字 / 状态）
         responseErrorPanel.setVisible(false);
 
+        this.responseBodyContainer = responseBodyContainer;
+
+        // 保留响应面板本尊引用：折叠时整个面板不可见，JBSplitter 会让请求区贴底占满。
+        this.responsePanelRoot = panel;
+
+        // 默认折叠
+        applyResponseCollapsedState();
         return panel;
+    }
+
+    /** 切换响应面板整体折叠状态。 */
+    private void setResponseContentCollapsed(boolean collapsed) {
+        this.responseContentCollapsed = collapsed;
+        applyResponseCollapsedState();
+    }
+
+    /** 根据折叠状态同步主体可见性 + toggle 按钮文字。 */
+    private void applyResponseCollapsedState() {
+        // 单按钮 toggle：文字随状态切换
+        if (responseToggleBtn != null) {
+            responseToggleBtn.setText(responseContentCollapsed ? "展开响应" : "收起响应");
+        }
+
+        // 主体可见性：折叠时彻底隐藏；展开时显示
+        if (responseBodyContainer != null) {
+            responseBodyContainer.setVisible(!responseContentCollapsed);
+        }
+
+        // 折叠时把整个响应面板本尊设为不可见。
+        // JBSplitter.doLayout 检测到「第二组件不可见」时走单组件分支——
+        // 隐藏 divider、第一组件（请求区）直接占满整个 splitter，上区域才能贴底。
+        if (responsePanelRoot != null) {
+            responsePanelRoot.setVisible(!responseContentCollapsed);
+        }
+
+        if (responseBodyContainer != null && responseBodyContainer.getParent() != null) {
+            responseBodyContainer.getParent().revalidate();
+            responseBodyContainer.getParent().repaint();
+        }
+        if (debuggerSplitter != null) {
+            debuggerSplitter.revalidate();
+            debuggerSplitter.repaint();
+        }
     }
 
     private JSeparator createSeparator() {
@@ -1694,7 +1808,9 @@ public class ApiDebuggerPanel extends JPanel {
         testResultArea.setLineWrap(true);
         testResultArea.setWrapStyleWord(true);
         testResultArea.setText("点击「测试」使用当前参数执行请求，或「AI 测试」由 AI 自动生成参数并测试。\n测试结果将以 JSON 格式展示。\n\n等待操作...\n");
-        center.add(new JBScrollPane(testResultArea), BorderLayout.CENTER);
+        JBScrollPane testResultScroll = new JBScrollPane(testResultArea);
+        UiStyle.fixWindowsScrolling(testResultScroll);
+        center.add(testResultScroll, BorderLayout.CENTER);
         panel.add(center, BorderLayout.CENTER);
 
         return panel;
@@ -2016,6 +2132,8 @@ public class ApiDebuggerPanel extends JPanel {
             lastResult = null;
             responsePane.setTextAndHighlight("");
             responsePane.setCaretPosition(0);
+            // 无缓存响应：同步清掉懒加载树缓存与占位模型，防止残留上一条响应的树
+            buildResponseJsonTree(null);
             responseCardLayout.show(responseContentPanel, "text");
             responseViewTree = false;
         }
@@ -2397,6 +2515,10 @@ public class ApiDebuggerPanel extends JPanel {
         responsePane.setCaretPosition(0);
         responseCardLayout.show(responseContentPanel, "text");
         responseViewTree = false;
+        // 拿到响应后自动展开响应内容区（哪怕 body 为空，方便用户手动点展开按钮）
+        if (responseContentCollapsed) {
+            setResponseContentCollapsed(false);
+        }
         buildResponseJsonTree(result.getResponseBody());
 
         // 一伦优化 #5：响应已独立为底部常驻层，无需切 Tab
@@ -3313,34 +3435,21 @@ public class ApiDebuggerPanel extends JPanel {
      * 切换响应视图（文本/树形）
      */
     private void toggleResponseView() {
-        String currentView = responseArea.getText().isBlank() ? "text" : 
-            (responseContentPanel.getComponent(0).isVisible() ? "text" : "tree");
-        
-        if ("text".equals(currentView)) {
-            // 尝试切换到树形视图
-            try {
-                String jsonText = responseArea.getText();
-                if (jsonText.isBlank()) {
-                    Messages.showWarningDialog(project, "响应内容为空", "提示");
-                    return;
-                }
-                var jsonObj = com.google.gson.JsonParser.parseString(jsonText);
-                DefaultMutableTreeNode root = buildJsonTree(jsonObj, "root");
-                responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(root));
-                
-                // 展开前两层节点
-                for (int i = 0; i < responseJsonTree.getRowCount(); i++) {
-                    if (i < 3) {
-                        responseJsonTree.expandRow(i);
-                    }
-                }
-                
-                responseCardLayout.show(responseContentPanel, "tree");
-                responseViewTree = true;
-                statusLabel.setText("● 已切换到树形视图");
-            } catch (Exception e) {
-                Messages.showWarningDialog(project, "无法解析为JSON: " + e.getMessage(), "非JSON响应");
+        if (!responseViewTree) {
+            String jsonText = pendingTreeJson == null ? responseArea.getText() : pendingTreeJson;
+            if (jsonText == null || jsonText.isBlank()) {
+                Messages.showWarningDialog(project, "响应内容为空", "提示");
+                return;
             }
+            // 首次切树形视图才解析建树；之后在树内展开各节点走懒加载
+            ensureLazyTreeBuilt();
+            // 仅浅层展开根层前几行，不触发深层数组的递归构建
+            for (int i = 0; i < Math.min(responseJsonTree.getRowCount(), 3); i++) {
+                responseJsonTree.expandRow(i);
+            }
+            responseCardLayout.show(responseContentPanel, "tree");
+            responseViewTree = true;
+            statusLabel.setText("● 已切换到树形视图");
         } else {
             responseCardLayout.show(responseContentPanel, "text");
             responseViewTree = false;
@@ -3349,54 +3458,99 @@ public class ApiDebuggerPanel extends JPanel {
     }
     
     /**
-     * 构建响应JSON树（自动解析响应体文本）
+     * 缓存响应文本供树形视图使用。接口切换时不再递归建树（数百条数组会构建成千上万个
+     * Swing 树节点，是切接口卡顿的主要原因），真正解析/建树延迟到用户点「树形视图」时。
      */
     private void buildResponseJsonTree(String responseBody) {
+        this.pendingTreeJson = responseBody;
         if (responseBody == null || responseBody.isBlank()) {
+            responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(
+                    new DefaultMutableTreeNode("(无响应)")));
+        } else {
+            // 占位 model：避免树视图里残留上一条响应的数据，此时不做任何 JSON 解析
+            responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(
+                    new DefaultMutableTreeNode("(切换到树形视图时加载)")));
+        }
+    }
+
+    /**
+     * 用户切到树形视图时才解析 JSON 并构建根层节点；更深层节点由
+     * {@link LazyJsonTreeNode#ensureChildrenLoaded(JTree)} 在展开时按需构建。
+     */
+    private void ensureLazyTreeBuilt() {
+        String json = pendingTreeJson;
+        if (json == null || json.isBlank()) {
             responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(
                     new DefaultMutableTreeNode("(无响应)")));
             return;
         }
         try {
-            var jsonObj = JsonParser.parseString(responseBody);
-            DefaultMutableTreeNode root = buildJsonTree(jsonObj, "Response");
+            com.google.gson.JsonElement rootElement = JsonParser.parseString(json);
+            LazyJsonTreeNode root = new LazyJsonTreeNode("Response", rootElement);
+            // 先把根层（顶层字段）加载出来再 setModel：此时尚未挂到树上，直接构建子节点
+            // 即可随 setModel 一起布局，不需要额外发结构变更事件。深层节点仍保持懒加载。
+            root.ensureChildrenLoaded();
             responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(root));
-            for (int i = 0; i < Math.min(responseJsonTree.getRowCount(), 5); i++) {
-                responseJsonTree.expandRow(i);
-            }
         } catch (Exception e) {
             DefaultMutableTreeNode root = new DefaultMutableTreeNode("(非JSON响应)");
-            root.add(new DefaultMutableTreeNode(responseBody.length() > 200
-                    ? responseBody.substring(0, 200) + "..."
-                    : responseBody));
+            root.add(new DefaultMutableTreeNode(json.length() > 200
+                    ? json.substring(0, 200) + "..."
+                    : json));
             responseJsonTree.setModel(new javax.swing.tree.DefaultTreeModel(root));
         }
     }
 
     /**
-     * 构建JSON树
+     * 懒加载 JSON 树节点：构造时只保存对应的 {@link com.google.gson.JsonElement}，
+     * 容器节点（对象/数组）放一个占位 dummy 子节点以显示展开箭头，首次展开时才把
+     * 真实子节点构建出来。这样数百条数组只有被展开的分支才会创建 Swing 节点。
      */
-    private DefaultMutableTreeNode buildJsonTree(com.google.gson.JsonElement element, String nodeName) {
-        DefaultMutableTreeNode node = new DefaultMutableTreeNode(nodeName);
-        
-        if (element.isJsonObject()) {
-            com.google.gson.JsonObject obj = element.getAsJsonObject();
-            for (var entry : obj.entrySet()) {
-                node.add(buildJsonTree(entry.getValue(), entry.getKey()));
+    private final class LazyJsonTreeNode extends DefaultMutableTreeNode {
+        private static final String LOADING_PLACEHOLDER = "loading...";
+        private final com.google.gson.JsonElement element;
+        private boolean childrenLoaded;
+
+        LazyJsonTreeNode(String label, com.google.gson.JsonElement element) {
+            super(label);
+            this.element = element;
+            if (element != null && (element.isJsonObject() || element.isJsonArray())) {
+                // 容器节点：先放一个占位 dummy 子节点以显示展开箭头，首次展开时才构建真实子节点
+                add(new DefaultMutableTreeNode(LOADING_PLACEHOLDER));
+            } else {
+                // 叶子：key: value（保持与旧实现完全一致的标签语义）
+                setUserObject(label + ": " + leafValue(element));
+                this.childrenLoaded = true;
             }
-        } else if (element.isJsonArray()) {
-            com.google.gson.JsonArray arr = element.getAsJsonArray();
-            for (int i = 0; i < arr.size(); i++) {
-                node.add(buildJsonTree(arr.get(i), "[" + i + "]"));
-            }
-        } else if (element.isJsonPrimitive()) {
-            String value = element.getAsString();
-            node = new DefaultMutableTreeNode(nodeName + ": " + value);
-        } else if (element.isJsonNull()) {
-            node = new DefaultMutableTreeNode(nodeName + ": null");
         }
-        
-        return node;
+
+        private String leafValue(com.google.gson.JsonElement el) {
+            if (el == null || el.isJsonNull()) return "null";
+            try {
+                return el.getAsString();
+            } catch (Exception ex) {
+                return el.toString();
+            }
+        }
+
+        void ensureChildrenLoaded() {
+            if (childrenLoaded) return;
+            childrenLoaded = true;
+            removeAllChildren();
+            if (element.isJsonObject()) {
+                com.google.gson.JsonObject obj = element.getAsJsonObject();
+                for (var entry : obj.entrySet()) {
+                    add(new LazyJsonTreeNode(entry.getKey(), entry.getValue()));
+                }
+            } else if (element.isJsonArray()) {
+                com.google.gson.JsonArray arr = element.getAsJsonArray();
+                for (int i = 0; i < arr.size(); i++) {
+                    add(new LazyJsonTreeNode("[" + i + "]", arr.get(i)));
+                }
+            }
+            // 根节点首次加载发生在 setModel 之后、绘制前，直接生效；
+            // 其余节点在 treeWillExpand 中加载，JTree 随后展开时会重新枚举子节点，
+            // 无需在此 nodeStructureChanged（在 willExpand 里 reload 反而可能干扰展开）。
+        }
     }
     private void formatResponseJson() {
         String response = responseArea.getText();
@@ -3412,6 +3566,8 @@ public class ApiDebuggerPanel extends JPanel {
             responseArea.setText(formatted);
             // v2.0.0：同步刷新高亮视图
             responsePane.setTextAndHighlight(formatted);
+            // 同步懒加载树数据源，保证随后切树形视图解析的是格式化后的内容
+            this.pendingTreeJson = formatted;
             responsePane.setCaretPosition(0);
             statusLabel.setText("● JSON已格式化");
         } catch (Exception e) {
@@ -3605,6 +3761,7 @@ public class ApiDebuggerPanel extends JPanel {
             systemPromptArea.setFont(systemPromptArea.getFont().deriveFont(Font.PLAIN, 11f));
             JScrollPane systemPromptScroll = new JScrollPane(systemPromptArea);
             systemPromptScroll.setPreferredSize(new Dimension(460, 100));
+            UiStyle.fixWindowsScrolling(systemPromptScroll);
 
             userPromptArea = new JBTextArea(settings.getAiUserPromptTemplate());
             userPromptArea.setLineWrap(true);
@@ -3612,6 +3769,7 @@ public class ApiDebuggerPanel extends JPanel {
             userPromptArea.setFont(userPromptArea.getFont().deriveFont(Font.PLAIN, 11f));
             JScrollPane userPromptScroll = new JScrollPane(userPromptArea);
             userPromptScroll.setPreferredSize(new Dimension(460, 160));
+            UiStyle.fixWindowsScrolling(userPromptScroll);
 
             JButton resetPromptBtn = UiStyle.button("恢复默认提示词", AllIcons.Actions.Refresh, e -> {
                 systemPromptArea.setText(RestAutoLabConstants.AI_SYSTEM_PROMPT);
@@ -3713,6 +3871,7 @@ public class ApiDebuggerPanel extends JPanel {
             JScrollPane formScroll = new JScrollPane(form);
             formScroll.setBorder(null);
             formScroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+            UiStyle.fixWindowsScrolling(formScroll);
 
             // 底部行：左侧「恢复默认提示词」（仅恢复提示词，不写入 settings），右侧留空。
             // 一伦优化 R5：AI 配置面板去掉「保存」按钮，由对话框的 OK 按钮统一触发 commit()。
@@ -4118,7 +4277,9 @@ public class ApiDebuggerPanel extends JPanel {
         };
         assertionTable = new JBTable(assertionTableModel);
         UiStyle.styleTable(assertionTable);
-        panel.add(new JBScrollPane(assertionTable), BorderLayout.CENTER);
+        JBScrollPane assertionScroll = new JBScrollPane(assertionTable);
+        UiStyle.fixWindowsScrolling(assertionScroll);
+        panel.add(assertionScroll, BorderLayout.CENTER);
 
         // 底部按钮
         JPanel bottomBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
@@ -4182,7 +4343,11 @@ public class ApiDebuggerPanel extends JPanel {
         historyTitleLabel = new JBLabel();
         UiStyle.hint(historyTitleLabel);
         panel.add(historyTitleLabel, BorderLayout.NORTH);
-        panel.add(new JBScrollPane(historyList), BorderLayout.CENTER);
+        JBScrollPane historyScroll = new JBScrollPane(historyList);
+        UiStyle.fixWindowsScrolling(historyScroll);
+        // 列表也不填充视口高度，避免Windows下出现大片空白
+        historyList.setVisibleRowCount(-1);
+        panel.add(historyScroll, BorderLayout.CENTER);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         // 一伦优化 #68：移除「发送 / 删除 / 查看请求」显式按钮——
@@ -4510,9 +4675,13 @@ public class ApiDebuggerPanel extends JPanel {
     private void refreshHistoryList() {
         if (historyListModel == null) return;
         sortRequestHistoryByTimestamp();
-        historyListModel.clear();
         List<RequestHistory> visible = getVisibleHistory();
-        for (RequestHistory h : visible) historyListModel.addElement(h);
+        // 批量替换：clear + addAll 只触发一次区间事件，避免数百条记录逐条 addElement
+        // 导致列表反复重排/重绘（切接口卡顿来源之一）。
+        historyListModel.clear();
+        if (!visible.isEmpty()) {
+            historyListModel.addAll(visible);
+        }
         if (historyTitleLabel != null) {
             historyTitleLabel.setText("请求历史 · 全部接口（" + visible.size() + " 条），双击查看请求详情");
         }
@@ -4557,6 +4726,8 @@ public class ApiDebuggerPanel extends JPanel {
         lastResult = null;
         responseArea.setText("");
         responsePane.setTextAndHighlight("");
+        // 同步清掉懒加载树缓存，避免清空后切树形视图仍显示旧响应
+        buildResponseJsonTree(null);
         responsePane.setCaretPosition(0);
         responseStatusLabel.setText("状态: -");
         responseStatusLabel.setForeground(JBColor.foreground());

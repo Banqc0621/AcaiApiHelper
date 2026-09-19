@@ -15,6 +15,7 @@ import com.hronline.settings.RestAutoLabSettingsState;
 import com.hronline.util.ApiDocExporter;
 import com.hronline.util.ApiDocWordExporter;
 import com.hronline.util.PostmanCollectionExporter;
+import com.hronline.util.ReportExporter;
 import com.hronline.util.TestDataExporter;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.actionSystem.*;
@@ -50,6 +51,8 @@ import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.datatransfer.Transferable;
+import java.io.File;
+import java.io.IOException;
 import java.util.*;
 import java.util.List;
 import java.util.function.Consumer;
@@ -94,6 +97,12 @@ public class ApiTreePanel extends JPanel {
 
     /** 搜索框 - 过滤API列表 */
     private final SearchTextField searchField = new SearchTextField();
+    /** 全量视图搜索关键词 */
+    private String allSearchText = "";
+    /** 最新视图搜索关键词 */
+    private String latestSearchText = "";
+    /** 收藏视图独立保存的搜索关键词，与全量/最新视图搜索分离 */
+    private String starredSearchText = "";
 
     /** 分类按钮组 */
     private final ButtonGroup filterGroup = new ButtonGroup();
@@ -494,6 +503,16 @@ public class ApiTreePanel extends JPanel {
         };
         group.add(exportTemplateAction);
 
+        // 导出测试报告（HTML格式）
+        AnAction exportReportAction = new AnAction("导出测试报告",
+                "将选中接口的最近测试结果导出为 HTML 格式测试报告", AllIcons.ToolbarDecorator.Export) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                exportSelectedApisTestReport();
+            }
+        };
+        group.add(exportReportAction);
+
         // 依赖链操作
         group.addSeparator();
         AnAction chainTestAction = new AnAction("依赖链测试",
@@ -542,12 +561,7 @@ public class ApiTreePanel extends JPanel {
         topContainer.add(searchField);
 
         // 搜索框实时过滤
-        searchField.addDocumentListener(new DocumentAdapter() {
-            @Override
-            protected void textChanged(@NotNull DocumentEvent e) {
-                applyFilters();
-            }
-        });
+        addSearchListener();
 
         add(topContainer, BorderLayout.NORTH);
 
@@ -1033,22 +1047,114 @@ public class ApiTreePanel extends JPanel {
         }
     }
 
+    /** 标记是否正在程序化设置搜索文本，此时不触发过滤和保存，避免循环 */
+    private boolean settingSearchTextProgrammatically = false;
+    /** 记住上次的过滤器类型，用于检测是否切换了视图 */
+    private String lastAppliedFilter = FILTER_ALL;
+
+    /** 添加搜索框 DocumentListener，实时过滤并分别保存全量/最新/收藏搜索词 */
+    private void addSearchListener() {
+        searchField.addDocumentListener(new DocumentAdapter() {
+            @Override
+            protected void textChanged(@NotNull javax.swing.event.DocumentEvent e) {
+                if (settingSearchTextProgrammatically) {
+                    return;
+                }
+                String text = searchField.getText() == null ? "" : searchField.getText();
+                if (FILTER_STARRED.equals(currentFilter)) {
+                    starredSearchText = text;
+                } else if (FILTER_LATEST.equals(currentFilter)) {
+                    latestSearchText = text;
+                } else {
+                    allSearchText = text;
+                }
+                // 同一视图内输入，不做恢复，直接过滤
+                if (lastAppliedFilter.equals(currentFilter)) {
+                    if (FILTER_STARRED.equals(currentFilter)) {
+                        refreshStarredApiIndex();
+                        buildStarredTree();
+                    } else {
+                        applyFiltersForNormalView();
+                    }
+                }
+            }
+        });
+    }
+
     /**
-     * 应用分类过滤 + 搜索过滤，更新树显示
+     * 应用分类过滤 + 搜索过滤，更新树显示。
+     * 处理视图切换逻辑：切换时保存旧视图搜索词，恢复新视图搜索词。
+     * 全量、最新、收藏三个视图的搜索状态完全独立。
      */
     private void applyFilters() {
+        boolean filterChanged = !currentFilter.equals(lastAppliedFilter);
+        String currentText = searchField.getText() == null ? "" : searchField.getText();
+
         // 收藏模式：直接构建文件夹视图（不走普通 API 过滤管线）
         if (FILTER_STARRED.equals(currentFilter)) {
+            if (filterChanged) {
+                // 从全量/最新切换过来：保存旧视图搜索词
+                saveCurrentNormalSearchText(currentText);
+                // 恢复收藏视图的搜索词
+                if (!currentText.equals(starredSearchText)) {
+                    setSearchTextProgrammatically(starredSearchText);
+                }
+            }
+            lastAppliedFilter = currentFilter;
             refreshStarredApiIndex();
             buildStarredTree();
             updateStats(Collections.emptyList());
             return;
         }
 
+        // 全量/最新模式
+        if (filterChanged) {
+            // 从其他视图切换过来：先保存旧视图搜索词
+            if (FILTER_STARRED.equals(lastAppliedFilter)) {
+                starredSearchText = currentText;
+            } else if (FILTER_LATEST.equals(lastAppliedFilter)) {
+                latestSearchText = currentText;
+            } else {
+                allSearchText = currentText;
+            }
+            // 恢复目标视图的搜索词
+            String targetSearchText = FILTER_LATEST.equals(currentFilter) ? latestSearchText : allSearchText;
+            if (!currentText.equals(targetSearchText)) {
+                setSearchTextProgrammatically(targetSearchText);
+            }
+        }
+        lastAppliedFilter = currentFilter;
+
         // 离开收藏视图前（切到全量/最新）先持久化其文件夹展开状态，
         // 之后再切回收藏时按 id 恢复，避免文件夹被全部合并
         persistStarredExpansionState();
 
+        applyFiltersForNormalView();
+    }
+
+    /** 保存当前全量/最新视图的搜索词 */
+    private void saveCurrentNormalSearchText(String text) {
+        if (FILTER_LATEST.equals(lastAppliedFilter)) {
+            latestSearchText = text;
+        } else {
+            allSearchText = text;
+        }
+    }
+
+    /** 程序化设置搜索文本，避免触发监听器循环 */
+    private void setSearchTextProgrammatically(String text) {
+        settingSearchTextProgrammatically = true;
+        try {
+            searchField.setText(text);
+        } finally {
+            settingSearchTextProgrammatically = false;
+        }
+    }
+
+    /**
+     * 全量/最新视图应用过滤，更新树显示
+     */
+    private void applyFiltersForNormalView() {
         List<ApiDefinition> filtered = applyCategoryFilter(allApis);
 
         // 再应用搜索过滤
@@ -1905,6 +2011,7 @@ public class ApiTreePanel extends JPanel {
                 group.add(starredAction("导出 Word", AllIcons.ToolbarDecorator.Export, () -> exportApisAsWord(getSelectedApisForExport())));
                 group.add(starredAction("导出 Postman JSON", AllIcons.ToolbarDecorator.Export, () -> exportApisAsPostmanJson(getSelectedApisForExport())));
                 group.add(starredAction("用模板导出", AllIcons.ToolbarDecorator.Export, () -> starredExportFromTemplate(getSelectedApisForExport())));
+                group.add(starredAction("导出测试报告", AllIcons.ToolbarDecorator.Export, () -> exportApisTestReport(getSelectedApisForExport())));
                 group.addSeparator();
                 if (!multi) {
                     group.add(starredAction("取消警示", AllIcons.Actions.QuickfixBulb, this::starredClearWarning));
@@ -1927,6 +2034,8 @@ public class ApiTreePanel extends JPanel {
                 () -> exportApisAsPostmanJson(starredFolderApisForExport(f))));
         group.add(starredAction("用模板导出", AllIcons.ToolbarDecorator.Export,
                 () -> starredExportFromTemplate(starredFolderApisForExport(f))));
+        group.add(starredAction("导出测试报告", AllIcons.ToolbarDecorator.Export,
+                () -> exportApisTestReport(starredFolderApisForExport(f))));
     }
 
     /** 解析文件夹（含子目录）内的全部可导出接口 */
@@ -2400,6 +2509,75 @@ public class ApiTreePanel extends JPanel {
         return new ArrayList<>(merged.values());
     }
 
+    /**
+     * 跨文件夹多选批量测试的依赖合并：收集每个所选接口所属文件夹「及其祖先链」的依赖设置。
+     * <p>依赖设置按文件夹维度保存且覆盖该文件夹整个子树（见
+     * {@link #openStarredDependencySettings}），所以任意一层祖先保存的映射都可能
+     * 作用于当前所选接口；执行器会按批次接口自动过滤无关依赖边。</p>
+     */
+    private List<ApiDependency> savedDependenciesForTargets(List<FolderApiTarget> targets) {
+        if (targets == null || targets.isEmpty()) return Collections.emptyList();
+        List<StarredFolder> folders = folderService.loadFolders();
+        Map<String, List<ApiDependency>> depsByFolder = new LinkedHashMap<>();
+        for (StarredFolder folder : folders) {
+            if (folder == null || !folderService.hasDependencies(folder.getId())) continue;
+            depsByFolder.put(folder.getId(), folderService.getDependencies(folder.getId()));
+        }
+        List<String> selectedFolderIds = new ArrayList<>();
+        for (FolderApiTarget target : targets) {
+            if (target != null && target.folder != null) selectedFolderIds.add(target.folder.getId());
+        }
+        return mergeAncestorFolderDependencies(folders, depsByFolder, selectedFolderIds);
+    }
+
+    /**
+     * 纯函数：合并所选文件夹及其全部祖先的依赖边，相同 producer→consumer 的映射自动合并。
+     * 抽成静态便于单元测试（与 {@link com.hronline.ui.DependencyGraphDialog#rebuildFromRows} 同思路）。
+     */
+    static List<ApiDependency> mergeAncestorFolderDependencies(
+            List<StarredFolder> folders,
+            Map<String, List<ApiDependency>> dependenciesByFolderId,
+            Collection<String> selectedFolderIds) {
+        if (folders == null || folders.isEmpty() || selectedFolderIds == null || selectedFolderIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Set<String> relevantIds = new LinkedHashSet<>();
+        for (String id : selectedFolderIds) {
+            collectAncestorIds(folders, id, relevantIds);
+        }
+        LinkedHashMap<String, ApiDependency> merged = new LinkedHashMap<>();
+        if (dependenciesByFolderId != null) {
+            for (StarredFolder folder : folders) {
+                if (folder == null || !relevantIds.contains(folder.getId())) continue;
+                List<ApiDependency> folderDeps = dependenciesByFolderId.get(folder.getId());
+                if (folderDeps == null) continue;
+                for (ApiDependency dependency : folderDeps) {
+                    if (dependency == null) continue;
+                    String key = String.valueOf(dependency.getProducerKey()) + "\u0000"
+                            + String.valueOf(dependency.getConsumerKey());
+                    ApiDependency existing = merged.get(key);
+                    if (existing == null) {
+                        merged.put(key, dependency);
+                    } else {
+                        existing.mergeMappings(dependency);
+                    }
+                }
+            }
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    /** 自下而上收集 folderId 自身及全部祖先的 id（对孤儿 id、父子环安全）。 */
+    private static void collectAncestorIds(List<StarredFolder> folders, String folderId, Set<String> out) {
+        if (folderId == null || !out.add(folderId)) return;
+        for (StarredFolder folder : folders) {
+            if (folder != null && Objects.equals(folder.getId(), folderId)) {
+                collectAncestorIds(folders, folder.getParentId(), out);
+                return;
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 一伦优化 #4：收藏视图 多选 StarredApiNode 批量操作
     //  - 批量测试：跨文件夹执行（每个 API 用自己文件夹的 params）
@@ -2430,14 +2608,16 @@ public class ApiTreePanel extends JPanel {
             if (folder != null) chainTargets.add(new FolderApiTarget(folder, api));
         }
         if (chainTargets.isEmpty()) return;
-        // 跨文件夹多选没有唯一的依赖图，保持用户选择顺序执行；同一文件夹则使用其已保存配置。
+        // 同一文件夹多选用该文件夹（含子目录）的依赖配置；跨文件夹多选必须合并每个所选接口
+        // 所属文件夹及其祖先链上的依赖设置，否则静默丢边会导致上游响应值无法注入下游
+        // （回归：按 Controller 结构收藏后接口分散在子文件夹，跨文件夹批量测试依赖失效）。
         final String selectedCommonFolderId = commonFolderId;
         StarredFolder commonFolder = selectedCommonFolderId == null ? null : chainTargets.stream()
                 .map(target -> target.folder)
                 .filter(folder -> Objects.equals(folder.getId(), selectedCommonFolderId))
                 .findFirst().orElse(null);
         List<ApiDependency> dependencies = sameFolder ? savedDependenciesForSubtree(commonFolder)
-                : Collections.emptyList();
+                : savedDependenciesForTargets(chainTargets);
         executeStarredChainBatch(chainTargets, dependencies, "批量测试");
     }
 
@@ -3422,6 +3602,202 @@ public class ApiTreePanel extends JPanel {
     }
 
     /**
+     * 导出选中接口的测试报告（支持单选/多选）为 HTML 格式
+     */
+    private void exportSelectedApisTestReport() {
+        exportApisTestReport(getSelectedApisForExport());
+    }
+
+    /**
+     * 导出指定接口列表的测试报告为 HTML 格式，使用每个接口的最近一次测试结果
+     */
+    private void exportApisTestReport(java.util.List<ApiDefinition> selected) {
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project,
+                    "未选中任何接口。\n\n操作方式：\n• 单选 1 个接口后右键 → 导出测试报告\n• 按住 Cmd/Ctrl 多选接口后再右键 → 导出测试报告\n• Shift 连选接口后再右键 → 导出测试报告",
+                    "提示");
+            return;
+        }
+
+        // 按 uniqueKey 去重，避免同一个接口重复导出
+        Map<String, ApiDefinition> uniqueApis = new LinkedHashMap<>();
+        for (ApiDefinition api : selected) {
+            if (api != null) {
+                uniqueApis.putIfAbsent(api.uniqueKey(), api);
+            }
+        }
+        List<ApiDefinition> apisToExport = new ArrayList<>(uniqueApis.values());
+
+        RestAutoLabSettingsState settings = RestAutoLabSettingsState.getInstance(project);
+        List<RequestHistory> allHistory = settings.loadRequestHistory();
+
+        // 构建 apiKey -> 最近一次测试历史的映射
+        Map<String, RequestHistory> latestHistoryByApiKey = new LinkedHashMap<>();
+        for (RequestHistory h : allHistory) {
+            if (h.getApiKey() != null && !h.getApiKey().isBlank()) {
+                // 历史是按时间顺序追加的，后面的覆盖前面的，保留最新的
+                latestHistoryByApiKey.put(h.getApiKey(), h);
+            }
+        }
+
+        // 收集有测试结果的接口，并转换为 TestResult
+        List<TestResult> results = new ArrayList<>();
+        List<ApiDefinition> noHistoryApis = new ArrayList<>();
+        long earliestTime = Long.MAX_VALUE;
+        long latestTime = 0;
+
+        for (ApiDefinition api : apisToExport) {
+            RequestHistory history = latestHistoryByApiKey.get(api.uniqueKey());
+            if (history != null) {
+                TestResult result = historyToTestResult(api, history);
+                results.add(result);
+                if (history.getTimestamp() < earliestTime) {
+                    earliestTime = history.getTimestamp();
+                }
+                if (history.getTimestamp() + history.getDurationMs() > latestTime) {
+                    latestTime = history.getTimestamp() + history.getDurationMs();
+                }
+            } else {
+                noHistoryApis.add(api);
+            }
+        }
+
+        if (results.isEmpty()) {
+            Messages.showWarningDialog(project,
+                    "选中的接口均无测试记录，请先执行接口测试后再导出报告。",
+                    "无法导出测试报告");
+            return;
+        }
+
+        // 二次确认
+        StringBuilder preview = new StringBuilder();
+        preview.append("<html><body style='width:480px;font-family:Menlo,Monaco,monospace;font-size:11px;'>")
+                .append("即将导出 <b>").append(results.size())
+                .append("</b> 个接口的测试报告（HTML 格式）");
+        if (!noHistoryApis.isEmpty()) {
+            preview.append("<br/><span style='color:#ED6C02;'>注意：").append(noHistoryApis.size())
+                    .append(" 个接口无测试记录，将被跳过</span>");
+        }
+        preview.append("：<br/><br/>");
+        java.util.Map<String, java.util.List<ApiDefinition>> grouped = new java.util.LinkedHashMap<>();
+        for (TestResult r : results) {
+            ApiDefinition api = r.getApiDefinition();
+            grouped.computeIfAbsent(api.getControllerName(), k -> new java.util.ArrayList<>()).add(api);
+        }
+        for (java.util.Map.Entry<String, java.util.List<ApiDefinition>> e : grouped.entrySet()) {
+            preview.append("<b>").append(escapeHtml(e.getKey())).append("</b> (")
+                    .append(e.getValue().size()).append(")<br/>");
+            for (ApiDefinition api : e.getValue()) {
+                String method = api.getHttpMethod() == null ? "" : api.getHttpMethod();
+                String url = api.getUrl() == null ? "" : api.getUrl();
+                String statusStyle = "";
+                RequestHistory h = latestHistoryByApiKey.get(api.uniqueKey());
+                if (h != null) {
+                    if (h.getStatusCode() >= 200 && h.getStatusCode() < 300) {
+                        statusStyle = "color:#2E7D32;font-weight:bold;";
+                    } else if (!h.getErrorMessage().isBlank()) {
+                        statusStyle = "color:#ED6C02;font-weight:bold;";
+                    } else {
+                        statusStyle = "color:#C62828;font-weight:bold;";
+                    }
+                }
+                preview.append("&nbsp;&nbsp;• <span style='color:#1f6feb;font-weight:bold;'>")
+                        .append(escapeHtml(method)).append("</span> ")
+                        .append(escapeHtml(url))
+                        .append(" <span style='").append(statusStyle).append("'>")
+                        .append(h != null ? h.getStatusCode() : "").append("</span><br/>");
+            }
+        }
+        preview.append("</body></html>");
+        int ok = Messages.showDialog(project, preview.toString(),
+                "确认导出 - 测试报告", new String[]{"导出", "取消"}, 0,
+                AllIcons.Actions.Help);
+        if (ok != 0) return;
+
+        // 构建 TestReport
+        TestReport report = new TestReport();
+        report.setTestName("接口测试报告 - " + (apisToExport.size() == 1 ? apisToExport.get(0).displayLabel() : apisToExport.size() + "个接口"));
+        report.setStartTime(earliestTime == Long.MAX_VALUE ? System.currentTimeMillis() : earliestTime);
+        report.setEndTime(latestTime == 0 ? System.currentTimeMillis() : latestTime);
+        report.setResults(results);
+
+        // 文件名：test_report_yyyyMMdd_HHmmss.html
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss");
+        String suggestName = "test_report_" + sdf.format(new java.util.Date()) + ".html";
+
+        ApplicationManager.getApplication().invokeLater(() -> {
+            String outputPath = TestDataExporter.chooseExportPath(project, suggestName);
+            if (outputPath == null) return;
+            try {
+                String finalPath;
+                if (outputPath.toLowerCase().endsWith(".html")) {
+                    finalPath = outputPath;
+                } else {
+                    finalPath = outputPath + ".html";
+                }
+                // 确保父目录存在
+                File outputFile = new File(finalPath);
+                File parentDir = outputFile.getParentFile();
+                if (parentDir != null && !parentDir.exists()) {
+                    parentDir.mkdirs();
+                }
+                String dir = parentDir != null ? parentDir.getAbsolutePath() : ".";
+                String exportedPath = ReportExporter.exportHtmlReport(report, dir);
+                // 如果用户指定的文件名和自动生成的不一致，重命名
+                File generatedFile = new File(exportedPath);
+                if (!generatedFile.getAbsolutePath().equals(outputFile.getAbsolutePath()) && outputFile.exists()) {
+                    outputFile.delete();
+                }
+                if (!generatedFile.getAbsolutePath().equals(outputFile.getAbsolutePath())) {
+                    generatedFile.renameTo(outputFile);
+                    exportedPath = outputFile.getAbsolutePath();
+                }
+                Messages.showInfoMessage(project,
+                        "测试报告已导出到:\n" + exportedPath
+                                + (noHistoryApis.isEmpty() ? "" : "\n\n跳过 " + noHistoryApis.size() + " 个无测试记录的接口"),
+                        "导出成功");
+                // 尝试打开浏览器
+                if (Desktop.isDesktopSupported()) {
+                    try {
+                        Desktop.getDesktop().browse(new File(exportedPath).toURI());
+                    } catch (Exception ignored) {
+                    }
+                }
+            } catch (IOException ex) {
+                ExportErrorReporter.reportExportFailure(project, ExportErrorReporter.Operation.TEST_REPORT, ex);
+            }
+        }, ModalityState.defaultModalityState());
+    }
+
+    /**
+     * 将 RequestHistory 转换为 TestResult
+     */
+    private TestResult historyToTestResult(ApiDefinition api, RequestHistory history) {
+        TestResult result = new TestResult(api);
+        result.setRequestUrl(history.getUrl());
+        result.setRequestBody(history.getRequestBody());
+        result.setRequestHeaders(history.getHeaders() != null ? history.getHeaders() : Collections.emptyMap());
+        result.setRequestParameters(history.getRequestParameters() != null ? history.getRequestParameters() : Collections.emptyMap());
+        result.setStatusCode(history.getStatusCode());
+        result.setResponseBody(history.getResponseBody());
+        result.setResponseHeaders(history.getResponseHeaders() != null ? history.getResponseHeaders() : Collections.emptyMap());
+        result.setDurationMs(history.getDurationMs());
+        result.setTimestamp(history.getTimestamp());
+        result.setErrorMessage(history.getErrorMessage() != null ? history.getErrorMessage() : "");
+
+        // 确定测试状态
+        if (history.getErrorMessage() != null && !history.getErrorMessage().isBlank()) {
+            result.setStatus(TestStatus.ERROR);
+        } else if (history.getStatusCode() >= 200 && history.getStatusCode() < 300) {
+            result.setStatus(TestStatus.PASSED);
+        } else {
+            result.setStatus(TestStatus.FAILED);
+        }
+
+        return result;
+    }
+
+    /**
      * 双击跳转到API源码位置
      *
      * 线程修复：原实现在 EDT 上直接执行 LocalFileSystem.refresh(false) 全量同步刷新 VFS，
@@ -3554,12 +3930,12 @@ public class ApiTreePanel extends JPanel {
         if (fileName.isBlank()) return null;
         try {
             // ReadAction.compute(ThrowableComputable) 已弃用，改用 runReadAction(Computable)；
-            // FilenameIndex.getFilesByName(Project,String,GlobalSearchScope) 已弃用，
-            // 改用 getVirtualFilesByName（直接返回 VirtualFile 集合）。显式声明目标类型，
-            // 避免 Computable/ThrowableComputable 重载歧义
+            // FilenameIndex API 已更新：移除 Project 参数，签名变为 getVirtualFilesByName(fileName, scope)
+            // 显式声明目标类型，避免 Computable/ThrowableComputable 重载歧义
             com.intellij.openapi.util.Computable<VirtualFile> fileLookup = () -> {
+                // 最新版 API：仅需文件名 + 搜索范围两个参数
                 java.util.Collection<VirtualFile> files = com.intellij.psi.search.FilenameIndex
-                        .getVirtualFilesByName(project, fileName, true,
+                        .getVirtualFilesByName(fileName,
                                 com.intellij.psi.search.GlobalSearchScope.projectScope(project));
                 if (files.isEmpty()) return null;
                 // 优先：路径后缀与记录路径一致（同包同名文件）。

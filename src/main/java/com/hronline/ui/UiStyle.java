@@ -561,6 +561,27 @@ public final class UiStyle {
         table.setShowHorizontalLines(false);
         table.setShowVerticalLines(false);
         table.setSelectionBackground(JBColor.namedColor("Table.stripeColor", new Color(245, 246, 247)));
+        // Windows LAF 下默认 JTable 会填充视口高度（fillsViewportHeight=true），
+        // 当表格行数少于视口时，底部空白会显得特别大。统一设为 false 让内容只占实际高度，
+        // 避免出现大片空白空间。
+        table.setFillsViewportHeight(false);
+    }
+
+    /**
+     * 修复 Windows 平台滚动面板滚动时出现空白的问题：
+     * 1. 设置合适的滚动单位增量，避免滚动步长过大
+     * 2. 统一视口背景色与组件背景色，减少滚动时的视觉闪烁
+     * 3. 关闭轻量级组件混用可能导致的重绘问题
+     */
+    public static void fixWindowsScrolling(JScrollPane scrollPane) {
+        // 设置垂直滚动单位增量为 16 像素，符合现代UI滚动体验，避免Windows默认值过大
+        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        scrollPane.getHorizontalScrollBar().setUnitIncrement(16);
+        // 视口背景色与面板一致，滚动到底部/顶部时不会出现白色闪烁或空白
+        scrollPane.getViewport().setBackground(
+                JBColor.namedColor("Panel.background", new Color(250, 250, 250)));
+        // 确保滚动时正确重绘
+        scrollPane.setAutoscrolls(true);
     }
 
     // ── 边框 / 留白 ──
